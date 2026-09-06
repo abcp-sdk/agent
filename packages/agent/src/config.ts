@@ -5,7 +5,11 @@ export function envOr(key: string, fallback: string): string {
 
 export interface ServerConfig {
   port: number
+  /** Storage backend: "pg" or "sqlite". */
+  backend: DbBackend
   postgresUrl: string
+  /** The resolved connection string for the selected backend. */
+  dbUrl: string
   natsUrl: string
   /** Discovery timeout for extension/tool NATS broadcasts (ms). */
   extensionDiscoverMs: number
@@ -26,6 +30,22 @@ export interface ServerConfig {
   imageReadModel: string
 }
 
+export type DbBackend = 'pg' | 'sqlite'
+
+/** Resolve the storage backend from DATABASE_URL scheme + explicit override. */
+function resolveBackend(env: NodeJS.ProcessEnv): DbBackend {
+  const explicit = env['DB_BACKEND']
+  if (explicit) {
+    const v = explicit.toLowerCase()
+    if (v === 'pg' || v === 'postgres' || v === 'postgresql') return 'pg'
+    if (v === 'sqlite' || v === 'sqlite3' || v === 'better-sqlite3')
+      return 'sqlite'
+  }
+  const url = env['DATABASE_URL'] ?? env['DATABASE_SCHEME']
+  if (url?.startsWith('sqlite')) return 'sqlite'
+  return 'pg'
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const or = (k: string, d: string) => {
     const v = env[k]
@@ -34,9 +54,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 
   const pgUrl = `postgres://${or('POSTGRES_USER', 'root')}:${or('POSTGRES_PASSWORD', 'devpassword')}@${or('POSTGRES_HOST', 'postgres.zergx.svc.cluster.local')}:${or('POSTGRES_PORT', '5432')}/${or('POSTGRES_DB_AGENT', 'zergx_agent')}`
 
+  const backend = resolveBackend(env)
+
   return {
     port: Number.parseInt(or('ZERGX_PORT', '8080'), 10),
+    backend,
     postgresUrl: pgUrl,
+    dbUrl:
+      backend === 'sqlite'
+        ? or('DATABASE_URL', 'sqlite:///data/zergx-agent.db')
+        : pgUrl,
     natsUrl: or('NATS_URL', 'nats://nats.zergx.svc.cluster.local:4222'),
     extensionDiscoverMs: Number.parseInt(
       or('ZERGX_EXTENSION_DISCOVER_MS', '500'),

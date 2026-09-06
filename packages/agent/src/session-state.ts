@@ -2,6 +2,7 @@ import { fireAndForget } from './async.js'
 import type { Bus } from './bus.js'
 import { BUCKET_SESSION_STATE, natsToken } from './bus.js'
 import type { Db } from './db-client.js'
+import { dbBackend, rawAll } from './db-client.js'
 import { logger } from './logger.js'
 
 /**
@@ -95,18 +96,9 @@ export function factFromPersist(
 export async function calibrateMessageFacts(bus: Bus, db: Db): Promise<void> {
   try {
     await ensureBucket(bus)
-    const rows = await db.$client`
-      SELECT s.name,
-             m.created_at AS last_message_at,
-             m.role AS last_message_role,
-             left(p.data::jsonb->>'text', ${PREVIEW_MAX}) AS last_message_preview
-      FROM sessions s
-      JOIN messages m ON m.id = s.tip_id
-      JOIN LATERAL (
-        SELECT data FROM parts
-        WHERE message_id = m.id AND type = 'text'
-        ORDER BY seq LIMIT 1
-      ) p ON true`
+    // Backend-neutral: sqlite uses JSON1 `json_extract`, pg uses `jsonb->>'text'`.
+    // The query is driven per-backend (placeholder is `?` for sqlite, `$n` for pg).
+    const rows = await rawCalibrationRows(db, PREVIEW_MAX)
     for (const r of rows) {
       const fact: SessionMessageFact = {
         last_message_at: String(r.last_message_at),
@@ -132,4 +124,41 @@ export async function calibrateMessageFacts(bus: Bus, db: Db): Promise<void> {
     // Non-fatal: projections self-heal on the next message per session.
     logger.warn({ err: String(err) }, 'message-fact calibration failed')
   }
+}
+
+/**
+ * Fetch the per-session latest message fact for calibration. The query is
+ * expressed per backend because the JSON/JSONB extraction differs:
+ *   - pg:   `left(p.data::jsonb->>'text', ?)` + `JOIN LATERAL`
+ *   - sqlite: JSON1 `substr(json_extract(p.data,'$.text'),1,?)` + scalar subselect
+ */
+export async function rawCalibrationRows(
+  db: Db,
+  previewMax: number,
+): Promise<Record<string, unknown>[]> {
+  const pgSQL = `
+    SELECT s.name,
+           m.created_at AS last_message_at,
+           m.role AS last_message_role,
+           left(p.data::jsonb->>'text', $1) AS last_message_preview
+    FROM sessions s
+    JOIN messages m ON m.id = s.tip_id
+    JOIN LATERAL (
+      SELECT data FROM parts
+      WHERE message_id = m.id AND type = 'text'
+      ORDER BY seq LIMIT 1
+    ) p ON true`
+  const sqliteSQL = `
+    SELECT s.name,
+           m.created_at AS last_message_at,
+           m.role AS last_message_role,
+           substr(json_extract(p.data, '$.text'), 1, ?) AS last_message_preview
+    FROM sessions s
+    JOIN messages m ON m.id = s.tip_id
+    LEFT JOIN (
+      SELECT message_id, MIN(seq) AS min_seq FROM parts
+      WHERE type = 'text' GROUP BY message_id
+    ) pmin ON pmin.message_id = m.id
+    JOIN parts p ON p.message_id = m.id AND p.type = 'text' AND p.seq = pmin.min_seq`
+  return rawAll(db, dbBackend(db) === 'pg' ? pgSQL : sqliteSQL, [previewMax])
 }

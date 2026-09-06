@@ -1,8 +1,8 @@
 import { serve } from '@hono/node-server'
 import {
   type AgentDeps,
-  backfillKvFromPg,
   type Bus,
+  backfillKvFromPg,
   calibrateMessageFacts,
   connectBus,
   connectDb,
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
 
   const config = loadConfig()
 
-  const dbRes = await connectDb(config.postgresUrl)
+  const dbRes = await connectDb(config.backend, config.dbUrl)
   if (dbRes.isErr()) {
     logger.error({ err: dbRes.error }, 'db connect failed')
     process.exit(1)
@@ -160,7 +160,6 @@ async function main(): Promise<void> {
   const files = makeBlobStore(bus)
   const deps: AgentDeps = {
     db,
-    sql: db.$client,
     bus,
     config,
     llm,
@@ -213,7 +212,12 @@ async function main(): Promise<void> {
     stopWake()
     server.close(() => {
       bus.close()
-      void db.$client.end().then(
+      const end = (
+        db as { $client: { end?: () => Promise<unknown>; close?: () => void } }
+      ).$client
+      void Promise.resolve(
+        typeof end.end === 'function' ? end.end() : end.close?.(),
+      ).then(
         () => process.exit(0),
         () => process.exit(0),
       )

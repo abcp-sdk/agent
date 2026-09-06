@@ -1,9 +1,9 @@
 import type { MailboxRow } from '@zergx-agent/schema'
-import { sql as dsql, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import { z } from 'zod'
 import type { Db } from './db-client.js'
-import { nowStr, q, rowsOf, uuid } from './db-client.js'
+import { dbBackend, nowStr, q, rawAll, uuid } from './db-client.js'
 import { mailbox } from './db-schema.js'
 
 const DrainedMailboxRowSchema = z.object({
@@ -98,56 +98,67 @@ export const Mailbox = {
   pendingSessions(db: Db): ResultAsync<string[], string> {
     return q(
       () =>
-        db
-          .execute(
-            dsql`SELECT DISTINCT session_name FROM mailbox WHERE status = 'pending'`,
-          )
-          .then(res => rowsOf(res).map(r => String(r.session_name))),
+        rawAll(
+          db,
+          `SELECT DISTINCT session_name FROM mailbox WHERE status = 'pending'`,
+        ).then(rows => rows.map(r => String(r.session_name))),
       'pending sessions',
     )
   },
 
   /**
    * Atomically pop the next pending item (ordered). The UPDATE-with-subquery
-   * keeps concurrent replicas from consuming the same row.
+   * keeps concurrent replicas from consuming the same row. On Postgres the
+   * subquery takes `FOR UPDATE SKIP LOCKED` so replicas never fight; SQLite is
+   * single-writer (WAL), so the UPDATE itself serializes the pop — SKIP LOCKED
+   * is a no-op there and is omitted.
    */
   drainOne(
     db: Db,
     sessionName: string,
   ): ResultAsync<MailboxRow | null, string> {
+    const now = nowStr()
+    const pgSQL = `UPDATE mailbox SET status = 'consumed', consumed_at = $2
+       WHERE id = (
+         SELECT id FROM mailbox
+         WHERE session_name = $1 AND status = 'pending'
+         ORDER BY COALESCE(effective_at, created_at) ASC, COALESCE(seq, 0) ASC, created_at ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING id, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`
+    const sqliteSQL = `UPDATE mailbox SET status = 'consumed', consumed_at = ?
+       WHERE id = (
+         SELECT id FROM mailbox
+         WHERE session_name = ? AND status = 'pending'
+         ORDER BY COALESCE(effective_at, created_at) ASC, COALESCE(seq, 0) ASC, created_at ASC
+         LIMIT 1
+       )
+       RETURNING id, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`
+    const isPg = dbBackend(db) === 'pg'
     return q(
       () =>
-        db
-          .execute(
-            dsql`UPDATE mailbox SET status = 'consumed', consumed_at = ${nowStr()}
-               WHERE id = (
-                 SELECT id FROM mailbox
-                 WHERE session_name = ${sessionName} AND status = 'pending'
-                 ORDER BY COALESCE(effective_at, created_at) ASC, COALESCE(seq, 0) ASC, created_at ASC
-                 LIMIT 1
-                 FOR UPDATE SKIP LOCKED
-               )
-               RETURNING id, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`,
-          )
-          .then(res => {
-            const rows = rowsOf(res)
-            const r = rows[0]
-            if (r === undefined) return null
-            const parsed = DrainedMailboxRowSchema.safeParse(r)
-            if (!parsed.success) return null
-            const d = parsed.data
-            return {
-              id: d.id,
-              session_name: d.session_name,
-              msg_type: d.msg_type,
-              payload: d.payload,
-              effective_at: d.effective_at ?? null,
-              status: d.status,
-              created_at: d.created_at,
-              consumed_at: d.consumed_at ?? null,
-              seq: d.seq ?? null,
-            } satisfies MailboxRow
-          }),
+        (isPg
+          ? rawAll(db, pgSQL, [sessionName, now])
+          : rawAll(db, sqliteSQL, [now, sessionName])
+        ).then(res => {
+          const r = res[0]
+          if (r === undefined) return null
+          const parsed = DrainedMailboxRowSchema.safeParse(r)
+          if (!parsed.success) return null
+          const d = parsed.data
+          return {
+            id: d.id,
+            session_name: d.session_name,
+            msg_type: d.msg_type,
+            payload: d.payload,
+            effective_at: d.effective_at ?? null,
+            status: d.status,
+            created_at: d.created_at,
+            consumed_at: d.consumed_at ?? null,
+            seq: d.seq ?? null,
+          } satisfies MailboxRow
+        }),
       'drain mailbox one',
     )
   },
@@ -156,16 +167,25 @@ export const Mailbox = {
     db: Db,
     sessionName: string,
   ): ResultAsync<boolean, string> {
+    const pgSQL = `SELECT EXISTS(
+         SELECT 1 FROM mailbox
+         WHERE session_name = $1 AND msg_type = 'interrupt' AND status = 'pending'
+       ) AS ok`
+    const sqliteSQL = `SELECT EXISTS(
+         SELECT 1 FROM mailbox
+         WHERE session_name = ? AND msg_type = 'interrupt' AND status = 'pending'
+       ) AS ok`
+    const isPg = dbBackend(db) === 'pg'
     return q(
       () =>
-        db
-          .execute(
-            dsql`SELECT EXISTS(
-                 SELECT 1 FROM mailbox
-                 WHERE session_name = ${sessionName} AND msg_type = 'interrupt' AND status = 'pending'
-               ) AS ok`,
-          )
-          .then(res => rowsOf(res)[0]?.ok === true),
+        (isPg
+          ? rawAll(db, pgSQL, [sessionName])
+          : rawAll(db, sqliteSQL, [sessionName])
+        ).then(res => {
+          const ok = res[0]?.ok
+          // pg returns boolean; sqlite returns 1/0
+          return ok === true || ok === 1 || ok === '1'
+        }),
       'has pending interrupt',
     )
   },
@@ -180,13 +200,12 @@ export const Mailbox = {
       .toISOString()
       .slice(0, 19)
       .replace('T', ' ')
+    const isPg = dbBackend(db) === 'pg'
+    const sql = isPg
+      ? `DELETE FROM mailbox WHERE status = 'consumed' AND consumed_at < $1 RETURNING id`
+      : `DELETE FROM mailbox WHERE status = 'consumed' AND consumed_at < ? RETURNING id`
     return q(
-      () =>
-        db
-          .execute(
-            dsql`DELETE FROM mailbox WHERE status = 'consumed' AND consumed_at < ${cutoff} RETURNING id`,
-          )
-          .then(res => (rowsOf(res) ?? []).length),
+      () => rawAll(db, sql, [cutoff]).then(rows => rows.length),
       'purge consumed mailbox',
     )
   },

@@ -3,7 +3,7 @@ import { eq, inArray } from 'drizzle-orm'
 import { err, ok, ResultAsync } from 'neverthrow'
 import { z } from 'zod'
 import type { Db } from './db-client.js'
-import { nowStr, q, uuid } from './db-client.js'
+import { nowStr, q, rawAll, uuid } from './db-client.js'
 import { messages, parts } from './db-schema.js'
 import {
   FilePartDataSchema,
@@ -91,14 +91,17 @@ export const Messages = {
       return ResultAsync.fromSafePromise(Promise.resolve(true))
     }
     return q(async () => {
-      const rows = await db.$client`
-        WITH RECURSIVE chain AS (
-          SELECT id, prev_id FROM messages WHERE id = ${tipId}
-          UNION
-          SELECT m.id, m.prev_id
-          FROM messages m JOIN chain c ON m.id = c.prev_id
-        )
-        SELECT 1 FROM chain WHERE id = ${targetId} LIMIT 1`
+      const rows = await rawAll(
+        db,
+        `WITH RECURSIVE chain AS (
+           SELECT id, prev_id FROM messages WHERE id = ?
+           UNION
+           SELECT m.id, m.prev_id
+           FROM messages m JOIN chain c ON m.id = c.prev_id
+         )
+         SELECT 1 FROM chain WHERE id = ? LIMIT 1`,
+        [tipId, targetId],
+      )
       return rows.length > 0
     }, 'message in chain')
   },
@@ -187,9 +190,12 @@ function rawChainRows(
   return q(async () => {
     let cursor: string | null
     if (before !== null) {
-      const bm = await db.$client`
-        SELECT prev_id FROM messages WHERE id = ${before} LIMIT 1`
-      cursor = bm[0]?.prev_id ?? null
+      const bm = await rawAll(
+        db,
+        `SELECT prev_id FROM messages WHERE id = ? LIMIT 1`,
+        [before],
+      )
+      cursor = (bm[0]?.prev_id as string | null) ?? null
     } else {
       // COW: the chain is walked purely on `prev_id`, starting from the
       // session's tip. A fork shares parent messages because its tip points
@@ -197,18 +203,21 @@ function rawChainRows(
       cursor = tipId
     }
     if (cursor === null) return []
-    return await db.$client`
-      WITH RECURSIVE chain AS (
-        SELECT id, role, prev_id, created_at,
-               0 AS depth
-        FROM messages WHERE id = ${cursor}
-        UNION
-        SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
-        FROM messages m JOIN chain c ON m.id = c.prev_id
-      )
-      SELECT id, role, prev_id, created_at
-      FROM chain WHERE depth < ${limit}
-      ORDER BY depth DESC`
+    return await rawAll(
+      db,
+      `WITH RECURSIVE chain AS (
+         SELECT id, role, prev_id, created_at,
+                0 AS depth
+         FROM messages WHERE id = ?
+         UNION
+         SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
+         FROM messages m JOIN chain c ON m.id = c.prev_id
+       )
+       SELECT id, role, prev_id, created_at
+       FROM chain WHERE depth < ?
+       ORDER BY depth DESC`,
+      [cursor, limit],
+    )
   }, 'query message chain')
 }
 

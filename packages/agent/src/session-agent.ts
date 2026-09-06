@@ -10,7 +10,6 @@ import type { PartRow, PresetRow } from '@zergx-agent/schema'
 import type { ModelMessage, Tool } from 'ai'
 import { streamText } from 'ai'
 import { err, ok, type Result } from 'neverthrow'
-import type { Sql } from 'postgres'
 import { z } from 'zod'
 import { fireAndForget } from './async.js'
 import type { Bus } from './bus.js'
@@ -65,7 +64,6 @@ import {
 
 export interface AgentDeps {
   db: Db
-  sql: Sql
   bus: Bus
   config: ServerConfig
   llm: LlmRegistry

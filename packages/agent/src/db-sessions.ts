@@ -2,7 +2,7 @@ import type { SessionRow } from '@zergx-agent/schema'
 import { sql as dsql, eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'
-import { nowStr, q } from './db-client.js'
+import { dbBackend, nowStr, q, rawAll } from './db-client.js'
 import { mailbox, sessions } from './db-schema.js'
 
 /**
@@ -171,18 +171,36 @@ export const Sessions = {
     input: number,
     output: number,
   ): ResultAsync<void, string> {
+    const sql =
+      dbBackend(db) === 'pg'
+        ? `UPDATE sessions SET
+           input_tokens = input_tokens + $1,
+           output_tokens = output_tokens + $2,
+           total_tokens = total_tokens + $3,
+           last_input_tokens = $1,
+           last_output_tokens = $2,
+           last_used_at = $4
+         WHERE name = $5`
+        : `UPDATE sessions SET
+           input_tokens = input_tokens + ?,
+           output_tokens = output_tokens + ?,
+           total_tokens = total_tokens + ?,
+           last_input_tokens = ?,
+           last_output_tokens = ?,
+           last_used_at = ?
+         WHERE name = ?`
+    const pgParams: unknown[] = [input, output, input + output, nowStr(), name]
+    const sqliteParams: unknown[] = [
+      input,
+      output,
+      input + output,
+      input,
+      output,
+      nowStr(),
+      name,
+    ]
     return q(
-      () =>
-        db.execute(
-          dsql`UPDATE sessions SET
-                 input_tokens = input_tokens + ${input},
-                 output_tokens = output_tokens + ${output},
-                 total_tokens = total_tokens + ${input + output},
-                 last_input_tokens = ${input},
-                 last_output_tokens = ${output},
-                 last_used_at = ${nowStr()}
-               WHERE name = ${name}`,
-        ),
+      () => rawAll(db, sql, dbBackend(db) === 'pg' ? pgParams : sqliteParams),
       'add session usage',
     ).map(() => undefined)
   },

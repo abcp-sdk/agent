@@ -672,7 +672,7 @@ const sessionOpenapi = new OpenAPIHono<AppEnv>()
       model: p.model,
       // Manual fork/rename inherits the parent's full config (model, preset,
       // system_prompt, max_turns, locale) so it behaves identically. ONLY the
-      // repo-extension `fork-bookmark` worksheet overrides preset to 'build'
+      // repo-extension `fork-branch` worksheet overrides preset to 'build'
       // (a work-branch sub-agent must edit/build); it passes explicit `preset`
       // in the fork body, which wins here.
       preset: b.preset ?? (p.preset !== '' ? p.preset : DEFAULT_PRESET),

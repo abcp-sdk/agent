@@ -1,6 +1,6 @@
 import type { Bus } from './bus.js'
 import type { Db } from './db-client.js'
-import { rowsOf } from './db-client.js'
+import { rawAll } from './db-client.js'
 import { type FileRecord, upsertFile } from './files.js'
 import { Config, Presets } from './kv-store.js'
 import { logger } from './logger.js'
@@ -34,8 +34,7 @@ async function legacyRows(
   table: string,
 ): Promise<Record<string, unknown>[]> {
   try {
-    const res = await db.$client.unsafe(`SELECT * FROM ${table}`)
-    return rowsOf(res) ?? []
+    return await rawAll(db, `SELECT * FROM ${table}`)
   } catch {
     return [] // table absent on fresh installs
   }

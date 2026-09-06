@@ -1,48 +1,41 @@
 import {
-  type AnyPgColumn,
-  bigint,
+  type AnySQLiteColumn,
   integer,
-  pgTable,
+  sqliteTable,
   text,
-} from 'drizzle-orm/pg-core'
+} from 'drizzle-orm/sqlite-core'
 
-export const sessions = pgTable('sessions', {
+export const sessions = sqliteTable('sessions', {
   name: text('name').primaryKey(),
   model: text('model').notNull().default(''),
   preset: text('preset').notNull().default(''),
   tipId: text('tip_id'),
   maxTurns: integer('max_turns').notNull().default(0),
   systemPrompt: text('system_prompt').notNull().default(''),
-  inputTokens: bigint('input_tokens', { mode: 'number' }).notNull().default(0),
-  outputTokens: bigint('output_tokens', { mode: 'number' })
-    .notNull()
-    .default(0),
-  totalTokens: bigint('total_tokens', { mode: 'number' }).notNull().default(0),
+  inputTokens: integer('input_tokens').notNull().default(0),
+  outputTokens: integer('output_tokens').notNull().default(0),
+  totalTokens: integer('total_tokens').notNull().default(0),
   // Last single request (one LLM step), overwritten not accumulated. The
   // cumulative *_tokens above are reserved for billing/history; the chat
   // footer shows the most recent request's context size.
-  lastInputTokens: bigint('last_input_tokens', { mode: 'number' })
-    .notNull()
-    .default(0),
-  lastOutputTokens: bigint('last_output_tokens', { mode: 'number' })
-    .notNull()
-    .default(0),
+  lastInputTokens: integer('last_input_tokens').notNull().default(0),
+  lastOutputTokens: integer('last_output_tokens').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   lastUsedAt: text('last_used_at'),
   locale: text('locale').notNull().default(''),
 })
 
-export const messages = pgTable('messages', {
+export const messages = sqliteTable('messages', {
   id: text('id').primaryKey(),
   role: text('role').notNull(),
-  prevId: text('prev_id').references((): AnyPgColumn => messages.id, {
+  prevId: text('prev_id').references((): AnySQLiteColumn => messages.id, {
     onDelete: 'set null',
   }),
   createdAt: text('created_at').notNull(),
 })
 
-export const parts = pgTable('parts', {
+export const parts = sqliteTable('parts', {
   id: text('id').primaryKey(),
   messageId: text('message_id')
     .notNull()
@@ -52,7 +45,7 @@ export const parts = pgTable('parts', {
   data: text('data').notNull().default('{}'),
 })
 
-export const mailbox = pgTable('mailbox', {
+export const mailbox = sqliteTable('mailbox', {
   id: text('id').primaryKey(),
   sessionName: text('session_name')
     .notNull()
@@ -66,7 +59,7 @@ export const mailbox = pgTable('mailbox', {
   seq: integer('seq'),
 })
 
-export const worksheets = pgTable('worksheets', {
+export const worksheets = sqliteTable('worksheets', {
   id: text('id').primaryKey(),
   sessionName: text('session_name')
     .notNull()
@@ -81,7 +74,7 @@ export const worksheets = pgTable('worksheets', {
   decidedAt: text('decided_at'),
 })
 
-export const providers = pgTable('providers', {
+export const providers = sqliteTable('providers', {
   providerId: text('provider_id').primaryKey(),
   apiType: text('api_type').notNull().default('openai-compatible'),
   baseUrl: text('base_url').notNull(),
