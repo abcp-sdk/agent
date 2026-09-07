@@ -1,4 +1,5 @@
 import { serve } from '@hono/node-server'
+import { buildConnectHandler } from './connect.js'
 import {
   type AgentDeps,
   type Bus,
@@ -187,6 +188,23 @@ async function main(): Promise<void> {
   })
 
   servingApp.route('/api/v1', app)
+
+  // Strong-typed Connect contract surface (AgentService). Mounted at the
+  // Connect procedural paths (/agent.v1.AgentService/* ). Replaces the loose
+  // hand-written session/providers/config surface for Connect clients (Flutter,
+  // easylab gateway, ext servers) while the REST facade stays for compat.
+  const connectHandler = buildConnectHandler(deps)
+  servingApp.use('/agent.v1/*', async c => {
+    const req = c.req.raw
+    const url = new URL(req.url)
+    // Hono rewrites to the route's base; reconstruct the full path the Connect
+    // handler expects (its handlers key on requestPath like
+    // "/agent.v1.AgentService/ListSessions").
+    const path = '/agent.v1' + url.pathname.replace(/^\/agent\.v1/, '')
+    const rpcReq = new Request(`${url.origin}${path}`, req)
+    const res = await connectHandler(rpcReq)
+    return res
+  })
 
   // Serve the SPA from embedded SEA assets (single-executable deployment).
   servingApp.use('*', seaStatic())

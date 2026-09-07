@@ -6,7 +6,8 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
-    "./*": "./dist/*"
+    "./*": "./dist/*",
+    "./gen/*": "./dist/gen/*"
   },
   "scripts": {
     "build": "tsc --emitDeclarationOnly && node ../../scripts/build-esbuild.mjs && node ../../scripts/gen-extension-schema.mjs",
@@ -14,6 +15,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.14.1",
+    "@connectrpc/connect": "^2.2.0",
     "neverthrow": "^8.2.0",
     "zod": "^4.4.3"
   },

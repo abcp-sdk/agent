@@ -369,3 +369,6 @@ export const ExtensionVariableValueSchema = z.object({
 export type ExtensionVariableValue = z.infer<
   typeof ExtensionVariableValueSchema
 >
+
+// Generated Connect types (strong-typed RPC contract from .proto).
+export * from './gen/agent/v1/agent_pb.js'
