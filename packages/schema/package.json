@@ -17,6 +17,7 @@
   "dependencies": {
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",
+    "@easylab/client-sdk": "github:easylab-platform/easylab-client-sdk-ts#v0.1.1",
     "neverthrow": "^8.2.0",
     "zod": "^4.4.3"
   },

@@ -27,6 +27,7 @@
     "@lucide/svelte": "^1.33.0"
   },
   "allowScripts": {
-    "esbuild@0.28.2": true
+    "esbuild@0.28.2": true,
+    "@easylab/client-sdk@0.1.1": true
   }
 }

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { api, type Session } from '$lib/api'
-  import { parse, SSEEnvelopeSchema, SseParamsSchema } from '@easylab-agent/schema'
+  import { SseParamsSchema } from '@easylab-agent/schema'
   import { markdown } from '$lib/markdown'
   import { Send, Square, GitFork, Mailbox, FilePenLine, ChevronDown, Undo2, Layers, PenLine } from '@lucide/svelte'
   import MailboxPanel from '$lib/MailboxPanel.svelte'
@@ -32,7 +32,8 @@
   let pends: { code: string; name: string; mime: string; size: number }[] = $state([])
   let uploading = $state(false)
 
-  let es: EventSource | null = null
+  let streamAbort: AbortController | null = null
+  let streamIter: AsyncIterator<unknown> | null = null
 
   const FILE_REF = /\[附件\s+([^|\]]+)\s*\|\s*file:([0-9a-zA-Z]+)\s*\|\s*([^|\]]*)\s*\|\s*([^\]]*)\]/g
 
@@ -77,11 +78,24 @@
 
   function startStream() {
     stopStream()
-    es = new EventSource(api.sessionsStreamUrl(active.name))
-    es.onmessage = ev => {
-      const parsed = parse(SSEEnvelopeSchema, ev.data)
-      if (parsed.isErr()) return
-      const data = parsed.value
+    void (async () => {
+      streamAbort = new AbortController()
+      try {
+        const stream = await api.watchSession(active.name, { signal: streamAbort.signal })
+        streamIter = stream[Symbol.asyncIterator]()
+        for (;;) {
+          const next = await streamIter.next()
+          if (next.done) break
+          handleEvent(next.value as { event: string; params?: Record<string, unknown> })
+        }
+      } catch {
+        stopStream()
+      }
+    })()
+  }
+
+  function handleEvent(data: { event: string; params?: Record<string, unknown> }) {
+    {
       const p = data.params ?? {}
       if (data.event === 'text-delta') {
         const text = SseParamsSchema.safeParse(p)
@@ -116,14 +130,12 @@
         stopStream()
       }
     }
-    es.onerror = () => stopStream()
   }
 
   function stopStream() {
-    if (es) {
-      es.close()
-      es = null
-    }
+    streamAbort?.abort()
+    streamAbort = null
+    streamIter = null
   }
 
   function flushAssistant() {

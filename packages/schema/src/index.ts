@@ -371,4 +371,4 @@ export type ExtensionVariableValue = z.infer<
 >
 
 // Generated Connect types (strong-typed RPC contract from .proto).
-export * from './gen/agent/v1/agent_pb.js'
+export * from '@easylab/client-sdk/agent'
