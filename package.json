@@ -6,12 +6,11 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace=@easylab-agent/schema && npm run build --workspace=@easylab-agent/agent && npm run build --workspace=@easylab-agent/server && npm run build --workspace=@easylab-agent/ui && node scripts/build-sea.mjs",
+    "build": "npm run build --workspace=@easylab-agent/schema && npm run build --workspace=@easylab-agent/agent && npm run build --workspace=@easylab-agent/server && node scripts/build-sea.mjs",
     "check": "biome check .",
     "check:fix": "biome check --fix .",
     "dev": "tsx watch packages/server/src/index.ts",
     "dev:server": "tsx watch packages/server/src/index.ts",
-    "dev:web": "npm run dev --workspace=@easylab-agent/ui",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "start": "node .sea/easylab-agent",

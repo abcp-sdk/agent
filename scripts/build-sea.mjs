@@ -49,10 +49,13 @@ await build({
   logLevel: 'info',
 })
 
-// Embed the SPA dist as a SEA asset. SEA assets are keyed by path relative to
-// the `assets` map in sea-config.json.
+// Embed the SPA dist as a SEA asset (optional). The web frontend now lives in
+// its own repo (easylab-platform/web); set WEB_DIST to a built dist directory
+// to embed it, or leave unset for an API-only binary.
 const seaAssets = {}
-const uiDist = join(root, 'packages', 'ui', 'dist')
+const uiDist = process.env.WEB_DIST
+  ? resolve(process.env.WEB_DIST)
+  : join(root, 'packages', 'ui', 'dist')
 try {
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
