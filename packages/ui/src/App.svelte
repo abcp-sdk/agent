@@ -59,7 +59,7 @@
   <aside class="w-72 shrink-0 border-r border-border flex flex-col bg-card">
     <div class="p-3 border-b border-border">
       <div class="flex items-center justify-between">
-        <h1 class="text-sm font-semibold">zergx-agent</h1>
+        <h1 class="text-sm font-semibold">easylab-agent</h1>
         <div class="flex gap-1">
           <Button
             variant="ghost"

@@ -15,7 +15,7 @@ import {
   publishLifecycle,
   Sessions,
   sseSubject,
-} from '@zergx-agent/agent'
+} from '@easylab-agent/agent'
 import {
   CreateSessionBodySchema,
   ForkBodySchema,
@@ -25,13 +25,13 @@ import {
   type SessionRow,
   SessionSettingsBodySchema,
   UndoBodySchema,
-} from '@zergx-agent/schema'
+} from '@easylab-agent/schema'
 import type { Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { type AppEnv, EidDedup } from '../context.js'
 
-/** Serialize a session row into the zergx UI contract. */
+/** Serialize a session row into the UI contract. */
 function sessionToJson(s: SessionRow): Record<string, unknown> {
   return { ...s }
 }

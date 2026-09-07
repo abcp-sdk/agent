@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { api, type Session } from '$lib/api'
-  import { parse, SSEEnvelopeSchema, SseParamsSchema } from '@zergx-agent/schema'
+  import { parse, SSEEnvelopeSchema, SseParamsSchema } from '@easylab-agent/schema'
   import { markdown } from '$lib/markdown'
   import { Send, Square, GitFork, Mailbox, FilePenLine, ChevronDown, Undo2, Layers, PenLine } from '@lucide/svelte'
   import MailboxPanel from '$lib/MailboxPanel.svelte'

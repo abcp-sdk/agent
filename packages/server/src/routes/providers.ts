@@ -5,8 +5,8 @@ import {
   Providers,
   parse,
   validateApiType,
-} from '@zergx-agent/agent'
-import { ProviderBodySchema, ProviderTestBodySchema } from '@zergx-agent/schema'
+} from '@easylab-agent/agent'
+import { ProviderBodySchema, ProviderTestBodySchema } from '@easylab-agent/schema'
 import { generateText } from 'ai'
 import { ResultAsync } from 'neverthrow'
 import { z } from 'zod'

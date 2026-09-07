@@ -1,5 +1,5 @@
 import { createRoute, OpenAPIHono } from '@hono/zod-openapi'
-import { parseProviderModelRef } from '@zergx-agent/agent'
+import { parseProviderModelRef } from '@easylab-agent/agent'
 import { z } from 'zod'
 import type { AppEnv } from '../context.js'
 

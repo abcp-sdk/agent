@@ -3,7 +3,7 @@ import {
   type ExtensionConfigItem,
   ExtensionManifestSchema,
   type ExtensionTool,
-} from '@zergx-agent/schema'
+} from '@easylab-agent/schema'
 import { jsonSchema, type Tool } from 'ai'
 import { z } from 'zod'
 import type { Bus } from './bus.js'
@@ -181,7 +181,7 @@ const discoveryCache: DiscoveryCache = {
  * broadcast wait (~500ms) before the model even starts. Concurrent turns
  * share one in-flight broadcast (no thundering herd). Extensions restarted
  * with a changed toolset surface within one TTL; tune via
- * ZERGX_DISCOVERY_TTL_MS, disable with 0.
+ * EXTENSION_DISCOVER_MS, disable with 0.
  */
 export async function discoverToolsCached(
   bus: Bus,
@@ -208,7 +208,7 @@ export function invalidateDiscoveryCache(): void {
 }
 
 function discoveryTtlMs(): number {
-  const v = process.env.ZERGX_DISCOVERY_TTL_MS
+  const v = process.env.EXTENSION_DISCOVER_MS
   if (v === undefined) return 30_000
   const n = Number.parseInt(v, 10)
   return Number.isNaN(n) ? 30_000 : n

@@ -18,7 +18,7 @@ import {
   runSessionTurn,
   watchMailboxWake,
   watchWorksheetReconciler,
-} from '@zergx-agent/agent'
+} from '@easylab-agent/agent'
 import { Hono } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { app } from './app.js'
@@ -142,7 +142,7 @@ async function main(): Promise<void> {
 
   // Mailbox retention: consumed rows are audit-only, prune past the window.
   const retentionDays = Number.parseInt(
-    process.env.ZERGX_MAILBOX_RETENTION_DAYS ?? '7',
+    process.env.MAILBOX_RETENTION_DAYS ?? '7',
     10,
   )
   if (Number.isFinite(retentionDays) && retentionDays > 0) {

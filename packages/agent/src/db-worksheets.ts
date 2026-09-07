@@ -1,4 +1,4 @@
-import type { WorksheetRow } from '@zergx-agent/schema'
+import type { WorksheetRow } from '@easylab-agent/schema'
 import { eq, and } from 'drizzle-orm'
 import { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'

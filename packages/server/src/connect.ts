@@ -21,10 +21,12 @@ import {
   renderTemplate,
   resolveLocale,
   Sessions,
+  sseSubject,
   toolConfigMap,
   DEFAULT_PRESET,
-} from '@zergx-agent/agent'
-import { type AgentDeps } from '@zergx-agent/agent'
+} from '@easylab-agent/agent'
+import { type AgentDeps } from '@easylab-agent/agent'
+import { EidDedup } from './context.js'
 import {
   createConnectRouter,
   type ServiceImpl,
@@ -39,8 +41,10 @@ import { StructSchema } from '@bufbuild/protobuf/wkt'
 import {
   AgentService,
   ListToolsResponseSchema,
-  GetZergxConfigResponseSchema,
-} from '@zergx-agent/schema'
+  GetAgentConfigResponseSchema,
+  WatchSessionResponseSchema,
+  type WatchSessionResponse,
+} from '@easylab-agent/schema'
 
 function sessionToMsg(s: AgentDeps['db'] extends never ? never : any) {
   const name = s.name as string
@@ -124,7 +128,7 @@ export function buildConnectHandler(deps: AgentDeps) {
 
   const impl: ServiceImpl<typeof AgentService> = {
     async health() {
-      return { ok: true, name: 'zergx-agent' }
+      return { ok: true, name: 'easylab-agent' }
     },
     async listSessions() {
       const r = await Sessions.list(deps.db)
@@ -225,6 +229,42 @@ export function buildConnectHandler(deps: AgentDeps) {
         eid: '',
       }
     },
+    async *watchSession(req) {
+      const { id } = req
+      const agent = new AbcAgent(deps.bus)
+      const subject = sseSubject(id)
+      // Subscribe live BEFORE replaying so the handover overlaps, not drops.
+      const sub = await deps.bus.subscribe(subject)
+      const dedup = new EidDedup()
+      // Replay only the trailing in-flight turn (idle sessions have nothing
+      // to recover — GET messages is authoritative).
+      if (await isSessionRunning(deps.bus, id)) {
+        const replay = await agent.replayEvents(id)
+        let tailStart = -1
+        for (let i = replay.length - 1; i >= 0; i--) {
+          const e = replay[i]?.event
+          const p = (replay[i]?.params ?? {}) as { type?: string }
+          if (e === 'turn-complete' || (e === 'status' && p.type === 'busy')) {
+            tailStart = i
+            break
+          }
+        }
+        if (tailStart >= 0) {
+          for (let i = tailStart; i < replay.length; i++) {
+            const raw = replay[i]
+            const eid = (raw as { eid?: string })?.eid
+            dedup.mark(eid)
+            yield toWatchEvent(raw)
+          }
+        }
+      }
+      for await (const m of sub) {
+        const v = m.payload as { eid?: string }
+        if (dedup.duplicate(v.eid)) continue
+        yield toWatchEvent(m.payload)
+      }
+    },
+
     async fork(req) {
       const { id, name, messageId, preset } = req
       const parent = await Sessions.get(deps.db, id)
@@ -457,7 +497,7 @@ export function buildConnectHandler(deps: AgentDeps) {
       const locale = resolveLocale(
         req.locale,
         configLocale,
-        process.env.ZERGX_LOCALE ?? 'en',
+        process.env.LOCALE ?? 'en',
       )
       return create(ListToolsResponseSchema, {
         tools: tools.map(t => ({
@@ -556,14 +596,14 @@ export function buildConnectHandler(deps: AgentDeps) {
       }
       return { ok: true }
     },
-    async getZergxConfig() {
+    async getAgentConfig() {
       const r = await Providers.list(deps.db)
       if (r.isErr()) throw new Error(r.error)
       const providers: Record<string, string> = {}
       for (const p of r.value) {
         if (p) providers[p.provider_id] = JSON.stringify(providerToMsg(p))
       }
-      return create(GetZergxConfigResponseSchema, { config: { providers, http_proxy: process.env.ZERGX_HTTP_PROXY ?? '', self_base: process.env.ZERGX_SELF_BASE ?? '' } })
+      return create(GetAgentConfigResponseSchema, { config: { providers, http_proxy: process.env.AGENT_HTTP_PROXY ?? '', self_base: process.env.SELF_BASE ?? '' } })
     },
   }
 
@@ -581,7 +621,7 @@ export function buildConnectHandler(deps: AgentDeps) {
   return rpcFetch
 }
 
-import { upsertFile, fileBySha, Worksheets, randomCode, type FileRecord } from '@zergx-agent/agent'
+import { upsertFile, fileBySha, Worksheets, randomCode, type FileRecord } from '@easylab-agent/agent'
 import { createHash } from 'node:crypto'
 
 function getSha(data: Uint8Array): string {
@@ -614,4 +654,32 @@ async function storeBytes(
   await deps.files.put(code, record, data)
   await upsertFile(deps.bus, record)
   return record
+}
+
+// toWatchEvent converts a bus envelope into a WatchSessionResponse message.
+function toWatchEvent(raw: unknown): WatchSessionResponse {
+  const env = raw as { event?: string; params?: Record<string, unknown>; eid?: string }
+  return create(WatchSessionResponseSchema, {
+    event: env.event ?? 'message',
+    params: (env.params ?? {}) as import('@bufbuild/protobuf').JsonObject,
+    eid: env.eid ?? '',
+  })
+}
+
+// ---- Struct helpers (google.protobuf.Value wrapping) ----
+
+function toStructValue(v: unknown): Record<string, unknown> {
+  if (v === null || v === undefined) return { case: 'nullValue', value: 0 }
+  if (typeof v === 'string') return { case: 'stringValue', value: v }
+  if (typeof v === 'number') return { case: 'numberValue', value: v }
+  if (typeof v === 'boolean') return { case: 'boolValue', value: v }
+  if (Array.isArray(v)) return { case: 'listValue', value: { values: v.map(toStructValue) } }
+  if (typeof v === 'object') return { case: 'structValue', value: { fields: toStructFields(v as Record<string, unknown>) } }
+  return { case: 'stringValue', value: String(v) }
+}
+
+function toStructFields(o: Record<string, unknown>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(o)) fields[k] = toStructValue(v)
+  return fields
 }

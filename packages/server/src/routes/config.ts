@@ -11,8 +11,8 @@ import {
   renderTemplate,
   resolveLocale,
   toolConfigMap,
-} from '@zergx-agent/agent'
-import { ConfigBodySchema, PresetBodySchema } from '@zergx-agent/schema'
+} from '@easylab-agent/agent'
+import { ConfigBodySchema, PresetBodySchema } from '@easylab-agent/schema'
 import { ResultAsync } from 'neverthrow'
 import { z } from 'zod'
 import type { AppEnv } from '../context.js'
@@ -323,11 +323,11 @@ const listModelsRoute = createRoute({
   },
 })
 
-// ---- zergx config ----
+// ---- agent config ----
 
-const zergxConfigRoute = createRoute({
+const agentConfigRoute = createRoute({
   method: 'get',
-  path: '/zergx-config',
+  path: '/agent-config',
   summary: 'Rucoder config',
   responses: {
     200: {
@@ -493,7 +493,7 @@ export const configRoutes = new OpenAPIHono<AppEnv>()
     const locale = resolveLocale(
       c.req.query('locale'),
       configLocale,
-      process.env.ZERGX_LOCALE ?? 'en',
+      process.env.LOCALE ?? 'en',
     )
     return c.json(
       {
@@ -535,7 +535,7 @@ export const configRoutes = new OpenAPIHono<AppEnv>()
       models.unshift(defaultModel)
     return c.json({ models: models.map(id => ({ id, name: id })) }, 200)
   })
-  .openapi(zergxConfigRoute, async c => {
+  .openapi(agentConfigRoute, async c => {
     const deps = c.get('deps')
     const r = await Providers.list(deps.db)
     if (r.isErr()) return c.json({ ok: false, error: r.error }, 500)
@@ -553,8 +553,8 @@ export const configRoutes = new OpenAPIHono<AppEnv>()
     return c.json(
       {
         providers,
-        http_proxy: process.env.ZERGX_HTTP_PROXY ?? '',
-        self_base: process.env.ZERGX_SELF_BASE ?? '',
+        http_proxy: process.env.AGENT_HTTP_PROXY ?? '',
+        self_base: process.env.SELF_BASE ?? '',
       },
       200,
     )

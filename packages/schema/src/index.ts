@@ -280,7 +280,7 @@ export interface ApiErrorBody {
 //
 // The single source of truth for the typed API surface is the server router:
 // the UI derives its Hono client with `hc<AppType>()` from
-// @zergx-agent/server (`AppType = typeof app`). No hand-written contract.
+// @easylab-agent/server (`AppType = typeof app`). No hand-written contract.
 
 export type SessionJson = SessionRow
 

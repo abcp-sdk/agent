@@ -1,4 +1,4 @@
-import type { SessionRow } from '@zergx-agent/schema'
+import type { SessionRow } from '@easylab-agent/schema'
 import { sql as dsql, eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'

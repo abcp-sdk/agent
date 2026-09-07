@@ -1,5 +1,5 @@
 {
-  "name": "@zergx-agent/agent",
+  "name": "@easylab-agent/agent",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,7 +21,7 @@
     "@ai-sdk/openai": "^4.0.45",
     "@ai-sdk/openai-compatible": "^3.0.34",
     "@opencode-ai/models": "^0.0.50",
-    "@zergx-agent/schema": "*",
+    "@easylab-agent/schema": "*",
     "ai": "^7.0.73",
     "drizzle-orm": "^1.0.0-rc.4",
     "neverthrow": "^8.2.0",

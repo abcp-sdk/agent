@@ -6,7 +6,7 @@ import {
   renewSession,
   setSessionVariable,
 } from '@abc-protocol/sdk'
-import type { PartRow, PresetRow } from '@zergx-agent/schema'
+import type { PartRow, PresetRow } from '@easylab-agent/schema'
 import type { ModelMessage, Tool } from 'ai'
 import { streamText } from 'ai'
 import { err, ok, type Result } from 'neverthrow'
@@ -600,7 +600,7 @@ async function prepare(
   const locale = resolveLocale(
     session.locale,
     configLocale,
-    process.env.ZERGX_LOCALE ?? 'en',
+    process.env.LOCALE ?? 'en',
   )
 
   const discovered = await discoverToolsCached(deps.bus)

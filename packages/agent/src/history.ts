@@ -1,4 +1,4 @@
-import type { MessageRow, PartRow } from '@zergx-agent/schema'
+import type { MessageRow, PartRow } from '@easylab-agent/schema'
 import type { ModelMessage } from 'ai'
 import {
   FilePartDataSchema,

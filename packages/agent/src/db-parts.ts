@@ -1,4 +1,4 @@
-import type { PartRow } from '@zergx-agent/schema'
+import type { PartRow } from '@easylab-agent/schema'
 import { inArray } from 'drizzle-orm'
 import { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'

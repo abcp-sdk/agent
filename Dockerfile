@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/root/.npm \
 FROM ${REGISTRY}/library/alpine:3.24
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
     && apk add --no-cache ca-certificates libstdc++
-COPY --from=build /build/.sea/zergx-agent /usr/local/bin/zergx-agent
+COPY --from=build /build/.sea/easylab-agent /usr/local/bin/easylab-agent
 ENV ZERGX_PORT=8080
 EXPOSE 8080
-ENTRYPOINT ["zergx-agent"]
+ENTRYPOINT ["easylab-agent"]

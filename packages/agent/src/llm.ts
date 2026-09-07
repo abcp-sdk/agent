@@ -3,7 +3,7 @@ import { createDeepSeek } from '@ai-sdk/deepseek'
 import { createGoogle } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import type { ProviderRow } from '@zergx-agent/schema'
+import type { ProviderRow } from '@easylab-agent/schema'
 import type { LanguageModel } from 'ai'
 import { err, ok, type Result } from 'neverthrow'
 import { z } from 'zod'
@@ -42,7 +42,7 @@ export function validateApiType(apiType: string): Result<void, string> {
       )
 }
 
-/** Pure model factory — mirrors zergx provider.ts. */
+/** Pure model factory — mirrors the provider registry. */
 export function buildModelForApiType(
   credentials: ProviderCredentials,
   modelId: string,
@@ -227,7 +227,7 @@ export class LlmRegistry {
       this.config.llmModel === ''
     ) {
       return err(
-        `no provider configured for model '${modelId}' — register a provider or set ZERGX_LLM_*`,
+        `no provider configured for model '${modelId}' — register a provider or set LLM_*`,
       )
     }
     const fallback = buildModelForApiType(

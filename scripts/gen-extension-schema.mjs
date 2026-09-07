@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
  * single source of truth. The TS side imports the zod schemas directly; this
  * file is the interop bridge.
  *
- * Run as part of `npm run build -w @zergx-agent/schema` (cwd is the schema
+ * Run as part of `npm run build -w @easylab-agent/schema` (cwd is the schema
  * package dir, so `dist/index.js` is relative to process.cwd()).
  */
 

@@ -6,7 +6,7 @@ import {
   randomCode,
   sha256Hex,
   upsertFile,
-} from '@zergx-agent/agent'
+} from '@easylab-agent/agent'
 import { z } from 'zod'
 import type { AppEnv } from '../context.js'
 

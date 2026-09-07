@@ -1,5 +1,5 @@
 {
-  "name": "@zergx-agent/schema",
+  "name": "@easylab-agent/schema",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",

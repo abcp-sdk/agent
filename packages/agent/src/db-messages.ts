@@ -1,4 +1,4 @@
-import type { FilePartData, MessageRow } from '@zergx-agent/schema'
+import type { FilePartData, MessageRow } from '@easylab-agent/schema'
 import { eq, inArray } from 'drizzle-orm'
 import { err, ok, ResultAsync } from 'neverthrow'
 import { z } from 'zod'

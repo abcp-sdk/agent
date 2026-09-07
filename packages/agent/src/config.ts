@@ -52,34 +52,34 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     return v !== undefined && v !== '' ? v : d
   }
 
-  const pgUrl = `postgres://${or('POSTGRES_USER', 'root')}:${or('POSTGRES_PASSWORD', 'devpassword')}@${or('POSTGRES_HOST', 'postgres.zergx.svc.cluster.local')}:${or('POSTGRES_PORT', '5432')}/${or('POSTGRES_DB_AGENT', 'zergx_agent')}`
+  const pgUrl = `postgres://${or('POSTGRES_USER', 'root')}:${or('POSTGRES_PASSWORD', 'devpassword')}@${or('POSTGRES_HOST', 'postgres.easylab.svc.cluster.local')}:${or('POSTGRES_PORT', '5432')}/${or('POSTGRES_DB_AGENT', 'easylab_agent')}`
 
   const backend = resolveBackend(env)
 
   return {
-    port: Number.parseInt(or('ZERGX_PORT', '8080'), 10),
+    port: Number.parseInt(or('PORT', '8080'), 10),
     backend,
     postgresUrl: pgUrl,
     dbUrl:
       backend === 'sqlite'
-        ? or('DATABASE_URL', 'sqlite:///data/zergx-agent.db')
+        ? or('DATABASE_URL', 'sqlite:///data/easylab-agent.db')
         : pgUrl,
-    natsUrl: or('NATS_URL', 'nats://nats.zergx.svc.cluster.local:4222'),
+    natsUrl: or('NATS_URL', 'nats://nats.easylab.svc.cluster.local:4222'),
     extensionDiscoverMs: Number.parseInt(
-      or('ZERGX_EXTENSION_DISCOVER_MS', '500'),
+      or('EXTENSION_DISCOVER_MS', '500'),
       10,
     ),
     toolTimeoutMs:
-      Number.parseInt(or('ZERGX_TOOL_TIMEOUT_SECS', '600'), 10) * 1000,
-    llmApiType: or('ZERGX_LLM_API_TYPE', ''),
-    llmBaseUrl: or('ZERGX_LLM_BASE_URL', ''),
-    llmApiKey: or('ZERGX_LLM_API_KEY', ''),
-    llmModel: or('ZERGX_LLM_MODEL', ''),
-    defaultMaxTurns: Number.parseInt(or('ZERGX_DEFAULT_MAX_TURNS', '25'), 10),
-    defaultTemperature: Number.parseFloat(or('ZERGX_LLM_TEMPERATURE', '0')),
-    defaultMaxTokens: Number.parseInt(or('ZERGX_LLM_MAX_TOKENS', '32768'), 10),
+      Number.parseInt(or('TOOL_TIMEOUT_SECS', '600'), 10) * 1000,
+    llmApiType: or('LLM_API_TYPE', ''),
+    llmBaseUrl: or('LLM_BASE_URL', ''),
+    llmApiKey: or('LLM_API_KEY', ''),
+    llmModel: or('LLM_MODEL', ''),
+    defaultMaxTurns: Number.parseInt(or('DEFAULT_MAX_TURNS', '25'), 10),
+    defaultTemperature: Number.parseFloat(or('LLM_TEMPERATURE', '0')),
+    defaultMaxTokens: Number.parseInt(or('LLM_MAX_TOKENS', '32768'), 10),
     compactionContextTokens: Number.parseInt(
-      or('ZERGX_COMPACTION_CONTEXT_TOKENS', '200000'),
+      or('COMPACTION_CONTEXT_TOKENS', '200000'),
       10,
     ),
     filesStorage: or('FILE_STORAGE', 'nats'),

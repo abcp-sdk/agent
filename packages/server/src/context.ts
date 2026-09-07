@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentDeps, LlmRegistry } from '@zergx-agent/agent'
+import type { AgentDeps, LlmRegistry } from '@easylab-agent/agent'
 
 export type AppEnv = { Variables: { deps: AgentDeps } }
 

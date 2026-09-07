@@ -1,6 +1,6 @@
 import { createRoute, OpenAPIHono } from '@hono/zod-openapi'
-import { dispatchDecision, Worksheets } from '@zergx-agent/agent'
-import { WorksheetRowSchema } from '@zergx-agent/schema'
+import { dispatchDecision, Worksheets } from '@easylab-agent/agent'
+import { WorksheetRowSchema } from '@easylab-agent/schema'
 import { z } from 'zod'
 import type { AppEnv } from '../context.js'
 

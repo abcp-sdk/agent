@@ -3,11 +3,11 @@
 /* eslint-disable */
 // @ts-nocheck
 
-// Agent API: the zergx session backend (formerly the Hono/zod-openapi
+// Agent API: the shared abc session backend (formerly the Hono/zod-openapi
 // surface under /api/v1). The single source of truth for the agent contract.
 // Server: agent (TypeScript). Clients: easylab gateway, ext servers, Flutter.
 
-import { CompactRequest, CompactResponse, CreateSessionRequest, CreateSessionResponse, DecideWorksheetRequest, DecideWorksheetResponse, DeletePresetRequest, DeletePresetResponse, DeleteProviderRequest, DeleteProviderResponse, DeleteSessionRequest, DeleteSessionResponse, ForkRequest, ForkResponse, GetConfigRequest, GetConfigResponse, GetFileMetaRequest, GetFileMetaResponse, GetFileRequest, GetFileResponse, GetSessionRequest, GetSessionResponse, GetToolConfigRequest, GetToolConfigResponse, GetZergxConfigRequest, GetZergxConfigResponse, HealthRequest, HealthResponse, IngestFileRequest, IngestFileResponse, InterruptRequest, InterruptResponse, ListMessagesRequest, ListMessagesResponse, ListModelsRequest, ListModelsResponse, ListPresetsRequest, ListPresetsResponse, ListProvidersCatalogRequest, ListProvidersCatalogResponse, ListProvidersRequest, ListProvidersResponse, ListSessionsRequest, ListSessionsResponse, ListToolsRequest, ListToolsResponse, ListWorksheetsRequest, ListWorksheetsResponse, MailboxRequest, MailboxResponse, PreviewPresetRequest, PreviewPresetResponse, PromptRequest, PromptResponse, RegisterProviderRequest, RegisterProviderResponse, RenameRequest, RenameResponse, SetConfigRequest, SetConfigResponse, SetExtensionConfigRequest, SetExtensionConfigResponse, SetModelRequest, SetModelResponse, SetToolConfigRequest, SetToolConfigResponse, StateRequest, StateResponse, TestProviderRequest, TestProviderResponse, UndoRequest, UndoResponse, UpdateSettingsRequest, UpdateSettingsResponse, UploadFileRequest, UploadFileResponse, UpsertPresetRequest, UpsertPresetResponse } from "./agent_pb.js";
+import { CompactRequest, CompactResponse, CreateSessionRequest, CreateSessionResponse, DecideWorksheetRequest, DecideWorksheetResponse, DeletePresetRequest, DeletePresetResponse, DeleteProviderRequest, DeleteProviderResponse, DeleteSessionRequest, DeleteSessionResponse, ForkRequest, ForkResponse, GetAgentConfigRequest, GetAgentConfigResponse, GetConfigRequest, GetConfigResponse, GetFileMetaRequest, GetFileMetaResponse, GetFileRequest, GetFileResponse, GetSessionRequest, GetSessionResponse, GetToolConfigRequest, GetToolConfigResponse, HealthRequest, HealthResponse, IngestFileRequest, IngestFileResponse, InterruptRequest, InterruptResponse, ListMessagesRequest, ListMessagesResponse, ListModelsRequest, ListModelsResponse, ListPresetsRequest, ListPresetsResponse, ListProvidersCatalogRequest, ListProvidersCatalogResponse, ListProvidersRequest, ListProvidersResponse, ListSessionsRequest, ListSessionsResponse, ListToolsRequest, ListToolsResponse, ListWorksheetsRequest, ListWorksheetsResponse, MailboxRequest, MailboxResponse, PreviewPresetRequest, PreviewPresetResponse, PromptRequest, PromptResponse, RegisterProviderRequest, RegisterProviderResponse, RenameRequest, RenameResponse, SetConfigRequest, SetConfigResponse, SetExtensionConfigRequest, SetExtensionConfigResponse, SetModelRequest, SetModelResponse, SetToolConfigRequest, SetToolConfigResponse, StateRequest, StateResponse, TestProviderRequest, TestProviderResponse, UndoRequest, UndoResponse, UpdateSettingsRequest, UpdateSettingsResponse, UploadFileRequest, UploadFileResponse, UpsertPresetRequest, UpsertPresetResponse, WatchSessionRequest, WatchSessionResponse } from "./agent_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -79,6 +79,15 @@ export const AgentService = {
       name: "Prompt",
       I: PromptRequest,
       O: PromptResponse,
+      kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * @generated from rpc agent.v1.AgentService.WatchSession
+     */
+    watchSession: {
+      name: "WatchSession",
+      I: WatchSessionRequest,
+      O: WatchSessionResponse,
       kind: MethodKind.ServerStreaming,
     },
     /**
@@ -361,12 +370,12 @@ export const AgentService = {
       kind: MethodKind.Unary,
     },
     /**
-     * @generated from rpc agent.v1.AgentService.GetZergxConfig
+     * @generated from rpc agent.v1.AgentService.GetAgentConfig
      */
-    getZergxConfig: {
-      name: "GetZergxConfig",
-      I: GetZergxConfigRequest,
-      O: GetZergxConfigResponse,
+    getAgentConfig: {
+      name: "GetAgentConfig",
+      I: GetAgentConfigRequest,
+      O: GetAgentConfigResponse,
       kind: MethodKind.Unary,
     },
   }

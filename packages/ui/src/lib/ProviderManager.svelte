@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { api, type Provider } from '$lib/api'
-  import type { CatalogProvider } from '@zergx-agent/schema'
+  import type { CatalogProvider } from '@easylab-agent/schema'
   import { Plus, Trash2, Check, RefreshCw } from '@lucide/svelte'
   import { Button } from '$lib/components/ui/button'
   import { Input } from '$lib/components/ui/input'

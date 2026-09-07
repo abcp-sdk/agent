@@ -7,7 +7,7 @@
 // surfaces. Replaces the hand-written /api/v1/routes. This is the contract the
 // Flutter client and the ext servers consume.
 
-import { BlameRequest, BlameResponse, BranchesRequest, BranchesResponse, BuildRequest, BuildResponse, CloneRepoRequest, CloneRepoResponse, CreateBranchRequest, CreateBranchResponse, CreateRepoRequest, CreateRepoResponse, DeleteBranchRequest, DeleteBranchResponse, DeletePackageRequest, DeletePackageResponse, DeletePackageVersionRequest, DeletePackageVersionResponse, DeleteRepoRequest, DeleteRepoResponse, DeleteServiceRequest, DeleteServiceResponse, DiffRequest, DiffResponse, EnsureOrgRequest, EnsureOrgResponse, EnsureRepoRequest, EnsureRepoResponse, FileHistoryRequest, FileHistoryResponse, ForkRepoRequest, ForkRepoResponse, GetServiceRequest, GetServiceResponse, GetTaskRequest, GetTaskResponse, HealthRequest, HealthResponse, LaunchServiceRequest, LaunchServiceResponse, ListNamespacesRequest, ListNamespacesResponse, ListPackagesRequest, ListPackagesResponse, ListPackageTypesRequest, ListPackageTypesResponse, ListPublishSpecsRequest, ListPublishSpecsResponse, ListReposRequest, ListReposResponse, ListServicesRequest, ListServicesResponse, ListTasksRequest, ListTasksResponse, LogRequest, LogResponse, OpsStatusRequest, OpsStatusResponse, PackageVersionsRequest, PackageVersionsResponse, ReadBlobRequest, ReadBlobResponse, RevisionsRequest, RevisionsResponse, RunRequest, RunResponse, SandboxExecRequest, SandboxExecResponse, SandboxJobKillRequest, SandboxJobKillResponse, SandboxReadRequest, SandboxReadResponse, SandboxWriteRequest, SandboxWriteResponse, ScaleServiceRequest, ScaleServiceResponse, StatusRequest, StatusResponse, TagsRequest, TagsResponse, TaskLogRequest, TaskLogResponse, TreeRequest, TreeResponse, WriteBlobRequest, WriteBlobResponse } from "./easylab_pb.js";
+import { BlameRequest, BlameResponse, BranchesRequest, BranchesResponse, BuildRequest, BuildResponse, CloneRepoRequest, CloneRepoResponse, CompareRequest, CompareResponse, CreateBranchRequest, CreateBranchResponse, CreateRepoRequest, CreateRepoResponse, DeleteBranchRequest, DeleteBranchResponse, DeletePackageRequest, DeletePackageResponse, DeletePackageVersionRequest, DeletePackageVersionResponse, DeleteRepoRequest, DeleteRepoResponse, DeleteServiceRequest, DeleteServiceResponse, DiffRequest, DiffResponse, EnsureOrgRequest, EnsureOrgResponse, EnsureRepoRequest, EnsureRepoResponse, FileHistoryRequest, FileHistoryResponse, ForkRepoRequest, ForkRepoResponse, GetServiceRequest, GetServiceResponse, GetTaskRequest, GetTaskResponse, GraphRequest, GraphResponse, HealthRequest, HealthResponse, LaunchServiceRequest, LaunchServiceResponse, ListNamespacesRequest, ListNamespacesResponse, ListPackagesRequest, ListPackagesResponse, ListPackageTypesRequest, ListPackageTypesResponse, ListPublishSpecsRequest, ListPublishSpecsResponse, ListReposRequest, ListReposResponse, ListServicesRequest, ListServicesResponse, ListTasksRequest, ListTasksResponse, LogRequest, LogResponse, OpsStatusRequest, OpsStatusResponse, PackageVersionsRequest, PackageVersionsResponse, ReadBlobRequest, ReadBlobResponse, RebaseRequest, RebaseResponse, RevisionsRequest, RevisionsResponse, RunRequest, RunResponse, SandboxExecRequest, SandboxExecResponse, SandboxJobKillRequest, SandboxJobKillResponse, SandboxReadRequest, SandboxReadResponse, SandboxWriteRequest, SandboxWriteResponse, ScaleServiceRequest, ScaleServiceResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SyncRequest, SyncResponse, TagsRequest, TagsResponse, TaskLogRequest, TaskLogResponse, TreeRequest, TreeResponse, WriteBlobRequest, WriteBlobResponse } from "./easylab_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -207,6 +207,42 @@ export const LabService = {
       O: FileHistoryResponse,
       kind: MethodKind.Unary,
     },
+    /**
+     * @generated from rpc easylab.v1.LabService.Search
+     */
+    search: {
+      name: "Search",
+      I: SearchRequest,
+      O: SearchResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc easylab.v1.LabService.Graph
+     */
+    graph: {
+      name: "Graph",
+      I: GraphRequest,
+      O: GraphResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc easylab.v1.LabService.Compare
+     */
+    compare: {
+      name: "Compare",
+      I: CompareRequest,
+      O: CompareResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc easylab.v1.LabService.Rebase
+     */
+    rebase: {
+      name: "Rebase",
+      I: RebaseRequest,
+      O: RebaseResponse,
+      kind: MethodKind.Unary,
+    },
   }
 } as const;
 
@@ -361,6 +397,15 @@ export const OpsService = {
       I: TaskLogRequest,
       O: TaskLogResponse,
       kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * @generated from rpc easylab.v1.OpsService.Sync
+     */
+    sync: {
+      name: "Sync",
+      I: SyncRequest,
+      O: SyncResponse,
+      kind: MethodKind.Unary,
     },
   }
 } as const;

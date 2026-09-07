@@ -1,4 +1,4 @@
-import type { PresetRow } from '@zergx-agent/schema'
+import type { PresetRow } from '@easylab-agent/schema'
 import { errAsync, ResultAsync } from 'neverthrow'
 import type { Bus } from './bus.js'
 import { BUCKET_CONFIG, BUCKET_PRESETS } from './bus.js'
