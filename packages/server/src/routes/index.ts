@@ -4,7 +4,6 @@ import { fileRoutes } from './files.js'
 import { llmRoutes } from './llm.js'
 import { providerRoutes } from './providers.js'
 import { sessionRoutes } from './sessions.js'
-import { worksheetRoutes } from './worksheets.js'
 
 /**
  * The REST facade router. Each sub-router's paths already carry their own
@@ -21,6 +20,5 @@ export function buildRoutes(): Router {
   configRoutes(router)
   llmRoutes(router)
   fileRoutes(router)
-  worksheetRoutes(router)
   return router
 }

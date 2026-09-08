@@ -63,24 +63,6 @@ export const MailboxEnvelopeSchema = z.object({
 })
 export type MailboxEnvelope = z.infer<typeof MailboxEnvelopeSchema>
 
-/**
- * The worksheet proposal an extension publishes into a session's mailbox
- * (`type: "worksheet_proposed"`). The consumer lands it directly in the
- * `worksheets` table — it never enters the model context and never wakes
- * the session (the tool ack already told the model the worksheet exists).
- * `args` is opaque to the agent: it belongs to the publishing extension and
- * is echoed back verbatim on the decide hook.
- */
-export const WorksheetProposedSchema = z.object({
-  worksheet_id: z.string().min(1),
-  ext_id: z.string().min(1),
-  action: z.string().min(1),
-  args: z.unknown().optional(),
-  title: z.string().optional(),
-  origin_call_id: z.string().optional(),
-})
-export type WorksheetProposed = z.infer<typeof WorksheetProposedSchema>
-
 export const ContentPayloadSchema = z.object({
   content: z.string().optional(),
   text: z.string().optional(),

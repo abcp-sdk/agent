@@ -54,14 +54,10 @@ describe('system preset set', () => {
     expect(buildTools).toContain('service-list')
     expect(buildTools).toContain('package-search')
     expect(buildTools).toContain('pull-git-repo')
-    // no helm / mr / worksheet in build
+    // no helm / mr in build
     expect(
       buildTools.some(
-        (t: string) =>
-          t.startsWith('helm') ||
-          t.startsWith('mr') ||
-          t === 'fork-bookmark' ||
-          t === 'delete-bookmark',
+        (t: string) => t.startsWith('helm') || t.startsWith('mr'),
       ),
     ).toBe(false)
     // plan has no writes/sandbox/build

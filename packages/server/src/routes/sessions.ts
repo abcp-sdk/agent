@@ -322,10 +322,8 @@ export function sessionRoutes(r: Router): void {
         name: b.name,
         model: p.model,
         // Manual fork/rename inherits the parent's full config (model, preset,
-        // system_prompt, max_turns, locale) so it behaves identically. ONLY the
-        // repo-extension `fork-branch` worksheet overrides preset to 'build'
-        // (a work-branch sub-agent must edit/build); it passes explicit `preset`
-        // in the fork body, which wins here.
+        // system_prompt, max_turns, locale) so it behaves identically. An
+        // explicit `preset` in the fork body wins over the inherited default.
         preset: b.preset ?? (p.preset !== '' ? p.preset : DEFAULT_PRESET),
         systemPrompt: p.system_prompt,
         maxTurns: p.max_turns,

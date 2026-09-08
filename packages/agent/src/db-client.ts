@@ -107,21 +107,6 @@ CREATE TABLE IF NOT EXISTS mailbox (
 );
 CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (session_name);
 
-CREATE TABLE IF NOT EXISTS worksheets (
-    id TEXT PRIMARY KEY,
-    session_name TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE,
-    ext_id TEXT NOT NULL,
-    action TEXT NOT NULL,
-    args TEXT NOT NULL DEFAULT '{}',
-    title TEXT NOT NULL DEFAULT '',
-    origin_call_id TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL DEFAULT (NOW()::text),
-    decided_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_ws_session ON worksheets (session_name);
-CREATE INDEX IF NOT EXISTS idx_ws_status ON worksheets (status);
-
 CREATE TABLE IF NOT EXISTS providers (
     provider_id TEXT PRIMARY KEY,
     api_type TEXT NOT NULL DEFAULT 'openai-compatible',
@@ -190,21 +175,6 @@ CREATE TABLE IF NOT EXISTS mailbox (
     seq INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (session_name);
-
-CREATE TABLE IF NOT EXISTS worksheets (
-    id TEXT PRIMARY KEY,
-    session_name TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE,
-    ext_id TEXT NOT NULL,
-    action TEXT NOT NULL,
-    args TEXT NOT NULL DEFAULT '{}',
-    title TEXT NOT NULL DEFAULT '',
-    origin_call_id TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    decided_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_ws_session ON worksheets (session_name);
-CREATE INDEX IF NOT EXISTS idx_ws_status ON worksheets (status);
 
 CREATE TABLE IF NOT EXISTS providers (
     provider_id TEXT PRIMARY KEY,

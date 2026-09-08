@@ -59,21 +59,6 @@ export const mailbox = sqliteTable('mailbox', {
   seq: integer('seq'),
 })
 
-export const worksheets = sqliteTable('worksheets', {
-  id: text('id').primaryKey(),
-  sessionName: text('session_name')
-    .notNull()
-    .references(() => sessions.name, { onDelete: 'cascade' }),
-  extId: text('ext_id').notNull(),
-  action: text('action').notNull(),
-  args: text('args').notNull().default('{}'),
-  title: text('title').notNull().default(''),
-  originCallId: text('origin_call_id'),
-  status: text('status').notNull().default('pending'),
-  createdAt: text('created_at').notNull(),
-  decidedAt: text('decided_at'),
-})
-
 export const providers = sqliteTable('providers', {
   providerId: text('provider_id').primaryKey(),
   apiType: text('api_type').notNull().default('openai-compatible'),

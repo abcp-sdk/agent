@@ -5,7 +5,6 @@ import {
   compactSession,
   deleteSessionIds,
   discoverTools,
-  dispatchDecision,
   fileByCode,
   fireAndForget,
   interruptRun,
@@ -84,19 +83,6 @@ interface PresetRowView {
   tools?: string | null | undefined
   max_turns?: number | null | undefined
   is_system?: boolean | null | undefined
-}
-
-interface WorksheetRowView {
-  id: string
-  session_name?: string | null | undefined
-  ext_id?: string | null | undefined
-  action?: string | null | undefined
-  args?: string | null | undefined
-  title?: string | null | undefined
-  origin_call_id?: string | null | undefined
-  status?: string | null | undefined
-  created_at?: string | null | undefined
-  decided_at?: string | null | undefined
 }
 
 /** Runtime type guard: a plain string-keyed object (not an array). */
@@ -192,21 +178,6 @@ function presetToMsg(p: PresetRowView) {
     tools,
     maxTurns: p.max_turns ?? 0,
     isSystem: p.is_system ?? false,
-  }
-}
-
-function worksheetToMsg(w: WorksheetRowView) {
-  return {
-    id: w.id ?? '',
-    sessionName: w.session_name ?? '',
-    extId: w.ext_id ?? '',
-    action: w.action ?? '',
-    args: w.args ?? '',
-    title: w.title ?? '',
-    originCallId: w.origin_call_id ?? '',
-    status: w.status ?? '',
-    createdAt: w.created_at ?? '',
-    decidedAt: w.decided_at ?? '',
   }
 }
 
@@ -713,43 +684,6 @@ export function buildConnectRoutes(
           size: row.value.size ?? 0,
         }
       },
-      async listWorksheets(req) {
-        const id = req.id
-        const r = await Worksheets.listBySession(deps.db, id)
-        if (r.isErr()) throw new Error(r.error)
-        return { worksheets: r.value.map(worksheetToMsg) }
-      },
-      async decideWorksheet(req) {
-        const { id, wid, decision } = req
-        const row = await Worksheets.get(deps.db, wid)
-        if (row.isErr()) throw new Error(row.error)
-        if (row.value === null || row.value.session_name !== id)
-          throw new Error('worksheet not found')
-        const claimed = await Worksheets.claimForDispatch(deps.db, wid)
-        if (claimed.isErr()) throw new Error(claimed.error)
-        if (claimed.value === null) throw new Error('worksheet is not pending')
-        let args: Record<string, unknown> = {}
-        try {
-          const v: unknown = JSON.parse(row.value.args)
-          if (isRecord(v)) args = v
-        } catch {
-          args = {}
-        }
-        const err = await dispatchDecision(
-          deps,
-          wid,
-          row.value.session_name,
-          row.value.ext_id,
-          row.value.action,
-          args,
-          decision as 'approve' | 'reject',
-        )
-        if (err !== null && decision === 'approve') {
-          await Worksheets.rollbackToPending(deps.db, wid)
-          throw new Error(err)
-        }
-        return { ok: true }
-      },
       async getAgentConfig() {
         const r = await Providers.list(deps.db)
         if (r.isErr()) throw new Error(r.error)
@@ -774,7 +708,6 @@ export function buildConnectRoutes(
 import {
   upsertFile,
   fileBySha,
-  Worksheets,
   randomCode,
   type FileRecord,
 } from '@easylab-agent/agent'

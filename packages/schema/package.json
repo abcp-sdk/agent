@@ -19,7 +19,7 @@
     "@connectrpc/connect": "^2.2.0",
     "neverthrow": "^8.2.0",
     "zod": "^4.4.3",
-    "@easylab/sdk": "github:easylab-platform/easylab-sdk-typescript#v0.2.0"
+    "@easylab/sdk": "github:easylab-platform/easylab-sdk-typescript#v0.4.2"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
