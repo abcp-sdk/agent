@@ -1,5 +1,4 @@
-import { serve } from '@hono/node-server'
-import { buildConnectHandler } from './connect.js'
+import { buildConnectRoutes } from './connect.js'
 import {
   type AgentDeps,
   type Bus,
@@ -19,22 +18,17 @@ import {
   watchMailboxWake,
   watchWorksheetReconciler,
 } from '@easylab-agent/agent'
-import { Hono } from 'hono'
-import { HTTPException } from 'hono/http-exception'
-import { app } from './app.js'
-import type { AppEnv } from './context.js'
+import {
+  connectNodeAdapter,
+  type ConnectNodeAdapterOptions,
+} from '@connectrpc/connect-node'
+import { createServer } from 'node:http2'
+import { buildApp } from './app.js'
+import { handleRest, isRecord, serveStatic } from './http.js'
 
-export type { AppType } from './app.js'
-
-const MIME: Record<string, string> = {
-  '.html': 'text/html',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
+/** Runtime type guard for an unknown function value. */
+function isFn(v: unknown): v is () => unknown {
+  return typeof v === 'function'
 }
 
 /**
@@ -70,31 +64,6 @@ function getSeaAsset(key: string): ArrayBuffer | null {
     return sea.getRawAsset(key) ?? null
   } catch {
     return null
-  }
-}
-
-/** Serve the SPA from embedded SEA assets (single-executable deployment). */
-function seaStatic() {
-  return async (c: import('hono').Context<AppEnv>) => {
-    const path = new URL(c.req.url).pathname
-    // Route non-asset paths to the SPA entry.
-    const asset =
-      path === '/' || !path.includes('.') ? 'index.html' : path.slice(1)
-    const data = getSeaAsset(asset)
-    if (data === null) {
-      // Fall back to index.html for client-side routing.
-      const index = getSeaAsset('index.html')
-      if (index === null) return c.json({ ok: false, error: 'not found' }, 404)
-      return new Response(index, {
-        headers: { 'content-type': 'text/html' },
-      })
-    }
-    const ext = asset.slice(asset.lastIndexOf('.'))
-    return new Response(data, {
-      headers: {
-        'content-type': MIME[ext] ?? 'application/octet-stream',
-      },
-    })
   }
 }
 
@@ -167,47 +136,47 @@ async function main(): Promise<void> {
     files,
   }
 
-  // Build the full outer app: deps-injection + error handling + sea-static are
-  // registered BEFORE mounting the routes, mirroring the E1 framework's order
-  // (contextMiddleware → onError → route), so mounted handlers always see
-  // `c.get('deps')`.
-  const servingApp = new Hono<AppEnv>()
+  // ---- serving surface: HTTP/2 only (h2c prior knowledge), no framework ----
+  // 1. RPC: the Connect AgentService (/agent.v1.AgentService/*) is served by
+  //    @connectrpc/connect-node on all three protocols (connect, gRPC with
+  //    proper HTTP/2 trailers, gRPC-web). This is the adapter's officially
+  //    supported http2 mode.
+  // 2. REST facade (/api/v1) + the SEA-served SPA ride the adapter fallback
+  //    through a tiny strongly-typed native dispatcher.
+  // Clients must speak HTTP/2 prior knowledge (the easylab Go gateway uses an
+  // unencrypted-h2 transport; curl uses --http2-prior-knowledge).
 
-  servingApp.use('*', async (c, next) => {
-    c.set('deps', deps)
-    await next()
-  })
+  const restRouter = buildApp()
 
-  servingApp.onError((err, c) => {
-    if (err instanceof HTTPException) {
-      if (err.res) return c.newResponse(err.res.body, err.res)
-      return c.json({ ok: false, error: err.message }, err.status)
+  const fallback: NonNullable<ConnectNodeAdapterOptions['fallback']> = async (
+    req,
+    res,
+  ) => {
+    const url = new URL(
+      req.url ?? '/',
+      `http://${req.headers.host ?? 'localhost'}`,
+    )
+    const pathname = url.pathname
+    if (pathname === '/api/v1' || pathname.startsWith('/api/v1/')) {
+      const rel = pathname.slice('/api/v1'.length) || '/'
+      await handleRest(restRouter, deps, rel, req, res)
+      return
     }
-    logger.error({ err }, 'unhandled error')
-    return c.json({ ok: false, error: 'Internal Server Error' }, 500)
+    serveStatic(res, getSeaAsset, pathname)
+  }
+
+  const handler = connectNodeAdapter({
+    routes: buildConnectRoutes(deps),
+    grpc: true,
+    grpcWeb: true,
+    connect: true,
+    fallback,
   })
 
-  servingApp.route('/api/v1', app)
-
-  // Strong-typed Connect contract surface (AgentService). Mounted at the
-  // Connect procedural paths (/agent.v1.AgentService/* ). Replaces the loose
-  // hand-written session/providers/config surface for Connect clients (Flutter,
-  // easylab gateway, ext servers) while the REST facade stays for compat.
-  const connectHandler = buildConnectHandler(deps)
-  servingApp.use('/agent.v1/*', async c => {
-    const req = c.req.raw
-    const url = new URL(req.url)
-    // Hono rewrites to the route's base; reconstruct the full path the Connect
-    // handler expects (its handlers key on requestPath like
-    // "/agent.v1.AgentService/ListSessions").
-    const path = '/agent.v1' + url.pathname.replace(/^\/agent\.v1/, '')
-    const rpcReq = new Request(`${url.origin}${path}`, req)
-    const res = await connectHandler(rpcReq)
-    return res
+  const server = createServer(handler)
+  server.listen(config.port, () => {
+    logger.info({ port: config.port, pid: process.pid }, 'listening (h2c)')
   })
-
-  // Serve the SPA from embedded SEA assets (single-executable deployment).
-  servingApp.use('*', seaStatic())
 
   // Watch every session's mailbox wake wildcard so this replica can claim and
   // run work for any session — the horizontal scale-out trigger.
@@ -221,21 +190,24 @@ async function main(): Promise<void> {
     e => logger.warn({ err: String(e) }, 'models.dev refresh failed'),
   )
 
-  const server = serve({ fetch: servingApp.fetch, port: config.port }, info => {
-    logger.info({ port: info.port, pid: process.pid }, 'listening')
-  })
+  /** Structural access to the sqlite/pg client's close hook (no casts). */
+  const closeDb = (): Promise<unknown> => {
+    if (!isRecord(db)) return Promise.resolve()
+    const client = db['$client']
+    if (!isRecord(client)) return Promise.resolve()
+    const endFn = client['end']
+    if (isFn(endFn)) return Promise.resolve(endFn.call(client))
+    const closeFn = client['close']
+    if (isFn(closeFn)) return Promise.resolve(closeFn.call(client))
+    return Promise.resolve()
+  }
 
   const shutdown = () => {
     logger.info('shutting down')
     stopWake()
     server.close(() => {
       bus.close()
-      const end = (
-        db as { $client: { end?: () => Promise<unknown>; close?: () => void } }
-      ).$client
-      void Promise.resolve(
-        typeof end.end === 'function' ? end.end() : end.close?.(),
-      ).then(
+      void closeDb().then(
         () => process.exit(0),
         () => process.exit(0),
       )

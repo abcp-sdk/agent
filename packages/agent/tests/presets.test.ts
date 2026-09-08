@@ -45,7 +45,7 @@ describe('system preset set', () => {
     const exploreTools = JSON.parse(explore.tools)
     // build has repo writes + sandbox + build/deploy/publish + read-only searches
     expect(buildTools).toContain('write')
-    expect(buildTools).toContain('git-rebase')
+    expect(buildTools).toContain('vcs-rebase')
     expect(buildTools).toContain('sandbox-run')
     expect(buildTools).toContain('container-build')
     expect(buildTools).toContain('package-publish')
@@ -130,13 +130,15 @@ describe('Presets.seedDefaults', () => {
     )
     await Presets.seedDefaults(bus)
     const after = await bus.kvGet(BUCKET, edited.id)
-    expect(after).toBe(JSON.stringify({
-      id: edited.id,
-      system_prompt: edited.systemPrompt,
-      system_prompt_i18n: edited.systemPromptI18n,
-      tools: edited.tools,
-      max_turns: edited.maxTurns,
-    }))
+    expect(after).toBe(
+      JSON.stringify({
+        id: edited.id,
+        system_prompt: edited.systemPrompt,
+        system_prompt_i18n: edited.systemPromptI18n,
+        tools: edited.tools,
+        max_turns: edited.maxTurns,
+      }),
+    )
   })
 
   it('leaves an already-correct system preset unchanged', async () => {

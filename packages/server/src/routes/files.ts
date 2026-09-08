@@ -1,4 +1,3 @@
-import { createRoute, OpenAPIHono } from '@hono/zod-openapi'
 import {
   type FileRecord,
   fileByCode,
@@ -7,20 +6,8 @@ import {
   sha256Hex,
   upsertFile,
 } from '@easylab-agent/agent'
-import { z } from 'zod'
-import type { AppEnv } from '../context.js'
-
-const ErrorSchema = z.object({ ok: z.boolean(), error: z.string() })
-
-const fileJsonSchema = z.object({
-  code: z.string(),
-  sha256: z.string(),
-  name: z.string(),
-  mime: z.string(),
-  size: z.number(),
-  uploader_session: z.string(),
-  created_at: z.string(),
-})
+import type { AgentDeps } from '@easylab-agent/agent'
+import { type Router } from '../http.js'
 
 function fileToJson(f: FileRecord) {
   return {
@@ -36,7 +23,7 @@ function fileToJson(f: FileRecord) {
 
 /** Dedup + store a single file. Shared by upload (multipart) and ingest (tool bytes). */
 async function storeBytes(
-  deps: AppEnv['Variables']['deps'],
+  deps: AgentDeps,
   data: Uint8Array,
   name: string,
   mime: string,
@@ -63,92 +50,12 @@ async function storeBytes(
   return record
 }
 
-const uploadFileRoute = createRoute({
-  method: 'post',
-  path: '/files',
-  summary: 'Upload a file (multipart)',
-  request: {},
-  responses: {
-    200: {
-      description: 'File',
-      content: { 'application/json': { schema: fileJsonSchema } },
-    },
-    400: {
-      description: 'Bad request',
-      content: { 'application/json': { schema: ErrorSchema } },
-    },
-    500: {
-      description: 'Error',
-      content: { 'application/json': { schema: ErrorSchema } },
-    },
-  },
-})
-
-const ingestFileRoute = createRoute({
-  method: 'post',
-  path: '/files/ingest',
-  summary: 'Ingest raw bytes (tool-generated, e.g. screenshots)',
-  description:
-    'Stores raw body bytes under a new code, deduplicating by sha256. Used by tools that produce binary artifacts (browser screenshots, PDFs) so they can hand the model a `file:<code>` reference instead of embedding bytes.',
-  responses: {
-    200: {
-      description: 'File',
-      content: { 'application/json': { schema: fileJsonSchema } },
-    },
-    400: {
-      description: 'Bad request',
-      content: { 'application/json': { schema: ErrorSchema } },
-    },
-    500: {
-      description: 'Error',
-      content: { 'application/json': { schema: ErrorSchema } },
-    },
-  },
-})
-
-const getFileRoute = createRoute({
-  method: 'get',
-  path: '/files/{code}',
-  summary: 'Download a file',
-  responses: {
-    200: { description: 'File bytes' },
-    404: {
-      description: 'Not found',
-      content: { 'application/json': { schema: ErrorSchema } },
-    },
-    500: {
-      description: 'Error',
-      content: { 'application/json': { schema: ErrorSchema } },
-    },
-  },
-})
-
-const getFileMetaRoute = createRoute({
-  method: 'get',
-  path: '/files/{code}/meta',
-  summary: 'Get file metadata',
-  responses: {
-    200: {
-      description: 'Meta',
-      content: { 'application/json': { schema: fileJsonSchema } },
-    },
-    404: {
-      description: 'Not found',
-      content: { 'application/json': { schema: ErrorSchema } },
-    },
-    500: {
-      description: 'Error',
-      content: { 'application/json': { schema: ErrorSchema } },
-    },
-  },
-})
-
-export const fileRoutes = new OpenAPIHono<AppEnv>()
-  .openapi(uploadFileRoute, async c => {
-    const deps = c.get('deps')
-    const body = await c.req.parseBody()
-    const file = body.file
-    const uploader = (body.uploader_session as string) || ''
+export function fileRoutes(r: Router): void {
+  r.post('/files', async c => {
+    const deps = c.deps
+    const body = await c.req.raw.formData()
+    const file = body.get('file')
+    const uploader = (body.get('uploader_session') as string) || ''
     if (!(file instanceof File)) {
       return c.json(
         { ok: false, error: 'file field required (multipart)' },
@@ -167,20 +74,22 @@ export const fileRoutes = new OpenAPIHono<AppEnv>()
     )
     return c.json(fileToJson(record), 200)
   })
-  .openapi(ingestFileRoute, async c => {
-    const deps = c.get('deps')
-    const name = c.req.query('name') || 'artifact'
-    const mime = c.req.query('content_type') || 'application/octet-stream'
-    const uploader = c.req.query('uploader_session') || ''
+
+  r.post('/files/ingest', async c => {
+    const deps = c.deps
+    const name = c.req.query.get('name') || 'artifact'
+    const mime = c.req.query.get('content_type') || 'application/octet-stream'
+    const uploader = c.req.query.get('uploader_session') || ''
     const data = new Uint8Array(await c.req.raw.arrayBuffer())
     if (data.length === 0)
       return c.json({ ok: false, error: 'empty body' }, 400)
     const record = await storeBytes(deps, data, name, mime, uploader)
     return c.json(fileToJson(record), 200)
   })
-  .openapi(getFileRoute, async c => {
-    const deps = c.get('deps')
-    const code = c.req.param('code')
+
+  r.get('/files/:code', async c => {
+    const deps = c.deps
+    const code = c.req.params['code'] ?? ''
     const row = await fileByCode(deps.bus, code)
     if (row.isErr()) return c.json({ ok: false, error: row.error }, 500)
     if (row.value === null)
@@ -195,17 +104,23 @@ export const fileRoutes = new OpenAPIHono<AppEnv>()
       return c.json({ ok: false, error: 'file not found' }, 404)
     }
     const ct = meta.mime || 'application/octet-stream'
-    c.header('Content-Type', ct)
-    c.header('Content-Length', String(data.length))
-    c.header('Content-Disposition', `inline; filename="${meta.name || 'file'}"`)
-    return c.body(new Uint8Array(data), 200)
+    return new Response(new Uint8Array(data), {
+      status: 200,
+      headers: {
+        'content-type': ct,
+        'content-length': String(data.length),
+        'content-disposition': `inline; filename="${meta.name || 'file'}"`,
+      },
+    })
   })
-  .openapi(getFileMetaRoute, async c => {
-    const deps = c.get('deps')
-    const code = c.req.param('code')
+
+  r.get('/files/:code/meta', async c => {
+    const deps = c.deps
+    const code = c.req.params['code'] ?? ''
     const row = await fileByCode(deps.bus, code)
     if (row.isErr()) return c.json({ ok: false, error: row.error }, 500)
     if (row.value === null)
       return c.json({ ok: false, error: 'file not found' }, 404)
     return c.json(fileToJson(row.value), 200)
   })
+}

@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentDeps, LlmRegistry } from '@easylab-agent/agent'
 
-export type AppEnv = { Variables: { deps: AgentDeps } }
-
 /**
  * Bounded `eid` dedup for the SSE replay/live handover: replayed events are
  * marked, then live events carrying a seen eid are dropped once. Eviction
