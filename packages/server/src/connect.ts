@@ -34,6 +34,8 @@ import {
   AgentService,
   ListToolsResponseSchema,
   GetAgentConfigResponseSchema,
+  GetFileResponseSchema,
+  IngestFileResponseSchema,
   WatchSessionResponseSchema,
   type WatchSessionResponse,
 } from '@easylab-agent/schema'
@@ -648,10 +650,7 @@ export function buildConnectRoutes(
       async ingestFile(req) {
         const { data: raw, name, mime } = req
         if (raw === undefined) throw new Error('data required')
-        const bytes =
-          typeof raw === 'string'
-            ? new Uint8Array(Buffer.from(raw, 'base64'))
-            : new Uint8Array(raw)
+        const bytes = new Uint8Array(raw)
         const record = await storeBytes(
           deps,
           bytes,
@@ -659,7 +658,7 @@ export function buildConnectRoutes(
           mime ?? 'application/octet-stream',
           '',
         )
-        return { ok: true, code: record.code }
+        return create(IngestFileResponseSchema, { ok: true, code: record.code })
       },
       async getFile(req) {
         const code = req.code
@@ -667,11 +666,11 @@ export function buildConnectRoutes(
         if (row.isErr()) throw new Error(row.error)
         if (row.value === null) throw new Error('file not found')
         const got = await deps.files.get(code)
-        return {
-          data: Buffer.from(got.data).toString('base64'),
+        return create(GetFileResponseSchema, {
+          data: new Uint8Array(got.data),
           name: row.value.name ?? '',
           mime: row.value.mime ?? 'application/octet-stream',
-        }
+        })
       },
       async getFileMeta(req) {
         const code = req.code
