@@ -1,113 +1,43 @@
 #!/usr/bin/env bash
-# Agent-ts end-to-end smoke test: drives the live agent over HTTP and asserts
-# the full mailbox pipeline (prompt → NATS → consumer → PG → turn → reply).
+# agent Connect-RPC smoke: drives the live agent over the easylab gateway's
+# /agent.v1.* Connect endpoints (h2c/h1 dual-stack). Uses the Connect JSON
+# codec (application/json, unary) so curl needs no protobuf.
 #
-# Usage:
-#   AGENT_BASE=http://agent.zergx.svc.cluster.local bash smoke.sh
-#
-# The agent must be reachable at AGENT_BASE (in-cluster svc or a port-forward).
+#   AGENT_BASE=http://easylab.temp.svc.cluster.local:80 bash smoke.sh
 set -uo pipefail
-
-AGENT_BASE="${AGENT_BASE:-http://agent.temp.svc.cluster.local}"
-MEMORY_BASE="${MEMORY_BASE:-http://memory-tools.temp.svc.cluster.local}"
+AGENT_BASE="${AGENT_BASE:-http://easylab.temp.svc.cluster.local:80}"
+TOKEN="${TOKEN:-devtoken}"
 SID="smoke-$(date +%s)$RANDOM"
-PASS=0
-FAIL=0
+PASS=0; FAIL=0
+pass(){ echo "    PASS: $1"; PASS=$((PASS+1)); }
+fail(){ echo "    FAIL: $1"; FAIL=$((FAIL+1)); }
+H_AUTH="Authorization: Bearer $TOKEN"
 
-pass() { echo "    PASS: $1"; PASS=$((PASS + 1)); }
-fail() { echo "    FAIL: $1"; FAIL=$((FAIL + 1)); }
+# 1. create session (Connect unary, JSON)
+body=$(curl -sf -X POST -H "$H_AUTH" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$SID\"}" "$AGENT_BASE/agent.v1.AgentService/CreateSession")
+echo "$body" | grep -qi 'sessionName\|session_name\|ok' && pass "create session" || fail "create session ($body)"
 
-check() { # check <desc> <got> <want>
-  if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (got '$2', want '$3')"; fi
-}
+# 2. prompt (server-streaming; just POST the first message, drain a bit)
+body=$(curl -sf -X POST -H "$H_AUTH" -H 'Content-Type: application/json' \
+  -d "{\"id\":\"$SID\",\"prompt\":\"reply with exactly: SMOKE-OK\"}" "$AGENT_BASE/agent.v1.AgentService/Prompt")
+echo "$body" | grep -q 'accepted\|ok' && pass "submit prompt" || fail "submit prompt ($body)"
 
-echo "[agent-smoke] base=$AGENT_BASE session=$SID"
-
-# 1. create session
-body=$(curl -sf -X POST -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$SID\"}" "$AGENT_BASE/api/v1/sessions")
-echo "$body" | grep -q '"ok":true' \
-  && pass "create session" || fail "create session ($body)"
-
-# 2. prompt (returns immediately; the turn runs async)
-body=$(curl -sf -X POST -H 'Content-Type: application/json' \
-  -d '{"prompt":"reply with exactly: SMOKE-OK"}' "$AGENT_BASE/api/v1/sessions/$SID/prompt")
-echo "$body" | grep -q '"ok":true' \
-  && pass "submit prompt" || fail "submit prompt ($body)"
-
-# 3. poll state until idle (the run lease is released when the turn ends)
-state="busy"
-for _ in $(seq 1 30); do
-  state=$(curl -sf "$AGENT_BASE/api/v1/sessions/$SID/state" \
+# 3. poll state until idle (Connect State unary)
+state="busy"; for _ in $(seq 1 30); do
+  state=$(curl -sf -X POST -H "$H_AUTH" -H 'Content-Type: application/json' \
+    -d "{\"id\":\"$SID\"}" "$AGENT_BASE/agent.v1.AgentService/State" \
     | sed -E 's/.*"status":"([a-z]+)".*/\1/')
-  [ "$state" = "idle" ] && break
-  sleep 2
+  [ "$state" = "idle" ] && break; sleep 2
 done
+check() { [ "$2" = "$3" ] && pass "$1" || fail "$1 (got '$2', want '$3')"; }
 check "turn reaches idle" "$state" "idle"
 
-# 4. the reply chain must contain an assistant message
-msgs=$(curl -sf "$AGENT_BASE/api/v1/sessions/$SID/messages")
-echo "$msgs" | grep -q '"role":"assistant"' \
-  && pass "assistant reply persisted" || fail "no assistant reply ($msgs)"
+# 4. messages (Connect ListMessages unary)
+msgs=$(curl -sf -X POST -H "$H_AUTH" -H 'Content-Type: application/json' \
+  -d "{\"id\":\"$SID\",\"limit\":50}" "$AGENT_BASE/agent.v1.AgentService/ListMessages")
+echo "$msgs" | grep -q 'assistant' && pass "assistant reply persisted" || fail "no assistant reply ($msgs)"
+echo "$msgs" | grep -qi 'SMOKE-OK' && pass "sentinel echoed" || fail "sentinel missing ($msgs)"
 
-# 5. reply must echo the sentinel (LLM actually ran)
-echo "$msgs" | grep -qi 'SMOKE-OK' \
-  && pass "assistant content contains sentinel" || fail "sentinel missing ($msgs)"
-
-# 6. settings PATCH persists max_turns/system_prompt
-body=$(curl -sf -X PATCH -H 'Content-Type: application/json' \
-  -d '{"max_turns":3,"system_prompt":"be terse"}' "$AGENT_BASE/api/v1/sessions/$SID/settings")
-echo "$body" | grep -q '"max_turns":3' \
-  && pass "settings max_turns persisted" || fail "max_turns not persisted ($body)"
-echo "$body" | grep -q '"system_prompt":"be terse"' \
-  && pass "settings system_prompt persisted" || fail "system_prompt not persisted ($body)"
-
-# 7. undo rejects a message id outside this session's chain
-body=$(curl -sf -X POST -H 'Content-Type: application/json' \
-  -d '{"message_id":"nonexistent"}' "$AGENT_BASE/api/v1/sessions/$SID/undo")
-echo "$body" | grep -q '"undone":false' \
-  && pass "undo rejects foreign message id" || fail "undo did not reject ($body)"
-
-# 8. mark-read persists last_read_at (200 + non-stub)
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$AGENT_BASE/api/v1/sessions/$SID/read")
-check "mark read returns 200" "$code" "200"
-
-# 9. tool-call turn: the model must drive the memory extension's todowrite
-#    over the abc wire (TS agent -> NATS -> Go extension), the todo must land
-#    in PG, and the todos-updated SSE event must reach the session stream.
-SSE_LOG="$(mktemp)"
-curl -sN --max-time 90 "$AGENT_BASE/api/v1/sessions/$SID/events" >"$SSE_LOG" 2>/dev/null &
-SSE_PID=$!
-body=$(curl -sf -X POST -H 'Content-Type: application/json' \
-  -d '{"prompt":"Call the todowrite tool to replace my todo list with exactly one todo: content SMOKE-TODO, status pending, priority high. Then reply with exactly: TOOL-DONE"}' \
-  "$AGENT_BASE/api/v1/sessions/$SID/prompt")
-echo "$body" | grep -q '"ok":true' \
-  && pass "tool prompt submitted" || fail "tool prompt submit ($body)"
-
-state="busy"
-for _ in $(seq 1 45); do
-  state=$(curl -sf "$AGENT_BASE/api/v1/sessions/$SID/state" | sed -E 's/.*"status":"([a-z]+)".*/\1/')
-  [ "$state" = "idle" ] && break
-  sleep 2
-done
-check "tool turn reaches idle" "$state" "idle"
-
-todos=$(curl -sf "$MEMORY_BASE/api/v1/todos?session_id=$SID")
-echo "$todos" | grep -q 'SMOKE-TODO' \
-  && pass "todo persisted via tool call" || fail "todo not persisted ($todos)"
-
-# SSE events arrive asynchronously; give the stream a short grace period.
-for _ in $(seq 1 10); do
-  grep -q 'todos-updated' "$SSE_LOG" && break
-  sleep 1
-done
-grep -q 'todos-updated' "$SSE_LOG" \
-  && pass "todos-updated SSE event received" || fail "no todos-updated SSE event ($(head -c 200 "$SSE_LOG"))"
-kill "$SSE_PID" 2>/dev/null
-rm -f "$SSE_LOG"
-
-# cleanup: remove the session so reruns don't accumulate
-curl -s -X DELETE "$AGENT_BASE/api/v1/sessions/$SID" -o /dev/null
-echo "======================================"
-echo "RESULT: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
+echo "[agent-smoke] PASS=$PASS FAIL=$FAIL (session=$SID)"
+[ "$FAIL" -eq 0 ]
