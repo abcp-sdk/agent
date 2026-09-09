@@ -14,8 +14,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
  * Bundle the server into a single ESM file, then wrap it in a Node SEA
- * (single executable application) so the whole backend ships as one binary
- * with the SPA assets embedded as SEA assets.
+ * (single executable application) so the whole backend ships as one binary.
+ * The agent is API-only: the web frontend is NOT embedded (it lives in its
+ * own repo/deployment and talks to this agent purely over Connect).
  */
 
 const bundleOut = join(root, '.sea', 'server.cjs')
@@ -49,30 +50,8 @@ await build({
   logLevel: 'info',
 })
 
-// Embed the SPA dist as a SEA asset (optional). The web frontend now lives in
-// its own repo (easylab-platform/web); set WEB_DIST to a built dist directory
-// to embed it, or leave unset for an API-only binary.
+// No SPA assets: the frontend is decoupled and served elsewhere.
 const seaAssets = {}
-const uiDist = process.env.WEB_DIST
-  ? resolve(process.env.WEB_DIST)
-  : join(root, 'packages', 'ui', 'dist')
-try {
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        walk(full)
-      } else {
-        // SEA asset keys can't start with '/' and shouldn't contain '..'
-        const key = full.replace(uiDist, '').replace(/^[/\\]+/, '').replace(/\\/g, '/')
-        seaAssets[key] = full
-      }
-    }
-  }
-  walk(uiDist)
-} catch {
-  // No UI dist yet; the server will fall back gracefully.
-}
 
 writeFileSync(
   seaConfig,

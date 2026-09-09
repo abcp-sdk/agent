@@ -20,104 +20,21 @@ import {
   watchMailboxWake,
 } from '@easylab-agent/agent'
 import { serveBundled } from '@abc-protocol/bundled-extension'
-import {
-  connectNodeAdapter,
-  type ConnectNodeAdapterOptions,
-} from '@connectrpc/connect-node'
-import { createServer } from 'node:http'
+import { createConnectRouter } from '@connectrpc/connect'
+import { createFetchHandler } from '@connectrpc/connect/protocol'
+import { Hono } from 'hono'
+import { getRequestListener } from '@hono/node-server'
+import { createServer as createHttpServer } from 'node:http'
+import * as http2Module from 'node:http2'
 
 /** Structural type guard for an unknown value (used for db close hooks). */
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null
 }
 
-const STATIC_MIME: Record<string, string> = {
-  '.html': 'text/html',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-}
-
-/** A node http/http2 response writable surface (structurally compatible with
- * the connect-node fallback response). */
-type StaticRes = {
-  writeHead(status: number, headers?: Record<string, string>): unknown
-  end(data: Uint8Array | string): unknown
-}
-
-/** Serve the SEA-embedded SPA asset for a pathname; non-asset routes fall back
- * to index.html so client-side routing works. */
-function serveStatic(
-  res: StaticRes,
-  getAsset: (key: string) => ArrayBuffer | null,
-  pathname: string,
-): void {
-  const asset =
-    pathname === '/' || !pathname.includes('.')
-      ? 'index.html'
-      : pathname.slice(1)
-  const data = getAsset(asset)
-  if (data === null) {
-    const index = getAsset('index.html')
-    if (index === null) {
-      res.writeHead(404, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, error: 'not found' }))
-      return
-    }
-    res.writeHead(200, { 'content-type': 'text/html' })
-    res.end(new Uint8Array(index))
-    return
-  }
-  const ext = asset.slice(asset.lastIndexOf('.')).toLowerCase()
-  res.writeHead(200, {
-    'content-type': STATIC_MIME[ext] ?? 'application/octet-stream',
-  })
-  res.end(new Uint8Array(data))
-}
-
 /** Runtime type guard for an unknown function value. */
 function isFn(v: unknown): v is () => unknown {
   return typeof v === 'function'
-}
-
-/**
- * The `node:sea` module surface this server depends on. The API only exists
- * inside a single-executable application; we probe it structurally so no
- * assumptions are made about the resolved module.
- */
-interface SeaModule {
-  getRawAsset: (key: string) => ArrayBuffer | undefined
-}
-
-/** Structural type guard for the optional `node:sea` module. */
-function isSeaModule(value: unknown): value is SeaModule {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'getRawAsset' in value &&
-    typeof value.getRawAsset === 'function'
-  )
-}
-
-/**
- * `node:sea`'s `getRawAsset` is only available inside a single-executable
- * application. We load it lazily via the CJS `require` (the whole server is
- * bundled to CJS for SEA) so a normal `node` run does not crash at import.
- * The try/catch is the sanctioned CJS-interop boundary.
- */
-function getSeaAsset(key: string): ArrayBuffer | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sea: unknown = require('node:sea')
-    if (!isSeaModule(sea)) return null
-    return sea.getRawAsset(key) ?? null
-  } catch {
-    return null
-  }
 }
 
 async function main(): Promise<void> {
@@ -215,34 +132,75 @@ async function main(): Promise<void> {
     },
   })
 
-  // ---- serving surface: HTTP/1.1 + HTTP/2 (cleartext), no framework ----
-  // Connect RPC: the AgentService (/agent.v1.AgentService/*) is served by
-  // @connectrpc/connect-node on connect + gRPC protocols. The adapter is
-  // compatible with both node:http (http/1.1) and node:http2 listeners, so
-  // reverse-proxies that speak http/1.1 (e.g. the public ingress) can reach
-  // it without an h2-clear upgrade. Non-RPC requests fall through to the
-  // SEA-served SPA (static bytes); there is no REST facade.
-
-  const fallback: NonNullable<ConnectNodeAdapterOptions['fallback']> = async (req, res) => {
-    const pathname = new URL(
-      req.url ?? '/',
-      `http://${req.headers.host ?? 'localhost'}`,
-    ).pathname
-    serveStatic(res, getSeaAsset, pathname)
-  }
-
-  const handler = connectNodeAdapter({
-    routes: buildConnectRoutes(deps),
+  // ---- serving surface: Connect RPC (hono + createFetchHandler) ----
+  // Build the Connect router (grpc + grpc-web + connect protocols), then wrap
+  // EACH per-RPC universal handler into a Web Request=>Response fetch handler
+  // and register it on Hono by its request path. The HTTP server is selected
+  // by `config.httpProtocol`:
+  //   "auto" — both HTTP/1.1 and cleartext HTTP/2 (h2c) on one port
+  //   "h1"   — HTTP/1.1 only
+  //   "h2c"  — cleartext HTTP/2 only
+  const connectRouter = createConnectRouter({
     grpc: true,
     grpcWeb: true,
     connect: true,
-    fallback,
   })
+  buildConnectRoutes(deps)(connectRouter)
 
-  const server = createServer(handler)
-  server.listen(config.port, () => {
-    logger.info({ port: config.port, pid: process.pid }, 'listening (http1)')
-  })
+  const app = new Hono()
+  // createFetchHandler goes from a UniversalHandlerFn to (req: Request) =>
+  // Response. Each ConnectRouter handler is one RPC; regнster it by path.
+  for (const uHandler of connectRouter.handlers) {
+    const fetchHandler = createFetchHandler(uHandler)
+    app.all(uHandler.requestPath, c => fetchHandler(c.req.raw))
+  }
+  app.all('*', () =>
+    new Response(JSON.stringify({ code: 'unimplemented', message: 'not found' }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    }),
+  )
+
+  // A single node-compatible request listener that adapts http/http2
+  // (IncomingMessage|Http2ServerRequest) into Hono's Web Request.
+  const requestListener = getRequestListener(app.fetch)
+
+  type ServerLike = {
+    close?: (cb?: () => void) => void
+    listen: (port: number, cb?: () => void) => unknown
+  }
+  // Single listener on ONE port; the protocol is chosen by the
+  // HTTP_PROTOCOL env (`config.httpProtocol`):
+  //   "auto" (default) & "h1" → HTTP/1.1 (ingress terminates TLS and forwards
+  //                              h1; browsers / public ingress speak this)
+  //   "h2c"                   → cleartext HTTP/2 prior-knowledge (native
+  //                              client transports that peer-initiate h2c)
+  // Node cannot mux HTTP/1.1 and cleartext h2c on the same socket, so these
+  // are mutually exclusive — pick one via the container env var.
+  let server: ServerLike | null = null
+  const protocol = config.httpProtocol
+  if (protocol === 'h2c') {
+    const s = http2Module.createServer(
+      { allowHTTP1: false } as never,
+      requestListener as never,
+    )
+    s.listen(config.port, () =>
+      logger.info({ port: config.port, pid: process.pid }, 'listening (h2c)'),
+    )
+    server = s
+  } else {
+    // "auto" defaults to HTTP/1.1: the public ingress / reverse proxy speaks
+    // HTTP/1.1 to the backend after terminating TLS (ALPN h2) upstream.
+    const s = createHttpServer(requestListener as never)
+    s.listen(config.port, () =>
+      logger.info({ port: config.port, pid: process.pid }, 'listening (http1)'),
+    )
+    server = s
+  }
+  const closeServer = (): Promise<unknown> =>
+    new Promise(resolve =>
+      server?.close?.(() => resolve(undefined)),
+    )
 
   // Watch every session's mailbox wake wildcard so this replica can claim and
   // run work for any session — the horizontal scale-out trigger.
@@ -271,7 +229,7 @@ async function main(): Promise<void> {
     logger.info('shutting down')
     stopWake()
     void stopBundled()
-    server.close(() => {
+    void closeServer().then(() => {
       bus.close()
       void closeDb().then(
         () => process.exit(0),

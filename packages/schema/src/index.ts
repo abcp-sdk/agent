@@ -355,4 +355,8 @@ export type ExtensionVariableValue = z.infer<
 >
 
 // Generated Connect types (strong-typed RPC contract from .proto).
-export * from '@easylab/sdk/agent'
+
+// Agent.v1 RPC contract (locally generated from proto/agent/v1/agent.proto;
+// decoupled from @easylab/sdk). agent_pb.ts carries the message types + the
+// GenService descriptor (AgentService) the Connect router consumes.
+export * from "./gen/agent/v1/agent_pb.js";

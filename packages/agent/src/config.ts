@@ -5,6 +5,8 @@ export function envOr(key: string, fallback: string): string {
 
 export interface ServerConfig {
   port: number
+  /** HTTP server transport: "auto" (h1 + h2c) | "h1" | "h2c". */
+  httpProtocol: 'auto' | 'h1' | 'h2c'
   /** Storage backend: "pg" or "sqlite". */
   backend: DbBackend
   postgresUrl: string
@@ -46,6 +48,14 @@ function resolveBackend(env: NodeJS.ProcessEnv): DbBackend {
   return 'pg'
 }
 
+
+/** Validate HTTP_PROTOCOL → 'auto' | 'h1' | 'h2c' (default 'auto'). */
+function normalizeHttpProtocol(v: string): ServerConfig['httpProtocol'] {
+  const lower = v.toLowerCase()
+  if (lower === 'h1' || lower === 'h2c' || lower === 'auto') return lower
+  return 'auto'
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const or = (k: string, d: string) => {
     const v = env[k]
@@ -58,6 +68,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 
   return {
     port: Number.parseInt(or('PORT', '8080'), 10),
+    httpProtocol: normalizeHttpProtocol(or('HTTP_PROTOCOL', 'auto')),
     backend,
     postgresUrl: pgUrl,
     dbUrl:

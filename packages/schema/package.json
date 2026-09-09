@@ -18,8 +18,7 @@
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",
     "neverthrow": "^8.2.0",
-    "zod": "^4.4.3",
-    "@easylab/sdk": "github:easylab-platform/easylab-sdk-typescript#v0.4.4"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

@@ -27,9 +27,9 @@ import {
 import { type AgentDeps } from '@easylab-agent/agent'
 import { EidDedup } from './context.js'
 import { type ConnectRouter, type ServiceImpl } from '@connectrpc/connect'
-import { create, fromJson } from '@bufbuild/protobuf'
+import { create, fromJson, toJson } from '@bufbuild/protobuf'
 import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
-import { StructSchema } from '@bufbuild/protobuf/wkt'
+import { StructSchema, ValueSchema, type Value } from '@bufbuild/protobuf/wkt'
 import {
   AgentService,
   ListToolsResponseSchema,
@@ -89,7 +89,7 @@ interface PresetRowView {
 
 /** Runtime type guard: a plain string-keyed object (not an array). */
 function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
+  return typeof v === 'object' && v !== null
 }
 
 /** Read an optional string field off an opaque object (no casts). */
@@ -97,6 +97,17 @@ function fieldString(o: unknown, key: string): string | undefined {
   if (!isRecord(o)) return undefined
   const v: unknown = o[key]
   return typeof v === 'string' ? v : undefined
+}
+
+/** Wrap a raw JSON value into a google.protobuf.Value message. */
+function toValue(v: unknown): Value {
+  return fromJson(ValueSchema, v as JsonValue)
+}
+
+/** Unwrap a google.protobuf.Value message into a raw JSON value. */
+function valueToRaw(value: Value | undefined | null): unknown {
+  if (value === null || value === undefined) return null
+  return toJson(ValueSchema, value)
 }
 
 /** Convert an unknown JSON-ish value into a typed JsonValue (no casts). */
@@ -184,10 +195,10 @@ function presetToMsg(p: PresetRowView) {
 }
 
 /**
- * Build the Connect v2 AgentService routes for connectNodeAdapter. The RPC
+ * Build the Connect v2 AgentService routes for the fetch handler. The RPC
  * surface (procedure paths /agent.v1.AgentService/*, all three protocols)
- * is served entirely by @connectrpc/connect-node — no web framework sits in
- * front of it.
+ * is served by @connectrpc/connect via a Web Request=>Response fetch handler
+ * mounted on Hono.
  */
 export function buildConnectRoutes(
   deps: AgentDeps,
@@ -609,14 +620,23 @@ export function buildConnectRoutes(
       },
       async getToolConfig() {
         const value = await toolConfigMap(deps.bus)
-        return { config: { values: value } }
+        // Response.config is a ToolConfig whose `values` is a
+        // map<string, google.protobuf.Value>: each tool maps to a single
+        // Value that is a Struct of its declared knobs. Wrap the whole per-tool
+        // knob map into one Struct Value.
+        const values: Record<string, Value> = {}
+        for (const [toolName, cfg] of Object.entries(value)) {
+          values[toolName] = toValue(cfg)
+        }
+        return { config: { values } }
       },
       async setToolConfig(req) {
-        const config = req.config
+        // Request.config is a google.protobuf.Struct — already a plain JSON
+        // object on the wire, so serialize it directly.
         const r = await Config.set(
           deps.bus,
           'tool_config',
-          JSON.stringify(config ?? {}),
+          JSON.stringify(req.config ?? {}),
         )
         if (r.isErr()) throw new Error(r.error)
         return { ok: true }
@@ -625,7 +645,10 @@ export function buildConnectRoutes(
         const { extId, name, value } = req
         const agent = new AbcAgent(deps.bus)
         await agent.discover(500)
-        await agent.setConfig(extId, name, value)
+        // Request.value is a google.protobuf.Value message; unwrap it with the
+        // canonical toJson() mapping into the raw value the config store needs.
+        const v = valueToRaw(value)
+        await agent.setConfig(extId, name, v)
         return { ok: true }
       },
       async uploadFile(req) {

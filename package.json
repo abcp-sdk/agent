@@ -27,9 +27,6 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
-    "@easylab/client-sdk@0.1.1": true,
-    "@easylab/sdk@0.4.4": true,
-    "github:easylab-platform/easylab-sdk-typescript#e5b41a2f631d26860aca838ab066a0c065b90e40": true,
-    "github:easylab-platform/easylab-sdk-typescript#7379c711f93b6a196d8c739a530b085354f1c2f4": true
+    "@easylab/client-sdk@0.1.1": true
   }
 }

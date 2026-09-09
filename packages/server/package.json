@@ -16,9 +16,10 @@
     "@abc-protocol/bundled-extension": "github:abcp-sdk/bundled-extension",
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",
-    "@connectrpc/connect-node": "^2.2.0",
     "@easylab-agent/agent": "*",
     "@easylab-agent/schema": "*",
+    "@hono/node-server": "^1.19.17",
+    "hono": "^4.13.7",
     "neverthrow": "^8.2.0",
     "pino": "^10.3.1",
     "zod": "^4.4.3"
