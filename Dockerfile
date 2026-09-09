@@ -15,14 +15,14 @@ COPY package.json package-lock.json tsconfig.base.json .npmrc ./
 COPY scripts scripts
 COPY packages packages
 # No --ignore-scripts: the root package.json allowScripts whitelist gates
-# which packages may run lifecycle scripts (esbuild, @easylab/sdk prepare) —
-# the SDK's prepare builds its dist, which is required for the schema build.
+# which packages may run lifecycle scripts (esbuild builds this package's
+# bundled TS). prepare builds the schema dist, which the server step needs.
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --no-audit --strict-ssl=false \
     && npm run build
 
-# The binary embeds Node, all JS dependencies and the SPA; the runtime stage
-# needs only libc + CA certs.
+# The binary embeds Node + all JS dependencies; the runtime stage needs only
+# libc + CA certs.
 FROM ${REGISTRY}/root/alpine:3.24
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
     && apk add --no-cache ca-certificates libstdc++
