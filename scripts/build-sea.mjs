@@ -43,6 +43,8 @@ await build({
     '.css': 'text',
     '.json': 'text',
     '.svg': 'text',
+    '.yaml': 'text',
+    '.yml': 'text',
     '.png': 'binary',
     '.woff': 'binary',
     '.woff2': 'binary',

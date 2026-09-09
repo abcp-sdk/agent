@@ -611,7 +611,11 @@ export function buildConnectRoutes(
               name: c.name,
               type: c.type,
               enumValues: c.enum_values ?? [],
-              description: c.description ?? '',
+              description: pickDescription(
+                c.description ?? '',
+                c.descriptions,
+                locale,
+              ),
               scope: c.scope ?? 'global',
             })),
             requiredConfig: t.requiredConfig ?? [],

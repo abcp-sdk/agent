@@ -118,6 +118,8 @@ export interface DiscoveredTool {
     enum_values?: string[]
     default?: unknown
     description?: string
+    /** Localized descriptions (locale → text); `description` is the fallback. */
+    descriptions?: Record<string, string>
     scope?: string
   }[]
 }
@@ -249,6 +251,7 @@ function withExtConfig(
       enum_values: c.enum_values ?? [],
       default: c.default,
       description: c.description,
+      ...(c.descriptions !== undefined ? { descriptions: c.descriptions } : {}),
       scope: c.scope,
     }))
   if (extConfig.length === 0) return t
