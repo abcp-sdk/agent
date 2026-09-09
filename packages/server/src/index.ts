@@ -21,7 +21,7 @@ import {
   connectNodeAdapter,
   type ConnectNodeAdapterOptions,
 } from '@connectrpc/connect-node'
-import { createServer } from 'node:http2'
+import { createServer } from 'node:http'
 import { buildApp } from './app.js'
 import { handleRest, isRecord, serveStatic } from './http.js'
 
@@ -135,15 +135,15 @@ async function main(): Promise<void> {
     files,
   }
 
-  // ---- serving surface: HTTP/2 only (h2c prior knowledge), no framework ----
+  // ---- serving surface: HTTP/1.1 + HTTP/2 (cleartext), no framework ----
   // 1. RPC: the Connect AgentService (/agent.v1.AgentService/*) is served by
-  //    @connectrpc/connect-node on all three protocols (connect, gRPC with
-  //    proper HTTP/2 trailers, gRPC-web). This is the adapter's officially
-  //    supported http2 mode.
+  //    @connectrpc/connect-node on connect + gRPC protocols. The adapter is
+  //    compatible with BOTH node:http (http/1.1) and node:http2 listeners, so
+  //    revers-proxies that speak http/1.1 (e.g. the public ingress) can reach
+  //    it without an h2-clear upgrade.
   // 2. REST facade (/api/v1) + the SEA-served SPA ride the adapter fallback
   //    through a tiny strongly-typed native dispatcher.
-  // Clients must speak HTTP/2 prior knowledge (the easylab Go gateway uses an
-  // unencrypted-h2 transport; curl uses --http2-prior-knowledge).
+  // Clients may speak HTTP/1.1 (public ingress) or HTTP/2 prior knowledge.
 
   const restRouter = buildApp()
 
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
 
   const server = createServer(handler)
   server.listen(config.port, () => {
-    logger.info({ port: config.port, pid: process.pid }, 'listening (h2c)')
+    logger.info({ port: config.port, pid: process.pid }, 'listening (http1)')
   })
 
   // Watch every session's mailbox wake wildcard so this replica can claim and

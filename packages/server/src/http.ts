@@ -7,9 +7,9 @@ import type { ZodType, z } from 'zod'
 /**
  * A tiny native-node HTTP micro-framework replacing Hono for the REST facade.
  *
- * The whole server speaks HTTP/2 (h2c prior knowledge, see index.ts); the
- * connect-node adapter hands its fallback the union node request/response
- * types it supports (http1 | http2). Instead of casting those unions away we
+ * The whole server speaks HTTP/1.1 (see index.ts) with the connect-node
+ * adapter handing its fallback the union node request/response types it
+ * supports (http1 | http2). Instead of casting those unions away we
  * declare minimal structural "port" interfaces both concrete types satisfy —
  * assignability is verified by the compiler at every return, so the code is
  * fully strongly typed with zero `as` casts.
