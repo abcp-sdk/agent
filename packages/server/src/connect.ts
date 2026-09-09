@@ -14,6 +14,7 @@ import {
   Messages,
   Parts,
   pickDescription,
+  pickLocalized,
   Presets,
   Providers,
   publishLifecycle,
@@ -82,6 +83,7 @@ interface ProviderRowView {
 interface PresetRowView {
   id: string
   system_prompt?: string | null | undefined
+  system_prompt_i18n?: string | null | undefined
   tools?: string | null | undefined
   max_turns?: number | null | undefined
   is_system?: boolean | null | undefined
@@ -180,18 +182,35 @@ function providerToMsg(p: ProviderRowView) {
   }
 }
 
-function presetToMsg(p: PresetRowView) {
+function presetToMsg(p: PresetRowView, locale?: string) {
   let tools: string[] = []
   try {
     tools = JSON.parse(p.tools ?? '[]') ?? []
   } catch {}
   return {
     id: p.id ?? '',
-    systemPrompt: p.system_prompt ?? '',
+    systemPrompt: presetPromptFor(p, locale ?? ''),
     tools,
     maxTurns: p.max_turns ?? 0,
     isSystem: p.is_system ?? false,
   }
+}
+
+/** Resolve a preset's system prompt for [locale]: parse `system_prompt_i18n`
+ * as a { locale: template } map and pick the entry (exact → primary language
+ * → fallback to the default `system_prompt`). */
+function presetPromptFor(p: PresetRowView, locale: string): string {
+  const i18n = p.system_prompt_i18n
+  if (i18n !== undefined && i18n !== null && i18n !== '{}' && i18n !== '') {
+    try {
+      const map = JSON.parse(i18n) as Record<string, unknown>
+      const picked = pickLocalized(map as Record<string, string>, locale)
+      if (picked !== null) return picked
+    } catch {
+      /* fall through to the default prompt */
+    }
+  }
+  return p.system_prompt ?? ''
 }
 
 /**
@@ -541,10 +560,19 @@ export function buildConnectRoutes(
         }
         return { models }
       },
-      async listPresets() {
+      async listPresets(req) {
         const r = await Presets.list(deps.bus)
         if (r.isErr()) throw new Error(r.error)
-        return { presets: r.value.map(presetToMsg) }
+        // Same locale chain as listTools: request → config KV → env → "en".
+        const configLocale = (await Config.get(deps.bus, 'locale')).unwrapOr(
+          null,
+        )
+        const locale = resolveLocale(
+          req.locale,
+          configLocale,
+          process.env.LOCALE ?? 'en',
+        )
+        return { presets: r.value.map(p => presetToMsg(p, locale)) }
       },
       async upsertPreset(req) {
         const p = req.preset
