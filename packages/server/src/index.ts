@@ -13,10 +13,13 @@ import {
   Mailbox,
   makeBlobStore,
   Presets,
+  rawAll,
+  rawRun,
   refreshModelsDev,
   runSessionTurn,
   watchMailboxWake,
 } from '@easylab-agent/agent'
+import { serveBundled } from '@abc-protocol/bundled-extension'
 import {
   connectNodeAdapter,
   type ConnectNodeAdapterOptions,
@@ -135,6 +138,32 @@ async function main(): Promise<void> {
     files,
   }
 
+  // ---- bundled extension (in-process) ----
+  // Serve the bundled extension over the same bus so its tools are discover-
+  // able. It is an optional lib: if it fails to register we log and continue
+  // (the agent still works standalone without the bundled toolset).
+  const stopBundled = serveBundled({
+    bus,
+    resolveModel: (db, modelId) => llm.resolve(db as Db, modelId),
+    blobGet: (code) => files.get(code).then(r => ({ meta: { ...r.meta } as Record<string, unknown>, data: r.data })),
+    rawAll: (sql, params) => rawAll(db, sql, params),
+    rawRun: (sql, params) => rawRun(db, sql, params),
+    // Config lives in the `cfg` KV bucket (source of truth for extensions).
+    // Session-scoped overrides are applied by the Extension itself; here we
+    // resolve the effective global value (envelope-aware {r,v} format).
+    resolveConfig: async (name, sessionName) => {
+      const raw = await bus.kvGet('cfg', `bundled.${name}`)
+      if (raw === null || raw === undefined) return undefined
+      try {
+        const z = JSON.parse(raw) as { v?: unknown }
+        if (z && typeof z === 'object' && 'v' in z) return z.v
+        return z
+      } catch {
+        return raw
+      }
+    },
+  })
+
   // ---- serving surface: HTTP/1.1 + HTTP/2 (cleartext), no framework ----
   // 1. RPC: the Connect AgentService (/agent.v1.AgentService/*) is served by
   //    @connectrpc/connect-node on connect + gRPC protocols. The adapter is
@@ -203,6 +232,7 @@ async function main(): Promise<void> {
   const shutdown = () => {
     logger.info('shutting down')
     stopWake()
+    void stopBundled()
     server.close(() => {
       bus.close()
       void closeDb().then(

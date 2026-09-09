@@ -282,6 +282,23 @@ export async function rawAll(
 }
 
 /**
+ * Raw SQL execution for writes (INSERT / UPDATE / DELETE / DDL) with the same
+ * positional `?` (sqlite) / `$n` (pg) param convention as [rawAll].
+ */
+export async function rawRun(
+  db: Db,
+  sql: string,
+  params: unknown[] = [],
+): Promise<void> {
+  const client = db.$client
+  if (dbBackend(db) === 'sqlite') {
+    (client as DatabaseSync).prepare(sql).run(...(params as never[]))
+    return
+  }
+  await (client as Sql).unsafe(sql, params as never[])
+}
+
+/**
  * Connect (idempotent DDL) and import any legacy providers blob from the
  * config table into the providers table (single source of truth).
  */
