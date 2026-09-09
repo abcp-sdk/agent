@@ -25,8 +25,59 @@ import {
   type ConnectNodeAdapterOptions,
 } from '@connectrpc/connect-node'
 import { createServer } from 'node:http'
-import { buildApp } from './app.js'
-import { handleRest, isRecord, serveStatic } from './http.js'
+
+/** Structural type guard for an unknown value (used for db close hooks). */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null
+}
+
+const STATIC_MIME: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+}
+
+/** A node http/http2 response writable surface (structurally compatible with
+ * the connect-node fallback response). */
+type StaticRes = {
+  writeHead(status: number, headers?: Record<string, string>): unknown
+  end(data: Uint8Array | string): unknown
+}
+
+/** Serve the SEA-embedded SPA asset for a pathname; non-asset routes fall back
+ * to index.html so client-side routing works. */
+function serveStatic(
+  res: StaticRes,
+  getAsset: (key: string) => ArrayBuffer | null,
+  pathname: string,
+): void {
+  const asset =
+    pathname === '/' || !pathname.includes('.')
+      ? 'index.html'
+      : pathname.slice(1)
+  const data = getAsset(asset)
+  if (data === null) {
+    const index = getAsset('index.html')
+    if (index === null) {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, error: 'not found' }))
+      return
+    }
+    res.writeHead(200, { 'content-type': 'text/html' })
+    res.end(new Uint8Array(index))
+    return
+  }
+  const ext = asset.slice(asset.lastIndexOf('.')).toLowerCase()
+  res.writeHead(200, {
+    'content-type': STATIC_MIME[ext] ?? 'application/octet-stream',
+  })
+  res.end(new Uint8Array(data))
+}
 
 /** Runtime type guard for an unknown function value. */
 function isFn(v: unknown): v is () => unknown {
@@ -151,7 +202,7 @@ async function main(): Promise<void> {
     // Config lives in the `cfg` KV bucket (source of truth for extensions).
     // Session-scoped overrides are applied by the Extension itself; here we
     // resolve the effective global value (envelope-aware {r,v} format).
-    resolveConfig: async (name, sessionName) => {
+    resolveConfig: async (name, _sessionName) => {
       const raw = await bus.kvGet('cfg', `bundled.${name}`)
       if (raw === null || raw === undefined) return undefined
       try {
@@ -165,31 +216,18 @@ async function main(): Promise<void> {
   })
 
   // ---- serving surface: HTTP/1.1 + HTTP/2 (cleartext), no framework ----
-  // 1. RPC: the Connect AgentService (/agent.v1.AgentService/*) is served by
-  //    @connectrpc/connect-node on connect + gRPC protocols. The adapter is
-  //    compatible with BOTH node:http (http/1.1) and node:http2 listeners, so
-  //    revers-proxies that speak http/1.1 (e.g. the public ingress) can reach
-  //    it without an h2-clear upgrade.
-  // 2. REST facade (/api/v1) + the SEA-served SPA ride the adapter fallback
-  //    through a tiny strongly-typed native dispatcher.
-  // Clients may speak HTTP/1.1 (public ingress) or HTTP/2 prior knowledge.
+  // Connect RPC: the AgentService (/agent.v1.AgentService/*) is served by
+  // @connectrpc/connect-node on connect + gRPC protocols. The adapter is
+  // compatible with both node:http (http/1.1) and node:http2 listeners, so
+  // reverse-proxies that speak http/1.1 (e.g. the public ingress) can reach
+  // it without an h2-clear upgrade. Non-RPC requests fall through to the
+  // SEA-served SPA (static bytes); there is no REST facade.
 
-  const restRouter = buildApp()
-
-  const fallback: NonNullable<ConnectNodeAdapterOptions['fallback']> = async (
-    req,
-    res,
-  ) => {
-    const url = new URL(
+  const fallback: NonNullable<ConnectNodeAdapterOptions['fallback']> = async (req, res) => {
+    const pathname = new URL(
       req.url ?? '/',
       `http://${req.headers.host ?? 'localhost'}`,
-    )
-    const pathname = url.pathname
-    if (pathname === '/api/v1' || pathname.startsWith('/api/v1/')) {
-      const rel = pathname.slice('/api/v1'.length) || '/'
-      await handleRest(restRouter, deps, rel, req, res)
-      return
-    }
+    ).pathname
     serveStatic(res, getSeaAsset, pathname)
   }
 
