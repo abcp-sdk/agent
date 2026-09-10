@@ -182,8 +182,7 @@ const discoveryCache: DiscoveryCache = {
  * discoverTools with a TTL cache: every turn would otherwise pay the full
  * broadcast wait (~500ms) before the model even starts. Concurrent turns
  * share one in-flight broadcast (no thundering herd). Extensions restarted
- * with a changed toolset surface within one TTL; tune via
- * EXTENSION_DISCOVER_MS, disable with 0.
+ * with a changed toolset surface within one (fixed) TTL.
  */
 export async function discoverToolsCached(
   bus: Bus,
@@ -210,10 +209,8 @@ export function invalidateDiscoveryCache(): void {
 }
 
 function discoveryTtlMs(): number {
-  const v = process.env.EXTENSION_DISCOVER_MS
-  if (v === undefined) return 30_000
-  const n = Number.parseInt(v, 10)
-  return Number.isNaN(n) ? 30_000 : n
+  // Fixed cache TTL for extension/tool discovery (not configurable).
+  return 30_000
 }
 
 function toolToDiscovered(extId: string, t: ExtensionTool): DiscoveredTool {

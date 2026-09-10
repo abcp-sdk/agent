@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   catalogModel,
   findVariant,
-  resolveContextLimit,
   toModelVariant,
   variantsForApiType,
 } from '../src/variants.js'
@@ -71,13 +70,6 @@ describe('catalogModel (strict provider/model lookup)', () => {
     expect(catalogModel(catalog, 'openai', 'nope')).toBeNull()
     expect(catalogModel(catalog, '', 'gpt-5.4')).toBeNull()
     expect(catalogModel(null, 'openai', 'gpt-5.4')).toBeNull()
-  })
-})
-
-describe('resolveContextLimit', () => {
-  it('uses the provider+model entry, else the fallback', () => {
-    expect(resolveContextLimit(catalog, 'openai', 'gpt-5.4', 999)).toBe(400000)
-    expect(resolveContextLimit(catalog, 'pa', 'gpt-5.4', 999)).toBe(999)
   })
 })
 

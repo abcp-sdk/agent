@@ -85,12 +85,9 @@ async function main(): Promise<void> {
   // replicas and restarts; never overwrites what a restore/user already set.
   void Presets.seedDefaults(bus)
 
-  // Mailbox retention: consumed rows are audit-only, prune past the window.
-  const retentionDays = Number.parseInt(
-    process.env.MAILBOX_RETENTION_DAYS ?? '7',
-    10,
-  )
-  if (Number.isFinite(retentionDays) && retentionDays > 0) {
+  // Mailbox retention: consumed rows are audit-only, prune past a fixed window.
+  const retentionDays = 7
+  if (retentionDays > 0) {
     const sweep = async () => {
       const r = await Mailbox.purgeConsumed(db, retentionDays)
       if (r.isErr()) logger.warn({ err: r.error }, 'mailbox purge failed')

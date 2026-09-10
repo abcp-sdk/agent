@@ -54,7 +54,7 @@ function jsonToRow(raw: string): PresetRowInternal | null {
       systemPrompt: String(v.system_prompt ?? ''),
       systemPromptI18n: String(v.system_prompt_i18n ?? '{}'),
       tools: String(v.tools ?? '[]'),
-      maxTurns: Number(v.max_turns ?? 30),
+      maxTurns: Number(v.max_turns ?? 0),
       isSystem: v.is_system === true,
     }
   } catch {
@@ -109,22 +109,18 @@ async function removeFromPresetIndex(bus: Bus, id: string): Promise<void> {
   await bus.kvPut(BUCKET_PRESETS, PRESET_INDEX_KEY, JSON.stringify(ids), NO_TTL)
 }
 
-/** Load host-injected system presets from the environment:
- *  - `SYSTEM_PRESETS_FILE`: path to a JSON file containing an array of
- *    `{ id, system_prompt, system_prompt_i18n?, tools?, max_turns? }` (or the
- *    snake_case JSON the API uses). Mounted as a ConfigMap at deploy time.
- *  - `SYSTEM_PRESETS_JSON`: the same array inline.
- *  Each entry is normalized to a PresetRowInternal (always is_system). Invalid
- *  entries are skipped with a warning so a malformed file never crashes boot. */
+/** Load host-injected system presets from `SYSTEM_PRESETS_FILE`: a JSON file
+ *  containing an array of `{ id, system_prompt, system_prompt_i18n?, tools?,
+ *  max_turns? }` (or the snake_case JSON the API uses). Mounted as a
+ *  ConfigMap at deploy time. Each entry is normalized to a PresetRowInternal
+ *  (always is_system). Invalid entries are skipped with a warning so a
+ *  malformed file never crashes boot. */
 function loadInjectedPresets(): PresetRowInternal[] {
   let raw: string | null = null
   const file = process.env.SYSTEM_PRESETS_FILE
-  const inline = process.env.SYSTEM_PRESETS_JSON
   try {
     if (file !== undefined && file !== '') {
       raw = readFileSync(file, 'utf8')
-    } else if (inline !== undefined && inline !== '') {
-      raw = inline
     }
   } catch (e) {
     logger.warn({ err: String(e), file }, 'SYSTEM_PRESETS_FILE read failed')
@@ -152,24 +148,11 @@ function loadInjectedPresets(): PresetRowInternal[] {
       systemPrompt: String(v.system_prompt ?? v.systemPrompt ?? ''),
       systemPromptI18n: typeof i18n === 'string' ? i18n : JSON.stringify(i18n),
       tools: typeof tools === 'string' ? tools : JSON.stringify(tools),
-      maxTurns: Number(v.max_turns ?? v.maxTurns ?? 30),
+      maxTurns: Number(v.max_turns ?? v.maxTurns ?? 0),
       isSystem: true,
     })
   }
   return out
-}
-
-/** Comma-separated preset ids to remove on boot (e.g. a standalone agent
- *  dropping easylab's plan/explore/build). */
-function loadPrunePresets(): Set<string> {
-  const raw = process.env.PRUNE_PRESETS
-  if (raw === undefined || raw === '') return new Set()
-  return new Set(
-    raw
-      .split(',')
-      .map(s => s.trim())
-      .filter(s => s !== ''),
-  )
 }
 
 export const Presets = {
@@ -243,11 +226,10 @@ export const Presets = {
   /**
    * Seed the immutable system presets at boot. The built-in `default` preset
    * is always seeded; host-specific presets are loaded from the environment
-   * (`SYSTEM_PRESETS_FILE` JSON file, or `SYSTEM_PRESETS_JSON` inline JSON
-   * array) so a deployment (e.g. easylab) can register its own immutable
-   * presets without baking them into the generic agent. All injected presets
-   * are marked `is_system`. Content drift is refreshed in place; retired ids
-   * are pruned; an optional `PRUNE_PRESETS` list removes specific keys.
+   * (`SYSTEM_PRESETS_FILE`: a JSON file containing an array) so a deployment
+   * (e.g. easylab) can register its own immutable presets without baking them
+   * into the generic agent. All injected presets are marked `is_system`.
+   * Content drift is refreshed in place; retired ids are pruned.
    */
   seedDefaults(bus: Bus): ResultAsync<void, string> {
     return ra(
@@ -271,15 +253,12 @@ export const Presets = {
             await bus.kvPut(BUCKET_PRESETS, d.id, want, NO_TTL)
           }
         }
-        // Clean retired system-preset ids that are no longer seeded, plus any
-        // ids explicitly listed in PRUNE_PRESETS (e.g. a standalone agent
-        // removing easylab's plan/explore/build). Never touches seeded presets
-        // or other user presets.
+        // Clean retired system-preset ids that are no longer seeded. Never
+        // touches seeded presets or other user presets.
         const ids = await readPresetIndex(bus)
-        const prune = loadPrunePresets()
         for (const id of ids) {
           if (seededIds.has(id)) continue
-          if (isRetiredSystemPreset(id) || prune.has(id)) {
+          if (isRetiredSystemPreset(id)) {
             await bus.kvDelete(BUCKET_PRESETS, id)
             await removeFromPresetIndex(bus, id)
           }

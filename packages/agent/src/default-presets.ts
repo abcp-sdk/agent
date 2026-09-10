@@ -4,8 +4,8 @@
 // whitelist (empty `tools` = every discovered tool is allowed) and a generic
 // bilingual system prompt. Host-specific presets (e.g. easylab's
 // plan/explore/build) are NOT baked in here; they are injected at deploy time
-// via `SYSTEM_PRESETS_FILE` / `SYSTEM_PRESETS_JSON` (see `seedDefaults`), so
-// the standalone agent never sees them.
+// via `SYSTEM_PRESETS_FILE` (see `seedDefaults`), so the standalone agent
+// never sees them.
 import type { PresetRowInternal } from './kv-store.js'
 
 export const SYSTEM_PRESETS: readonly PresetRowInternal[] = [
@@ -18,7 +18,7 @@ export const SYSTEM_PRESETS: readonly PresetRowInternal[] = [
     }),
     // Empty whitelist = no restriction: all discovered tools are allowed.
     tools: '[]',
-    maxTurns: 30,
+    maxTurns: 25,
     isSystem: true,
   },
 ]

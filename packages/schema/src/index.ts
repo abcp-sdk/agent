@@ -196,8 +196,11 @@ export const ConfigBodySchema = z.object({
 export type ConfigBody = z.infer<typeof ConfigBodySchema>
 
 export const ProviderModelBodySchema = z.object({
-  id: z.string(),
+  id: z.string().min(1),
   name: z.string().optional(),
+  /** Model context window (tokens). REQUIRED and user-supplied; drives
+   * compaction budgets and is never inferred from an external catalog. */
+  context_limit: z.number().int().positive(),
 })
 export type ProviderModelBody = z.infer<typeof ProviderModelBodySchema>
 

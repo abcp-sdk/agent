@@ -1,38 +1,32 @@
-export function envOr(key: string, fallback: string): string {
-  const v = process.env[key]
-  return v !== undefined && v !== '' ? v : fallback
-}
-
-/**
- * Preset applied to a session when none is specified. The generic agent ships
- * the `default` preset (no tool whitelist); a host can override via
- * `DEFAULT_PRESET` (e.g. easylab sets `build`).
- */
-export const DEFAULT_PRESET = envOr('DEFAULT_PRESET', 'default')
-
 export interface ServerConfig {
   port: number
   /** HTTP server transport: "auto" (h1 + h2c) | "h1" | "h2c". */
   httpProtocol: 'auto' | 'h1' | 'h2c'
   /** Storage backend: "pg" or "sqlite". */
   backend: DbBackend
-  postgresUrl: string
   /** The resolved connection string for the selected backend. */
   dbUrl: string
   natsUrl: string
-  /** Discovery timeout for extension/tool NATS broadcasts (ms). */
-  extensionDiscoverMs: number
+  /** Tool-call timeout (ms). Fixed; not user-configurable. */
   toolTimeoutMs: number
+  /** Max agent steps per turn when neither the session nor its preset sets one. */
   defaultMaxTurns: number
-  defaultTemperature: number
-  defaultMaxTokens: number
-  /** Model context window (estimated tokens). Compaction budgets are fractions of it. */
-  compactionContextTokens: number
-  /** File storage backend: "nats" (JetStream object store). */
-  filesStorage: string
 }
 
 export type DbBackend = 'pg' | 'sqlite'
+
+/**
+ * The one built-in preset. There is no configurable default: the generic
+ * agent always seeds `default` (a host may inject additional system presets
+ * via SYSTEM_PRESETS_FILE, but never renames which one is the fallback).
+ */
+export const DEFAULT_PRESET = 'default'
+
+/** Fallback max turns when neither the session nor its preset sets a value. */
+const DEFAULT_MAX_TURNS = 25
+
+/** Fixed tool-call timeout (10 minutes). */
+const TOOL_TIMEOUT_MS = 600_000
 
 /** Resolve the storage backend from DATABASE_URL scheme + explicit override. */
 function resolveBackend(env: NodeJS.ProcessEnv): DbBackend {
@@ -48,7 +42,6 @@ function resolveBackend(env: NodeJS.ProcessEnv): DbBackend {
   return 'pg'
 }
 
-
 /** Validate HTTP_PROTOCOL → 'auto' | 'h1' | 'h2c' (default 'auto'). */
 function normalizeHttpProtocol(v: string): ServerConfig['httpProtocol'] {
   const lower = v.toLowerCase()
@@ -56,6 +49,12 @@ function normalizeHttpProtocol(v: string): ServerConfig['httpProtocol'] {
   return 'auto'
 }
 
+/**
+ * Load the (small) set of deployment-level settings. Application behaviour
+ * (max turns, temperature, tool timeout, locale, compaction budgets) is NOT
+ * configurable via environment: it comes from sessions/presets/provider model
+ * config, or fixed constants.
+ */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const or = (k: string, d: string) => {
     const v = env[k]
@@ -70,25 +69,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     port: Number.parseInt(or('PORT', '8080'), 10),
     httpProtocol: normalizeHttpProtocol(or('HTTP_PROTOCOL', 'auto')),
     backend,
-    postgresUrl: pgUrl,
     dbUrl:
       backend === 'sqlite'
         ? or('DATABASE_URL', 'sqlite:///data/easylab-agent.db')
         : pgUrl,
     natsUrl: or('NATS_URL', 'nats://nats.easylab.svc.cluster.local:4222'),
-    extensionDiscoverMs: Number.parseInt(
-      or('EXTENSION_DISCOVER_MS', '500'),
-      10,
-    ),
-    toolTimeoutMs:
-      Number.parseInt(or('TOOL_TIMEOUT_SECS', '600'), 10) * 1000,
-    defaultMaxTurns: Number.parseInt(or('DEFAULT_MAX_TURNS', '25'), 10),
-    defaultTemperature: Number.parseFloat(or('LLM_TEMPERATURE', '0')),
-    defaultMaxTokens: Number.parseInt(or('LLM_MAX_TOKENS', '32768'), 10),
-    compactionContextTokens: Number.parseInt(
-      or('COMPACTION_CONTEXT_TOKENS', '200000'),
-      10,
-    ),
-    filesStorage: or('FILE_STORAGE', 'nats'),
+    toolTimeoutMs: TOOL_TIMEOUT_MS,
+    defaultMaxTurns: DEFAULT_MAX_TURNS,
   }
 }

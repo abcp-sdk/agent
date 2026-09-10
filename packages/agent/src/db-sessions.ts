@@ -8,7 +8,6 @@ import { mailbox, sessions } from './db-schema.js'
 
 // Re-exported for callers that import the session module directly.
 export { DEFAULT_PRESET } from './config.js'
-
 type Row = typeof sessions.$inferSelect
 
 const toRow = (r: Row): SessionRow => ({

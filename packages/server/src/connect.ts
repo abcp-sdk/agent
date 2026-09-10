@@ -173,14 +173,47 @@ function sessionToMsg(s: SessionRowView) {
   }
 }
 
+/**
+ * Parse the stored provider `models` JSON (an array of
+ * `{ id, name?, context_limit }`) into the proto ProviderModel shape. A bare
+ * string entry is also tolerated (name=id, context_limit=0) so a malformed
+ * row never breaks listing.
+ */
+function parseProviderModels(raw: string | null | undefined): {
+  id: string
+  name: string
+  contextLimit: bigint
+}[] {
+  let arr: unknown = []
+  try {
+    arr = JSON.parse(raw ?? '[]') ?? []
+  } catch {
+    return []
+  }
+  if (!Array.isArray(arr)) return []
+  const out: { id: string; name: string; contextLimit: bigint }[] = []
+  for (const item of arr) {
+    if (typeof item === 'string') {
+      if (item !== '') out.push({ id: item, name: item, contextLimit: 0n })
+      continue
+    }
+    if (item === null || typeof item !== 'object') continue
+    const v = item as Record<string, unknown>
+    const id = String(v['id'] ?? '')
+    if (id === '') continue
+    out.push({
+      id,
+      name: String(v['name'] ?? id),
+      contextLimit: BigInt(Math.trunc(Number(v['context_limit'] ?? 0)) || 0),
+    })
+  }
+  return out
+}
+
 function providerToMsg(p: ProviderRowView) {
   let headers: Record<string, string> = {}
-  let models: string[] = []
   try {
     headers = JSON.parse(p.headers ?? '{}') ?? {}
-  } catch {}
-  try {
-    models = JSON.parse(p.models ?? '[]') ?? []
   } catch {}
   return {
     providerId: p.provider_id ?? '',
@@ -188,7 +221,7 @@ function providerToMsg(p: ProviderRowView) {
     baseUrl: p.base_url ?? '',
     apiKey: p.api_key ?? '',
     headers,
-    models,
+    models: parseProviderModels(p.models),
     updatedAt: p.updated_at ?? '',
   }
 }
@@ -527,6 +560,14 @@ export function buildConnectRoutes(
       },
       async updateSettings(req) {
         const { id, ...patch } = req
+        // max_turns is optional: omitted = inherit (preset/default); an
+        // explicit value must be > 0.
+        if (patch.maxTurns !== undefined && patch.maxTurns <= 0) {
+          throw new ConnectError(
+            'max_turns must be > 0 (omit to inherit)',
+            Code.InvalidArgument,
+          )
+        }
         const r = await Sessions.updateSettings(deps.db, id, patch)
         if (r.isErr()) throw new Error(r.error)
         const s = await Sessions.get(deps.db, id)
@@ -562,13 +603,31 @@ export function buildConnectRoutes(
       async registerProvider(req) {
         const p = req.provider
         if (!p) throw new Error('provider required')
+        // context_limit is REQUIRED per model (drives compaction budgets); it
+        // is never inferred from an external catalog.
+        const models = (p.models ?? []).map(m => {
+          if (m.id === '') {
+            throw new ConnectError('model id is required', Code.InvalidArgument)
+          }
+          if (m.contextLimit <= 0n) {
+            throw new ConnectError(
+              `model '${m.id}': context_limit is required and must be > 0`,
+              Code.InvalidArgument,
+            )
+          }
+          return {
+            id: m.id,
+            name: m.name !== '' ? m.name : m.id,
+            context_limit: Number(m.contextLimit),
+          }
+        })
         const r = await Providers.upsert(deps.db, {
           providerId: p.providerId,
           apiType: p.apiType,
           baseUrl: p.baseUrl,
           apiKey: p.apiKey ?? '',
           headers: p.headers ?? {},
-          models: p.models ?? [],
+          models,
         })
         if (r.isErr()) throw new Error(r.error)
         return { ok: true }
@@ -648,35 +707,35 @@ export function buildConnectRoutes(
         const catalog = await getModelsDev(deps.bus)
         const provider = r.value.find(p => p?.provider_id === pid)
         const apiType = provider?.api_type ?? ''
-        let arr: string[] = []
-        if (provider !== undefined) {
-          try {
-            arr = JSON.parse(provider.models ?? '[]') ?? []
-          } catch {}
-        }
+        const parsed = provider === undefined ? [] : parseProviderModels(provider.models)
         // Variants are resolved STRICTLY by provider_id/model_id against the
         // models.dev catalog; models absent from the catalog have no variants.
-        const models = arr.map(id => {
-          const meta = catalogModel(catalog, pid, id)
+        const models = parsed.map(m => {
+          const meta = catalogModel(catalog, pid, m.id)
           const variants =
             meta === null
               ? []
               : variantsForApiType(meta, apiType).map(toModelVariant)
-          return { id, name: id, variants }
+          return {
+            id: m.id,
+            name: m.name,
+            variants,
+            contextLimit: m.contextLimit,
+          }
         })
         return { models }
       },
       async listPresets(req) {
         const r = await Presets.list(deps.bus)
         if (r.isErr()) throw new Error(r.error)
-        // Same locale chain as listTools: request → config KV → env → "en".
+        // Locale chain: request → config KV → "en".
         const configLocale = (await Config.get(deps.bus, 'locale')).unwrapOr(
           null,
         )
         const locale = resolveLocale(
           req.locale,
           configLocale,
-          process.env.LOCALE ?? 'en',
+          'en',
         )
         return { presets: r.value.map(p => presetToMsg(p, locale)) }
       },
@@ -731,7 +790,7 @@ export function buildConnectRoutes(
         const locale = resolveLocale(
           req.locale,
           configLocale,
-          process.env.LOCALE ?? 'en',
+          'en',
         )
         return create(ListToolsResponseSchema, {
           tools: tools.map(t => ({
@@ -849,14 +908,14 @@ export function buildConnectRoutes(
         if (r.isErr()) throw new Error(r.error)
         const providers: Record<string, string> = {}
         for (const p of r.value) {
-          if (p) providers[p.provider_id] = JSON.stringify(providerToMsg(p))
+          if (p) {
+            providers[p.provider_id] = JSON.stringify(providerToMsg(p), (_k, v) =>
+              typeof v === 'bigint' ? v.toString() : v,
+            )
+          }
         }
         return create(GetAgentConfigResponseSchema, {
-          config: {
-            providers,
-            http_proxy: process.env.AGENT_HTTP_PROXY ?? '',
-            self_base: process.env.SELF_BASE ?? '',
-          },
+          config: { providers },
         })
       },
     }

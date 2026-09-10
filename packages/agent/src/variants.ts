@@ -136,19 +136,6 @@ export function catalogModel(
   }
 }
 
-/**
- * Resolve a model's context window strictly by provider+model; falls back
- * when the provider/model is absent from the catalog.
- */
-export function resolveContextLimit(
-  modelsDev: unknown,
-  providerId: string,
-  modelId: string,
-  fallback: number,
-): number {
-  return catalogModel(modelsDev, providerId, modelId)?.contextLimit ?? fallback
-}
-
 // ---- provider-option mapping ----
 
 /** Normalize the api type to the AI-SDK provider-options namespace. */

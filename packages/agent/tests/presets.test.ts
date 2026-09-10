@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Bus } from '../src/bus.js'
 import { SYSTEM_PRESETS } from '../src/default-presets.js'
@@ -31,11 +35,7 @@ function fakeBus(initial: KV = {}) {
 }
 
 // Preset env vars must never leak across tests.
-const PRESET_ENV = [
-  'SYSTEM_PRESETS_FILE',
-  'SYSTEM_PRESETS_JSON',
-  'PRUNE_PRESETS',
-]
+const PRESET_ENV = ['SYSTEM_PRESETS_FILE']
 afterEach(() => {
   for (const k of PRESET_ENV) delete process.env[k]
 })
@@ -113,9 +113,15 @@ describe('Presets.seedDefaults', () => {
   })
 })
 
-describe('host-injected system presets (SYSTEM_PRESETS_JSON)', () => {
+describe('host-injected system presets (SYSTEM_PRESETS_FILE)', () => {
+  const writePresets = (arr: unknown): string => {
+    const f = join(tmpdir(), `presets-${randomUUID()}.json`)
+    writeFileSync(f, JSON.stringify(arr))
+    return f
+  }
+
   it('seeds injected presets as immutable system presets', async () => {
-    process.env.SYSTEM_PRESETS_JSON = JSON.stringify([
+    process.env.SYSTEM_PRESETS_FILE = writePresets([
       {
         id: 'plan',
         system_prompt: 'plan-en',
@@ -150,7 +156,7 @@ describe('host-injected system presets (SYSTEM_PRESETS_JSON)', () => {
   })
 
   it('is_system is surfaced on list for injected presets', async () => {
-    process.env.SYSTEM_PRESETS_JSON = JSON.stringify([
+    process.env.SYSTEM_PRESETS_FILE = writePresets([
       { id: 'build', system_prompt: 'b', tools: [], max_turns: 30 },
     ])
     const { bus } = fakeBus()
@@ -158,39 +164,6 @@ describe('host-injected system presets (SYSTEM_PRESETS_JSON)', () => {
     const list = await Presets.list(bus)
     expect(list.isOk()).toBe(true)
     expect(list.value.find(p => p.id === 'build')?.is_system).toBe(true)
-  })
-})
-
-describe('PRUNE_PRESETS removes listed ids on seed', () => {
-  it('removes plan/explore/build but keeps the built-in default', async () => {
-    const { bus, kv } = fakeBus()
-    // Simulate a bucket previously seeded with the easylab trio.
-    for (const id of ['plan', 'explore', 'build', 'my']) {
-      await bus.kvPut(
-        BUCKET,
-        id,
-        JSON.stringify({
-          id,
-          system_prompt: 'x',
-          system_prompt_i18n: '{}',
-          tools: '[]',
-          max_turns: 3,
-        }),
-      )
-    }
-    await bus.kvPut(
-      BUCKET,
-      '__ids__',
-      JSON.stringify(['plan', 'explore', 'build', 'my']),
-    )
-    process.env.PRUNE_PRESETS = 'plan, explore ,build'
-    await Presets.seedDefaults(bus)
-    expect(await bus.kvGet(BUCKET, 'plan')).toBeNull()
-    expect(await bus.kvGet(BUCKET, 'explore')).toBeNull()
-    expect(await bus.kvGet(BUCKET, 'build')).toBeNull()
-    // user preset kept; built-in seeded
-    expect(await bus.kvGet(BUCKET, 'my')).not.toBeNull()
-    expect(await bus.kvGet(BUCKET, 'default')).not.toBeNull()
   })
 })
 

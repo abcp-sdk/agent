@@ -6,7 +6,6 @@ import postgres, { type Sql } from 'postgres'
 import { z } from 'zod'
 import type { DbBackend } from './config.js'
 import { DEFAULT_PRESET } from './config.js'
-import { parse } from './json.js'
 import { logger } from './logger.js'
 
 /**
@@ -23,16 +22,6 @@ export type Db = ReturnType<typeof drizzleSqlite> & {
 
 /** Raw query rows are returned as plain record arrays (drizzle and raw alike). */
 export type DbRow = Record<string, unknown>
-
-/** Shape of a provider row imported from the legacy config (Zod-inferred). */
-export interface ProviderImport {
-  provider_id: string
-  base_url: string
-  api_type?: string | undefined
-  api_key?: string | undefined
-  headers?: unknown
-  models?: unknown
-}
 
 /** Resolve which backend is driving a Db handle (carried on the handle). */
 export function dbBackend(db: Db): DbBackend {
@@ -325,14 +314,14 @@ export function connectDb(
         const db = drizzleSqlite({ client: raw } as never) as unknown as Db
         ;(db as { __backend?: DbBackend }).__backend = 'sqlite'
         await migrateSchema(raw, ddl)
-        await importProvidersBackend(db, raw)
+        await wipeLegacyProviders(db)
         return db
       }
       const sql = postgres(url, { max: 10 })
       await migrateSchema(sql, DDL)
       const db = drizzle({ client: sql }) as unknown as Db
       ;(db as { __backend?: DbBackend }).__backend = 'pg'
-      await importProvidersBackend(db, sql)
+      await wipeLegacyProviders(db)
       return db
     })(),
     e => `db connect failed: ${String(e)}`,
@@ -366,103 +355,22 @@ async function migrateSchema(
   }
 }
 
-async function importProvidersBackend(
-  db: Db,
-  driver: Sql | DatabaseSync,
-): Promise<void> {
+/**
+ * Delete every provider row at boot. Provider `models` used to be a JSON
+ * array of bare model-id strings with no context window; the contract now
+ * requires `[{ id, name, context_limit }]` (context_limit mandatory). Because
+ * context_limit cannot be inferred (and must not be guessed), stale rows are
+ * removed so users re-register their providers explicitly.
+ */
+async function wipeLegacyProviders(db: Db): Promise<void> {
   try {
-    let rows: { value?: string }[]
-    if (driver instanceof DatabaseSync) {
-      const stmt = (driver as DatabaseSync).prepare(
-        `SELECT value FROM config WHERE key = 'providers'`,
-      )
-      rows = stmt.all() as unknown as { value?: string }[]
+    if (dbBackend(db) === 'sqlite') {
+      ;(db.$client as DatabaseSync).prepare(`DELETE FROM providers`).run()
     } else {
-      const res =
-        await (driver as Sql)`SELECT value FROM config WHERE key = 'providers'`
-      rows = res as { value?: string }[]
+      await (db.$client as Sql).unsafe(`DELETE FROM providers`)
     }
-    const raw = rows[0]?.value
-    const rawParsed = z.string().safeParse(raw)
-    if (
-      !rawParsed.success ||
-      rawParsed.data === '' ||
-      rawParsed.data === '{}'
-    ) {
-      return
-    }
-    const parsed = parse(z.unknown(), rawParsed.data)
-    if (parsed.isErr()) return
-
-    const ProviderImportSchema = z.object({
-      provider_id: z.string(),
-      base_url: z.string(),
-      api_type: z.string().optional(),
-      api_key: z.string().optional(),
-      headers: z.unknown(),
-      models: z.unknown(),
-    })
-    const ProvidersMapSchema = z.record(z.string(), ProviderImportSchema)
-    const providers = ProvidersMapSchema.safeParse(parsed.value)
-    if (!providers.success) return
-
-    let imported = 0
-    const providerEntries = z
-      .array(z.tuple([z.string(), ProviderImportSchema]))
-      .safeParse(Object.entries(providers.data))
-    if (!providerEntries.success) return
-    for (const [, o] of providerEntries.data) {
-      await rawInsertProvider(db, o)
-      imported++
-    }
-    try {
-      await rawSetConfigProviders(db)
-    } catch {
-      // legacy table absent on fresh installs
-    }
-    if (imported > 0) {
-      logger.info({ imported }, 'imported providers from config table')
-    }
-  } catch {
-    return
-  }
-}
-
-async function rawInsertProvider(db: Db, o: ProviderImport): Promise<void> {
-  const values: unknown[] = [
-    o.provider_id,
-    o.api_type ?? 'openai-compatible',
-    o.base_url,
-    o.api_key ?? '',
-    JSON.stringify(o.headers ?? null),
-    JSON.stringify(o.models ?? []),
-    nowStr(),
-    nowStr(),
-  ]
-  if (dbBackend(db) === 'sqlite') {
-    ;(db.$client as DatabaseSync)
-      .prepare(
-        `INSERT INTO providers (provider_id, api_type, base_url, api_key, headers, models, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (provider_id) DO NOTHING`,
-      )
-      .run(...(values as never[]))
-  } else {
-    await (db.$client as Sql).unsafe(
-      `INSERT INTO providers (provider_id, api_type, base_url, api_key, headers, models, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       ON CONFLICT (provider_id) DO NOTHING`,
-      values as never[],
-    )
-  }
-}
-
-async function rawSetConfigProviders(db: Db): Promise<void> {
-  if (dbBackend(db) === 'sqlite') {
-    ;(db.$client as DatabaseSync)
-      .prepare(`UPDATE config SET value = '{}' WHERE key = 'providers'`)
-      .run()
-  } else {
-    await (db.$client as Sql)`UPDATE config SET value = '{}' WHERE key = 'providers'`
+  } catch (e) {
+    logger.warn({ err: String(e) }, 'provider wipe skipped')
   }
 }
 

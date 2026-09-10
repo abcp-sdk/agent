@@ -27,6 +27,7 @@ import { nowStr } from './db-client.js'
 import { Mailbox } from './db-mailbox.js'
 import { type ChainMessage, Messages } from './db-messages.js'
 import { Parts } from './db-parts.js'
+import { Providers } from './db-providers.js'
 import { Sessions } from './db-sessions.js'
 import { events, pushEvent } from './events.js'
 import { renderTemplate } from './extensions.js'
@@ -45,7 +46,7 @@ import {
 } from './json.js'
 import { Config, Presets } from './kv-store.js'
 import { type LlmRegistry, parseProviderModelRef } from './llm.js'
-import { catalogModel, findVariant, type JsonObject, resolveContextLimit } from './variants.js'
+import { catalogModel, findVariant, type JsonObject } from './variants.js'
 import { logger } from './logger.js'
 import { factFromPersist, projectMessageFact } from './session-state.js'
 import {
@@ -336,8 +337,6 @@ async function runTurnOnce(
           system,
           messages: stepMessages,
           tools,
-          temperature: deps.config.defaultTemperature,
-          maxOutputTokens: deps.config.defaultMaxTokens,
           abortSignal: ctrl.signal,
           maxRetries: 0,
           ...(providerOptions !== undefined ? { providerOptions } : {}),
@@ -542,7 +541,7 @@ async function prepare(
   const locale = resolveLocale(
     session.locale,
     configLocale,
-    process.env.LOCALE ?? 'en',
+    'en',
   )
 
   const discovered = await discoverToolsCached(deps.bus)
@@ -577,14 +576,18 @@ async function prepare(
     blocked,
   )
 
-  // Session-level settings (PATCH /sessions/{id}/settings) override the
-  // preset; the preset overrides the config default.
+  // Session-level settings override the preset. There is NO hardcoded
+  // fallback prompt: the preset must supply one (the built-in `default`
+  // preset always does).
   const systemPrompt =
     session.system_prompt !== ''
       ? session.system_prompt
       : presetRow !== null
         ? presetPromptFor(presetRow, locale)
-        : 'You are a helpful assistant.'
+        : ''
+  if (systemPrompt.trim() === '') {
+    return `no system prompt: session has none and preset '${session.preset}' is missing or empty`
+  }
   const env = [
     '<env>',
     `  Today's date: ${new Date().toISOString().slice(0, 10)}`,
@@ -601,12 +604,17 @@ async function prepare(
     sessionName,
   )
 
+  // Max steps per turn: session override → preset → fixed default. A
+  // resolved value of 0 is invalid (the loop would never run).
   const maxTurns =
     session.max_turns > 0
       ? session.max_turns
       : presetRow !== null && presetRow.max_turns > 0
         ? presetRow.max_turns
         : deps.config.defaultMaxTurns
+  if (maxTurns <= 0) {
+    return `max_turns must be > 0 (session/preset/default all resolved to 0)`
+  }
 
   const resolved = await deps.llm.resolve(deps.db, session.model)
   if (resolved.isErr()) return resolved.error
@@ -637,9 +645,6 @@ async function prepare(
   }
 }
 
-/** Fall back to a helper 'You are a helpful assistant.' marker. */
-const DEFAULT_SYSTEM_PROMPT = 'You are a helpful assistant.'
-
 /** Resolve the preset's system prompt honoring the effective locale. */
 function presetPromptFor(preset: PresetRow, locale: string): string {
   // Parse `system_prompt_i18n` as { locale: template }; fall back to the
@@ -654,7 +659,7 @@ function presetPromptFor(preset: PresetRow, locale: string): string {
       if (picked !== null) return picked
     }
   }
-  return preset.system_prompt || DEFAULT_SYSTEM_PROMPT
+  return preset.system_prompt
 }
 
 interface ToolCallRec {
@@ -993,6 +998,9 @@ export async function compactSession(
   }))
 
   const limit = await contextLimit(deps, modelId)
+  // No configured context window for this provider/model ⇒ cannot compute
+  // budgets ⇒ skip compaction (never guess a window).
+  if (limit <= 0) return ok(false)
   const { tail, folded } = splitScan(entries, limit * 0.2, limit * 0.1)
   if (folded.length === 0) return ok(false)
 
@@ -1036,17 +1044,28 @@ async function contextLimit(
   deps: AgentDeps,
   modelRef: string,
 ): Promise<number> {
-  const catalog = await getModelsDev(deps.bus)
+  // The context window is USER-CONFIGURED per provider model (required at
+  // registration). No external catalog, no fallback: an unknown provider/model
+  // yields 0, which disables compaction for that session.
   const parsed = parseProviderModelRef(modelRef)
-  if (catalog === null || catalog === undefined || parsed === null) {
-    return deps.config.compactionContextTokens
-  }
-  return resolveContextLimit(
-    catalog,
-    parsed.providerId,
-    parsed.modelId,
-    deps.config.compactionContextTokens,
+  if (parsed === null) return 0
+  const rows = await Providers.list(deps.db)
+  if (rows.isErr()) return 0
+  const provider = rows.value.find(r => r.provider_id === parsed.providerId)
+  if (provider === undefined) return 0
+  const models = parse(
+    z.array(
+      z.object({
+        id: z.string(),
+        name: z.string().optional(),
+        context_limit: z.number().int(),
+      }),
+    ),
+    provider.models,
   )
+  if (models.isErr()) return 0
+  const hit = models.value.find(m => m.id === parsed.modelId)
+  return hit?.context_limit ?? 0
 }
 
 /**
