@@ -24,15 +24,69 @@ import { logger } from './logger.js'
  */
 
 export interface SessionMessageFact {
+  /** Session name, carried so a KV watcher can map the hashed key back. */
+  session_name: string
   /** Creation timestamp of the newest message (PG `messages.created_at`). */
   last_message_at: string
   /** First text part of the newest message, truncated for a list preview. */
   last_message_preview: string
   /** Role of the newest message (user | assistant | event | compaction). */
   last_message_role: string
+  /**
+   * Monotonic per-session message counter, bumped once per appended message.
+   * Clients subtract their locally-persisted read watermark to get the unread
+   * count (read state stays client-local).
+   */
+  message_seq: number
 }
 
 const PREVIEW_MAX = 80
+
+/**
+ * In-process cache of the last projected `message_seq` per session. The KV
+ * read-modify-write would race when two persist sites bump near-simultaneously
+ * (a user prompt lands while the turn appends a step); serializing through a
+ * cache keeps the counter strictly monotonic. Seeded from KV on first use and
+ * by calibration at startup.
+ */
+const seqCache = new Map<string, number>()
+/** Per-session serialization of the seq read-modify-write. */
+const seqLocks = new Map<string, Promise<number>>()
+
+function bumpSeq(bus: Bus, sid: string): Promise<number> {
+  const prev = seqLocks.get(sid) ?? Promise.resolve(seqCache.get(sid) ?? 0)
+  const next = prev
+    .catch(() => 0)
+    .then(async cur => {
+      let base = seqCache.get(sid)
+      if (base === undefined) {
+        const raw = await bus
+          .kvGet(BUCKET_SESSION_STATE, natsToken(sid))
+          .catch(() => null)
+        base = raw === null ? 0 : (parseFact(raw)?.message_seq ?? 0)
+      }
+      const seq = Math.max(cur, base) + 1
+      seqCache.set(sid, seq)
+      return seq
+    })
+  seqLocks.set(sid, next)
+  return next
+}
+
+function parseFact(raw: string): SessionMessageFact | null {
+  try {
+    const v = JSON.parse(raw) as Partial<SessionMessageFact>
+    return {
+      session_name: String(v.session_name ?? ''),
+      last_message_at: String(v.last_message_at ?? ''),
+      last_message_preview: String(v.last_message_preview ?? ''),
+      last_message_role: String(v.last_message_role ?? ''),
+      message_seq: Number(v.message_seq ?? 0),
+    }
+  } catch {
+    return null
+  }
+}
 
 /**
  * Create-or-noop the fact bucket with persistent semantics (ttl=0). The
@@ -53,7 +107,7 @@ let bucketEnsured = false
 export function projectMessageFact(
   bus: Bus,
   sid: string,
-  fact: SessionMessageFact,
+  fact: Omit<SessionMessageFact, 'session_name' | 'message_seq'>,
 ): void {
   fireAndForget(
     (async () => {
@@ -61,12 +115,21 @@ export function projectMessageFact(
         bucketEnsured = true
         await ensureBucket(bus)
       }
-      return bus.kvPut(
+      const seq = await bumpSeq(bus, sid)
+      const full: SessionMessageFact = {
+        session_name: sid,
+        message_seq: seq,
+        ...fact,
+      }
+      await bus.kvPut(
         BUCKET_SESSION_STATE,
         natsToken(sid),
-        JSON.stringify(fact),
+        JSON.stringify(full),
         0,
       )
+      // No explicit nudge here: the list watcher observes this KV write
+      // directly (abc-session-meta watch), so a second signal would only
+      // produce a duplicate upsert.
     })().catch(err => {
       logger.warn({ sid, err: String(err) }, 'session-state kvPut failed')
     }),
@@ -79,7 +142,7 @@ export function factFromPersist(
   createdAt: string,
   role: string,
   previewText: string,
-): SessionMessageFact {
+): Omit<SessionMessageFact, 'session_name' | 'message_seq'> {
   return {
     last_message_at: createdAt,
     last_message_preview: previewText.slice(0, PREVIEW_MAX),
@@ -103,16 +166,8 @@ export async function readMessageFacts(
         .kvGet(BUCKET_SESSION_STATE, natsToken(sid))
         .catch(() => null)
       if (raw === null || raw === undefined) return
-      try {
-        const v = JSON.parse(raw) as Partial<SessionMessageFact>
-        out.set(sid, {
-          last_message_at: String(v.last_message_at ?? ''),
-          last_message_preview: String(v.last_message_preview ?? ''),
-          last_message_role: String(v.last_message_role ?? ''),
-        })
-      } catch {
-        /* ignore malformed fact */
-      }
+      const fact = parseFact(raw)
+      if (fact !== null) out.set(sid, fact)
     }),
   )
   return out
@@ -131,23 +186,28 @@ export async function calibrateMessageFacts(bus: Bus, db: Db): Promise<void> {
     // The query is driven per-backend (placeholder is `?` for sqlite, `$n` for pg).
     const rows = await rawCalibrationRows(db, PREVIEW_MAX)
     for (const r of rows) {
+      const sid = String(r.name)
+      // Preserve a pre-existing message_seq: calibration repairs the PREVIEW
+      // only. Resetting the counter would make clients' persisted read
+      // watermarks exceed it and temporarily hide genuinely-new messages.
+      const existingRaw = await bus
+        .kvGet(BUCKET_SESSION_STATE, natsToken(sid))
+        .catch(() => null)
+      const existing =
+        existingRaw === null ? null : parseFact(existingRaw)
+      const seq = existing?.message_seq ?? seqCache.get(sid) ?? 0
+      seqCache.set(sid, seq)
       const fact: SessionMessageFact = {
+        session_name: sid,
+        message_seq: seq,
         last_message_at: String(r.last_message_at),
         last_message_preview: String(r.last_message_preview ?? ''),
         last_message_role: String(r.last_message_role),
       }
       await bus
-        .kvPut(
-          BUCKET_SESSION_STATE,
-          natsToken(String(r.name)),
-          JSON.stringify(fact),
-          0,
-        )
+        .kvPut(BUCKET_SESSION_STATE, natsToken(sid), JSON.stringify(fact), 0)
         .catch(err => {
-          logger.warn(
-            { sid: String(r.name), err: String(err) },
-            'calibration kvPut failed',
-          )
+          logger.warn({ sid, err: String(err) }, 'calibration kvPut failed')
         })
     }
     logger.info({ sessions: rows.length }, 'message-fact calibration done')

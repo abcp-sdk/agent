@@ -109,6 +109,26 @@ export const events = {
 /** Lifecycle event kinds published on `abc.session.lifecycle.{kind}`. */
 export type LifecycleEvent = 'created' | 'forked' | 'renamed' | 'deleted'
 
+const SESSION_CHANGED_SUBJECT = 'abc.session.changed'
+
+/**
+ * Announce that a session's mutable state changed (a message landed or its
+ * settings were edited) so list watchers can refetch that one session. A live
+ * `pub` (not durable): a watcher that connects later gets current state from
+ * its initial snapshot, so only connected watchers need the nudge.
+ */
+export function publishSessionChanged(bus: Bus, sid: string): void {
+  void bus
+    .publish(SESSION_CHANGED_SUBJECT, { session_name: sid })
+    .catch(err => {
+      logger.warn({ sid, err: String(err) }, 'session-changed publish failed')
+    })
+}
+
+export const SESSION_CHANGED = SESSION_CHANGED_SUBJECT
+
+/** Lifecycle event kinds published on `abc.session.lifecycle.{kind}`. */
+
 /**
  * Trigger hook: after a session lifecycle action commits, notify the durable
  * stream so any service (e.g. repo-extension workspaces) can react.

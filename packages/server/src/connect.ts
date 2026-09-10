@@ -1,6 +1,7 @@
 import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
 import {
   appendSessionId,
+  BUCKET_SESSION_STATE,
   buildModelForApiType,
   catalogModel,
   Config,
@@ -24,6 +25,9 @@ import {
   Presets,
   Providers,
   publishLifecycle,
+  publishSessionChanged,
+  factFromPersist,
+  projectMessageFact,
   readActiveRun,
   readMessageFacts,
   renderTemplate,
@@ -49,7 +53,9 @@ import {
   GetFileResponseSchema,
   IngestFileResponseSchema,
   WatchSessionResponseSchema,
+  WatchSessionsResponseSchema,
   type WatchSessionResponse,
+  type WatchSessionsResponse,
 } from '@easylab-agent/schema'
 
 /**
@@ -156,7 +162,11 @@ function toJsonObject(v: Record<string, unknown>): JsonObject {
  */
 function sessionToMsg(
   s: SessionRowView,
-  fact?: { last_message_at: string; last_message_preview: string },
+  fact?: {
+    last_message_at: string
+    last_message_preview: string
+    message_seq: number
+  },
 ) {
   return {
     name: s.name,
@@ -181,6 +191,7 @@ function sessionToMsg(
     unreadCount: 0,
     lastMessageAt: fact?.last_message_at ?? '',
     lastMessagePreview: fact?.last_message_preview ?? '',
+    messageSeq: fact?.message_seq ?? 0,
   }
 }
 
@@ -405,6 +416,20 @@ export function buildConnectRoutes(
           appendSessionId(deps.bus, id, insert.value),
           'appendSessionIds',
         )
+        // Mirror the newest-message fact immediately so the chat-list preview
+        // shows the user's message right away (assistant steps overwrite it as
+        // the turn progresses).
+        const previewText =
+          prompt !== ''
+            ? prompt
+            : attachments.length > 0
+              ? `[${attachments.length} attachment(s)]`
+              : ''
+        projectMessageFact(
+          deps.bus,
+          id,
+          factFromPersist(new Date().toISOString(), 'user', previewText),
+        )
         await new AbcAgent(deps.bus).publishMailbox(id, 'user_prompt', {
           text: prompt,
           attachments: attachments ?? [],
@@ -438,6 +463,137 @@ export function buildConnectRoutes(
           const eid = fieldString(raw, 'eid')
           if (dedup.duplicate(eid)) continue
           yield toWatchEvent(raw)
+        }
+      },
+
+      /**
+       * Real-time session-list stream. Emits an initial full snapshot, then a
+       * stream of per-session upserts and removals. Driven by three sources:
+       * the message-fact KV (`abc-session-meta`) for previews/seq, the
+       * lifecycle subject for created/forked/renamed/deleted, and the
+       * `abc.session.changed` pub for settings edits. Watchers are best-effort
+       * nudged and refetch the affected session from the DB + KV, so a missed
+       * nudge only delays that session's row until the next event.
+       */
+      async *watchSessions() {
+        // Build one Session snapshot (facts + row) for a name; null if gone.
+        const snapshotOf = async (name: string) => {
+          const r = await Sessions.get(deps.db, name)
+          if (r.isErr() || r.value === null) return null
+          const facts = await readMessageFacts(deps.bus, [name])
+          return sessionToMsg(r.value, facts.get(name))
+        }
+
+        // A queue serializes the three independent watchers into one stream.
+        const queue: WatchSessionsResponse[] = []
+        let wake: (() => void) | null = null
+        const push = (msg: WatchSessionsResponse) => {
+          queue.push(msg)
+          wake?.()
+          wake = null
+        }
+        const pushUpsert = async (name: string) => {
+          const s = await snapshotOf(name)
+          if (s !== null) {
+            push(create(WatchSessionsResponseSchema, { upserts: [s] }))
+          }
+        }
+
+        // Start all three watchers BEFORE emitting the snapshot so no change
+        // that lands during the (async) snapshot query is lost; anything they
+        // observe is queued and flushed after the snapshot.
+        // 1) fact changes (message landed / preview advanced).
+        const factWatch = await deps.bus
+          .kvWatch(BUCKET_SESSION_STATE, '>')
+          .catch(() => null)
+        const factTask = (async () => {
+          if (factWatch === null) return
+          for await (const ev of factWatch.stream) {
+            if (ev.deleted) continue
+            let sid = ''
+            try {
+              sid = String(
+                (JSON.parse(ev.value) as { session_name?: string })
+                  .session_name ?? '',
+              )
+            } catch {
+              continue
+            }
+            if (sid !== '') await pushUpsert(sid)
+          }
+        })()
+
+        // 2) structural lifecycle changes.
+        const lcSub = await deps.bus
+          .subscribe('abc.session.lifecycle.>')
+          .catch(() => null)
+        const lcTask = (async () => {
+          if (lcSub === null) return
+          for await (const env of lcSub) {
+            const kind = String((env.payload as { kind?: string })?.kind ?? '')
+            const p = env.payload as {
+              session_name?: string
+              from?: string
+              to?: string
+            }
+            if (kind === 'deleted' && p.session_name) {
+              push(
+                create(WatchSessionsResponseSchema, {
+                  removed: [p.session_name],
+                }),
+              )
+            } else if (kind === 'renamed' && p.from && p.to) {
+              push(create(WatchSessionsResponseSchema, { removed: [p.from] }))
+              await pushUpsert(p.to)
+            } else if (p.session_name) {
+              await pushUpsert(p.session_name)
+            }
+          }
+        })()
+
+        // 3) settings-change nudges (setModel / updateSettings).
+        const chSub = await deps.bus
+          .subscribe('abc.session.changed')
+          .catch(() => null)
+        const chTask = (async () => {
+          if (chSub === null) return
+          for await (const env of chSub) {
+            const sid = String(
+              (env.payload as { session_name?: string })?.session_name ?? '',
+            )
+            if (sid !== '') await pushUpsert(sid)
+          }
+        })()
+
+        try {
+          // Initial full snapshot (the client replaces its whole list).
+          const all = await Sessions.list(deps.db)
+          if (all.isErr()) throw new Error(all.error)
+          const facts = await readMessageFacts(
+            deps.bus,
+            all.value.map(s => s.name),
+          )
+          yield create(WatchSessionsResponseSchema, {
+            snapshot: true,
+            removed: [],
+            upserts: all.value.map(s => sessionToMsg(s, facts.get(s.name))),
+          })
+          for (;;) {
+            while (queue.length > 0) {
+              const msg = queue.shift()
+              if (msg !== undefined) yield msg
+            }
+            await new Promise<void>(resolve => {
+              wake = resolve
+            })
+          }
+        } finally {
+          await factWatch?.stop().catch(() => {})
+          void factTask.catch(() => {})
+          await lcSub?.close().catch(() => {})
+          await chSub?.close().catch(() => {})
+          void lcTask.catch(() => {})
+          void chTask.catch(() => {})
         }
       },
 
@@ -512,6 +668,7 @@ export function buildConnectRoutes(
         const { id, model, variant } = req
         const r = await Sessions.setModel(deps.db, id, model, variant)
         if (r.isErr()) throw new Error(r.error)
+        publishSessionChanged(deps.bus, id)
         const s = await Sessions.get(deps.db, id)
         return {
           session:
@@ -581,6 +738,7 @@ export function buildConnectRoutes(
         }
         const r = await Sessions.updateSettings(deps.db, id, patch)
         if (r.isErr()) throw new Error(r.error)
+        publishSessionChanged(deps.bus, id)
         const s = await Sessions.get(deps.db, id)
         return {
           session:
