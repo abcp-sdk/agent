@@ -3,6 +3,7 @@ import {
   type AgentDeps,
   type Bus,
   backfillKvFromPg,
+  backfillModelRefs,
   calibrateMessageFacts,
   connectBus,
   connectDb,
@@ -59,6 +60,11 @@ async function main(): Promise<void> {
   }
   const db: Db = dbRes.value
 
+  // One-time migration: rewrite legacy bare model ids to canonical
+  // `provider_id/model_id` references (flat model lookup is gone). Blocks boot
+  // because turns must not run against un-migrated refs.
+  await backfillModelRefs(db)
+
   const busRes = await connectBus(config.natsUrl)
   if (busRes.isErr()) {
     logger.error({ err: busRes.error }, 'event bus connect failed (required)')
@@ -96,7 +102,7 @@ async function main(): Promise<void> {
     timer.unref()
   }
 
-  const llm = new LlmRegistry(config)
+  const llm = new LlmRegistry()
   const files = makeBlobStore(bus)
   const deps: AgentDeps = {
     db,

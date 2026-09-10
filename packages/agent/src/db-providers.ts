@@ -1,13 +1,9 @@
 import type { ProviderRow } from '@easylab-agent/schema'
 import { eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
-import { z } from 'zod'
 import type { Db } from './db-client.js'
 import { nowStr, q } from './db-client.js'
 import { providers } from './db-schema.js'
-import { parse } from './json.js'
-
-const StringArraySchema = z.array(z.string())
 
 export interface ProviderInput {
   providerId: string
@@ -82,21 +78,4 @@ export const Providers = {
       'delete provider',
     )
   },
-}
-
-/**
- * Pure: find the provider advertising exactly this model id. Exported for
- * unit testing and the LLM registry.
- */
-export function findProviderForModel(
-  rows: ProviderRow[],
-  model: string,
-): ProviderRow | null {
-  if (model === '') return null
-  return (
-    rows.find(r => {
-      const models = parse(StringArraySchema, r.models)
-      return models.isOk() && models.value.includes(model)
-    }) ?? null
-  )
 }

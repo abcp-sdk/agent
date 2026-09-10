@@ -23,11 +23,6 @@ export interface ServerConfig {
   /** Discovery timeout for extension/tool NATS broadcasts (ms). */
   extensionDiscoverMs: number
   toolTimeoutMs: number
-  /** LLM fallback when a session model is unset AND the operator configured an env default. Empty when none is set; sessions then resolve from registered providers only. */
-  llmApiType: string
-  llmBaseUrl: string
-  llmApiKey: string
-  llmModel: string
   defaultMaxTurns: number
   defaultTemperature: number
   defaultMaxTokens: number
@@ -35,8 +30,6 @@ export interface ServerConfig {
   compactionContextTokens: number
   /** File storage backend: "nats" (JetStream object store). */
   filesStorage: string
-  /** VLM model ref for image-read ("provider_id/model_id"). */
-  imageReadModel: string
 }
 
 export type DbBackend = 'pg' | 'sqlite'
@@ -89,10 +82,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ),
     toolTimeoutMs:
       Number.parseInt(or('TOOL_TIMEOUT_SECS', '600'), 10) * 1000,
-    llmApiType: or('LLM_API_TYPE', ''),
-    llmBaseUrl: or('LLM_BASE_URL', ''),
-    llmApiKey: or('LLM_API_KEY', ''),
-    llmModel: or('LLM_MODEL', ''),
     defaultMaxTurns: Number.parseInt(or('DEFAULT_MAX_TURNS', '25'), 10),
     defaultTemperature: Number.parseFloat(or('LLM_TEMPERATURE', '0')),
     defaultMaxTokens: Number.parseInt(or('LLM_MAX_TOKENS', '32768'), 10),
@@ -101,6 +90,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       10,
     ),
     filesStorage: or('FILE_STORAGE', 'nats'),
-    imageReadModel: or('IMAGE_READ_MODEL', ''),
   }
 }

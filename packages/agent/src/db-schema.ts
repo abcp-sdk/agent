@@ -7,7 +7,10 @@ import {
 
 export const sessions = sqliteTable('sessions', {
   name: text('name').primaryKey(),
+  // Canonical model reference "provider_id/model_id".
   model: text('model').notNull().default(''),
+  // Selected reasoning variant id (empty = provider defaults).
+  variant: text('variant').notNull().default(''),
   preset: text('preset').notNull().default(''),
   tipId: text('tip_id'),
   maxTurns: integer('max_turns').notNull().default(0),

@@ -14,6 +14,7 @@ type Row = typeof sessions.$inferSelect
 const toRow = (r: Row): SessionRow => ({
   name: r.name,
   model: r.model,
+  variant: r.variant,
   preset: r.preset,
   tip_id: r.tipId,
   max_turns: r.maxTurns,
@@ -33,6 +34,7 @@ export interface SessionPatch {
   // `| undefined` on every optional: callers pass zod-inferred bodies whose
   // absent fields arrive as explicit `undefined` (exactOptionalPropertyTypes).
   model?: string | undefined
+  variant?: string | undefined
   preset?: string | undefined
   maxTurns?: number | undefined
   systemPrompt?: string | undefined
@@ -74,6 +76,7 @@ export const Sessions = {
       // `| undefined`: explicit-undefined keys from zod-inferred bodies are
       // accepted and fall through to the defaults below.
       model?: string | undefined
+      variant?: string | undefined
       preset?: string | undefined
       tipId?: string | null | undefined
       systemPrompt?: string | undefined
@@ -86,6 +89,7 @@ export const Sessions = {
         db.insert(sessions).values({
           name: input.name,
           model: input.model ?? '',
+          variant: input.variant ?? '',
           preset: input.preset ?? DEFAULT_PRESET,
           tipId: input.tipId ?? null,
           systemPrompt: input.systemPrompt ?? '',
@@ -108,12 +112,21 @@ export const Sessions = {
     }, 'delete session')
   },
 
-  setModel(db: Db, name: string, model: string): ResultAsync<void, string> {
+  setModel(
+    db: Db,
+    name: string,
+    model: string,
+    variant?: string | undefined,
+  ): ResultAsync<void, string> {
     return q(
       () =>
         db
           .update(sessions)
-          .set({ model, updatedAt: nowStr() })
+          .set(
+            variant === undefined
+              ? { model, updatedAt: nowStr() }
+              : { model, variant, updatedAt: nowStr() },
+          )
           .where(eq(sessions.name, name)),
       'set session model',
     ).map(() => undefined)
@@ -222,6 +235,7 @@ function patchToDrizzle(
 ): Partial<typeof sessions.$inferInsert> {
   const set: Partial<typeof sessions.$inferInsert> = { updatedAt }
   if (patch.model !== undefined) set.model = patch.model
+  if (patch.variant !== undefined) set.variant = patch.variant
   if (patch.preset !== undefined) set.preset = patch.preset
   if (patch.maxTurns !== undefined) set.maxTurns = patch.maxTurns
   if (patch.systemPrompt !== undefined) set.systemPrompt = patch.systemPrompt

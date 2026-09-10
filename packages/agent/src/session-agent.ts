@@ -44,7 +44,8 @@ import {
   WakePayloadSchema,
 } from './json.js'
 import { Config, Presets } from './kv-store.js'
-import { type LlmRegistry, resolveContextLimit } from './llm.js'
+import { type LlmRegistry, parseProviderModelRef } from './llm.js'
+import { catalogModel, findVariant, type JsonObject, resolveContextLimit } from './variants.js'
 import { logger } from './logger.js'
 import { factFromPersist, projectMessageFact } from './session-state.js'
 import {
@@ -268,6 +269,8 @@ interface TurnCtx {
   system: string
   maxTurns: number
   model: import('ai').LanguageModel
+  providerOptions: Record<string, import('./variants.js').JsonObject> | undefined
+  headers: Record<string, string> | undefined
 }
 
 /**
@@ -282,7 +285,7 @@ async function runTurnOnce(
   const ctrl = getAbortController(sid)
   const prepared = await prepare(deps, sid, ctrl.signal)
   if (typeof prepared === 'string') return prepared
-  const { tools, system, maxTurns, model } = prepared
+  const { tools, system, maxTurns, model, providerOptions, headers } = prepared
 
   pushEvent(deps.bus, sid, 'status', { type: 'busy' })
 
@@ -337,6 +340,8 @@ async function runTurnOnce(
           maxOutputTokens: deps.config.defaultMaxTokens,
           abortSignal: ctrl.signal,
           maxRetries: 0,
+          ...(providerOptions !== undefined ? { providerOptions } : {}),
+          ...(headers !== undefined ? { headers } : {}),
         })
 
         let text = ''
@@ -606,6 +611,17 @@ async function prepare(
   const resolved = await deps.llm.resolve(deps.db, session.model)
   if (resolved.isErr()) return resolved.error
 
+  // Resolve the selected reasoning variant (if any) into AI-SDK
+  // providerOptions + request headers. Strict provider+model lookup against
+  // the models.dev catalog; no variant ⇒ no providerOptions sent.
+  const { providerOptions, headers } = await resolveVariantOptions(
+    deps,
+    resolved.value.providerId,
+    resolved.value.modelId,
+    resolved.value.apiType,
+    session.variant,
+  )
+
   // Project the effective locale as a session variable so extensions can
   // localize their tool-result text. Written by the agent (provider "agent")
   // into the shared vars bucket during each turn.
@@ -616,6 +632,8 @@ async function prepare(
     system: `${renderedPrompt}\n\n${env}`,
     maxTurns,
     model: resolved.value.model,
+    providerOptions,
+    headers,
   }
 }
 
@@ -1014,16 +1032,63 @@ export async function compactSession(
   return ok(true)
 }
 
-async function contextLimit(deps: AgentDeps, modelId: string): Promise<number> {
+async function contextLimit(
+  deps: AgentDeps,
+  modelRef: string,
+): Promise<number> {
   const catalog = await getModelsDev(deps.bus)
-  if (catalog !== null && catalog !== undefined) {
-    return resolveContextLimit(
-      catalog,
-      modelId,
-      deps.config.compactionContextTokens,
-    )
+  const parsed = parseProviderModelRef(modelRef)
+  if (catalog === null || catalog === undefined || parsed === null) {
+    return deps.config.compactionContextTokens
   }
-  return deps.config.compactionContextTokens
+  return resolveContextLimit(
+    catalog,
+    parsed.providerId,
+    parsed.modelId,
+    deps.config.compactionContextTokens,
+  )
+}
+
+/**
+ * Resolve the selected reasoning variant to AI-SDK providerOptions + request
+ * headers. Unknown variant or catalog miss ⇒ `{}`/undefined (provider
+ * defaults; no providerOptions sent).
+ */
+async function resolveVariantOptions(
+  deps: AgentDeps,
+  providerId: string,
+  modelId: string,
+  apiType: string,
+  variantId: string,
+): Promise<{
+  providerOptions: Record<string, JsonObject> | undefined
+  headers: Record<string, string> | undefined
+}> {
+  if (variantId === '') return { providerOptions: undefined, headers: undefined }
+  const catalog = await getModelsDev(deps.bus)
+  const model = catalogModel(catalog, providerId, modelId)
+  if (model === null) {
+    logger.warn(
+      { provider: providerId, model: modelId, variant: variantId },
+      'variant requested but model not in catalog; ignoring',
+    )
+    return { providerOptions: undefined, headers: undefined }
+  }
+  const def = findVariant(model, apiType, variantId)
+  if (def === null) {
+    logger.warn(
+      { provider: providerId, model: modelId, variant: variantId },
+      'unknown variant; ignoring',
+    )
+    return { providerOptions: undefined, headers: undefined }
+  }
+  return {
+    providerOptions:
+      Object.keys(def.providerOptions).length > 0
+        ? def.providerOptions
+        : undefined,
+    headers: def.headers,
+  }
 }
 
 function sleep(ms: number): Promise<void> {

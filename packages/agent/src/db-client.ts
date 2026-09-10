@@ -63,6 +63,7 @@ const DDL = `
 CREATE TABLE IF NOT EXISTS sessions (
     name TEXT PRIMARY KEY,
     model TEXT NOT NULL DEFAULT '',
+    variant TEXT NOT NULL DEFAULT '',
     preset TEXT NOT NULL DEFAULT '',
     tip_id TEXT,
     max_turns INTEGER NOT NULL DEFAULT 0,
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_used_at TEXT
 );
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS locale TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variant TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
@@ -132,6 +134,7 @@ const SQLITE_DDL = `
 CREATE TABLE IF NOT EXISTS sessions (
     name TEXT PRIMARY KEY,
     model TEXT NOT NULL DEFAULT '',
+    variant TEXT NOT NULL DEFAULT '',
     preset TEXT NOT NULL DEFAULT '',
     tip_id TEXT,
     max_turns INTEGER NOT NULL DEFAULT 0,
@@ -194,6 +197,7 @@ CREATE TABLE IF NOT EXISTS providers (
 const PG_MIGRATIONS = `
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS max_turns INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS system_prompt TEXT NOT NULL DEFAULT '';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variant TEXT NOT NULL DEFAULT '';
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_input_tokens BIGINT NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_output_tokens BIGINT NOT NULL DEFAULT 0;
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_name;
@@ -210,6 +214,7 @@ const PG_MIGRATIONS = `
 // CREATE); the additive ALTERs are only needed for pre-existing files. Each is
 // best-effort — sqlite throws on duplicate columns, so we swallow errcode 1.
 const SQLITE_MIGRATIONS = [
+  `ALTER TABLE sessions ADD COLUMN variant TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE sessions ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE sessions ADD COLUMN last_input_tokens INTEGER NOT NULL DEFAULT 0`,

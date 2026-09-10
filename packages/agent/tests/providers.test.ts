@@ -1,31 +1,31 @@
-import type { ProviderRow } from '@zergx-agent/schema'
 import { describe, expect, it } from 'vitest'
-import { findProviderForModel } from '../src/db-providers.js'
+import { modelRef, parseProviderModelRef } from '../src/llm.js'
 
-const row = (id: string, models: string): ProviderRow => ({
-  provider_id: id,
-  api_type: 'openai-compatible',
-  base_url: 'http://x/v1',
-  api_key: '',
-  headers: 'null',
-  models,
-  updated_at: '',
+describe('parseProviderModelRef', () => {
+  it('splits provider/model', () => {
+    expect(parseProviderModelRef('anthropic/claude-opus-4-6')).toEqual({
+      providerId: 'anthropic',
+      modelId: 'claude-opus-4-6',
+    })
+  })
+
+  it('keeps slashes in the model id', () => {
+    expect(parseProviderModelRef('openrouter/anthropic/claude')).toEqual({
+      providerId: 'openrouter',
+      modelId: 'anthropic/claude',
+    })
+  })
+
+  it('rejects malformed and bare refs', () => {
+    expect(parseProviderModelRef('')).toBeNull()
+    expect(parseProviderModelRef('gpt-5')).toBeNull()
+    expect(parseProviderModelRef('/x')).toBeNull()
+    expect(parseProviderModelRef('x/')).toBeNull()
+  })
 })
 
-describe('findProviderForModel', () => {
-  it('matches exact model id', () => {
-    const rows = [row('a', '["deepseek-v4-pro"]'), row('b', '["gpt-5","o4"]')]
-    expect(findProviderForModel(rows, 'gpt-5')?.provider_id).toBe('b')
-    expect(findProviderForModel(rows, 'deepseek-v4-pro')?.provider_id).toBe('a')
-  })
-
-  it('returns null for unknown or empty models', () => {
-    const rows = [row('a', '["gpt-5"]')]
-    expect(findProviderForModel(rows, 'gpt-4')).toBeNull()
-    expect(findProviderForModel(rows, '')).toBeNull()
-  })
-
-  it('ignores malformed models json', () => {
-    expect(findProviderForModel([row('a', 'not json')], 'gpt-5')).toBeNull()
+describe('modelRef', () => {
+  it('joins provider + model', () => {
+    expect(modelRef('pa', 'gpt-5')).toBe('pa/gpt-5')
   })
 })

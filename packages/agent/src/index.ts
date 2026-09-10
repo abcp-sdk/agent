@@ -23,6 +23,7 @@ export * from './kv-store.js'
 export * from './llm.js'
 export * from './logger.js'
 export * from './models-dev.js'
+export * from './model-ref-backfill.js'
 export * from './session-agent.js'
 export {
   calibrateMessageFacts,
@@ -40,3 +41,4 @@ export {
 } from './store.js'
 export * from './token.js'
 export * from './tools.js'
+export * from './variants.js'

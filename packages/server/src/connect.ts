@@ -2,17 +2,21 @@ import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
 import {
   appendSessionId,
   buildModelForApiType,
+  catalogModel,
   Config,
   compactSession,
   deleteSessionIds,
   discoverTools,
   fileByCode,
+  findVariant,
   fireAndForget,
+  getModelsDev,
   interruptRun,
   localizeSchema,
   Mailbox,
   mailboxSubject,
   Messages,
+  parseProviderModelRef,
   Parts,
   pickDescription,
   pickLocalized,
@@ -23,14 +27,16 @@ import {
   resolveLocale,
   Sessions,
   sseSubject,
+  toModelVariant,
   toolConfigMap,
+  variantsForApiType,
   DEFAULT_PRESET,
 } from '@easylab-agent/agent'
 import { type AgentDeps } from '@easylab-agent/agent'
 import { generateText } from 'ai'
 import { ResultAsync } from 'neverthrow'
 import { EidDedup } from './context.js'
-import { type ConnectRouter, type ServiceImpl } from '@connectrpc/connect'
+import { type ConnectRouter, type ServiceImpl, ConnectError, Code } from '@connectrpc/connect'
 import { create, fromJson, toJson } from '@bufbuild/protobuf'
 import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
 import { StructSchema, ValueSchema, type Value } from '@bufbuild/protobuf/wkt'
@@ -52,6 +58,7 @@ import {
 interface SessionRowView {
   name: string
   model?: string | null | undefined
+  variant?: string | null | undefined
   preset?: string | null | undefined
   tip_id?: string | null | undefined
   max_turns?: number | null | undefined
@@ -143,6 +150,7 @@ function sessionToMsg(s: SessionRowView) {
   return {
     name: s.name,
     model: s.model ?? '',
+    variant: s.variant ?? '',
     preset: s.preset ?? '',
     tipId: s.tip_id ?? '',
     maxTurns: s.max_turns ?? 0,
@@ -243,6 +251,7 @@ export function buildConnectRoutes(
         const name = await Sessions.create(deps.db, {
           name: body.name,
           model: body.model,
+          variant: body.variant,
           preset: body.preset,
         })
         if (name.isErr()) throw new Error(name.error)
@@ -461,8 +470,8 @@ export function buildConnectRoutes(
         return { session: sessionToMsg({ ...p, name }) }
       },
       async setModel(req) {
-        const { id, model } = req
-        const r = await Sessions.setModel(deps.db, id, model)
+        const { id, model, variant } = req
+        const r = await Sessions.setModel(deps.db, id, model, variant)
         if (r.isErr()) throw new Error(r.error)
         const s = await Sessions.get(deps.db, id)
         return {
@@ -578,6 +587,10 @@ export function buildConnectRoutes(
         if (r.model === undefined || r.model === '') {
           return { ok: false, result: 'model is required to test' }
         }
+        // `model` accepts a canonical provider/model ref or a bare id; use the
+        // trailing model id for the model factory.
+        const ref = parseProviderModelRef(r.model)
+        const modelId = ref !== null ? ref.modelId : r.model
         const built = buildModelForApiType(
           {
             apiType: r.apiType,
@@ -585,16 +598,33 @@ export function buildConnectRoutes(
             apiKey: r.apiKey ?? '',
             headers: {},
           },
-          r.model,
+          modelId,
         )
         if (built.isErr()) {
           return { ok: false, result: built.error }
         }
+        // Apply the selected variant (if any) to the test generation.
+        const providerProvider =
+          r.providerId !== '' ? r.providerId : (ref?.providerId ?? '')
+        const meta = catalogModel(
+          await getModelsDev(deps.bus),
+          providerProvider,
+          modelId,
+        )
+        const variantDef =
+          meta === null
+            ? null
+            : findVariant(meta, r.apiType, r.variant ?? '')
+        const providerOptions =
+          variantDef !== null && Object.keys(variantDef.providerOptions).length > 0
+            ? variantDef.providerOptions
+            : undefined
         const gen = await ResultAsync.fromPromise(
           generateText({
             model: built.value,
             prompt: 'hi',
             maxOutputTokens: 8,
+            ...(providerOptions !== undefined ? { providerOptions } : {}),
           }),
           e => `provider test: generation failed: ${String(e)}`,
         )
@@ -604,19 +634,36 @@ export function buildConnectRoutes(
         return { ok: true, result: gen.value.text }
       },
       async listModels(req) {
+        const pid = req.providerId
+        // provider_id is REQUIRED: a global (all-providers) model list is
+        // rejected outright — it invites duplicate model ids across providers.
+        if (pid === '') {
+          throw new ConnectError(
+            'provider_id is required',
+            Code.InvalidArgument,
+          )
+        }
         const r = await Providers.list(deps.db)
         if (r.isErr()) throw new Error(r.error)
-        const want = req.providerId ?? ''
-        const models: { id: string; name: string }[] = []
-        for (const p of r.value) {
-          if (!p) continue
-          if (want !== '' && p.provider_id !== want) continue
-          let arr: string[] = []
+        const catalog = await getModelsDev(deps.bus)
+        const provider = r.value.find(p => p?.provider_id === pid)
+        const apiType = provider?.api_type ?? ''
+        let arr: string[] = []
+        if (provider !== undefined) {
           try {
-            arr = JSON.parse(p.models ?? '[]') ?? []
+            arr = JSON.parse(provider.models ?? '[]') ?? []
           } catch {}
-          for (const id of arr) models.push({ id, name: id })
         }
+        // Variants are resolved STRICTLY by provider_id/model_id against the
+        // models.dev catalog; models absent from the catalog have no variants.
+        const models = arr.map(id => {
+          const meta = catalogModel(catalog, pid, id)
+          const variants =
+            meta === null
+              ? []
+              : variantsForApiType(meta, apiType).map(toModelVariant)
+          return { id, name: id, variants }
+        })
         return { models }
       },
       async listPresets(req) {

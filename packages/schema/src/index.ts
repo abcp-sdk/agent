@@ -31,7 +31,10 @@ export function parse<T extends z.ZodType>(
 
 export const SessionRowSchema = z.object({
   name: z.string(),
+  /** Canonical model reference "provider_id/model_id". */
   model: z.string(),
+  /** Selected reasoning variant id (empty = provider defaults). */
+  variant: z.string(),
   preset: z.string(),
   tip_id: z.string().nullable(),
   max_turns: z.number().int(),
