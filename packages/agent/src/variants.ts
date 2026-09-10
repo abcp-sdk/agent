@@ -1,4 +1,4 @@
-import type { Model, ReasoningOption } from '@opencode-ai/models'
+import type { ReasoningOption } from '@opencode-ai/models'
 import { z } from 'zod'
 
 /**
