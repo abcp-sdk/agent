@@ -325,6 +325,7 @@ async function runTurnOnce(
       const attempt = async (): Promise<
         | {
             text: string
+            reasoning: string
             toolCalls: ToolCallRec[]
             toolResults: ToolResultRec[]
             usage: { inputTokens: number; outputTokens: number } | null
@@ -344,6 +345,7 @@ async function runTurnOnce(
         })
 
         let text = ''
+        let reasoning = ''
         const toolCalls: Array<{
           id: string
           name: string
@@ -373,6 +375,19 @@ async function runTurnOnce(
               break
             case 'text-end':
               pushEvent(deps.bus, sid, 'text-end', { id: 't0' })
+              break
+            case 'reasoning-start':
+              pushEvent(deps.bus, sid, 'reasoning-start', { id: 'r0' })
+              break
+            case 'reasoning-delta':
+              reasoning += part.text
+              pushEvent(deps.bus, sid, 'reasoning-delta', {
+                id: 'r0',
+                text: part.text,
+              })
+              break
+            case 'reasoning-end':
+              pushEvent(deps.bus, sid, 'reasoning-end', { id: 'r0' })
               break
             case 'tool-call':
               toolCalls.push({
@@ -451,7 +466,7 @@ async function runTurnOnce(
               break
           }
         }
-        return { text, toolCalls, toolResults, usage }
+        return { text, reasoning, toolCalls, toolResults, usage }
       }
 
       let stepResult = await attempt()
@@ -463,10 +478,10 @@ async function runTurnOnce(
         return stepResult === 'retry' ? null : stepResult
       }
 
-      // Persist this step (text + fully-paired tool calls/results) and advance
-      // the chain tip before considering the next iteration.
-      const { text, toolCalls, toolResults, usage } = stepResult
-      await persistStep(deps, sid, text, toolCalls, toolResults)
+      // Persist this step (reasoning + text + fully-paired tool calls/results)
+      // and advance the chain tip before considering the next iteration.
+      const { text, reasoning, toolCalls, toolResults, usage } = stepResult
+      await persistStep(deps, sid, reasoning, text, toolCalls, toolResults)
       if (usage !== null) {
         await Sessions.addUsage(
           deps.db,
@@ -677,11 +692,12 @@ interface ToolResultRec {
 async function persistStep(
   deps: AgentDeps,
   sid: string,
+  reasoning: string,
   text: string,
   toolCalls: ToolCallRec[],
   toolResults: ToolResultRec[],
 ): Promise<void> {
-  if (text === '' && toolCalls.length === 0) return
+  if (reasoning === '' && text === '' && toolCalls.length === 0) return
 
   const tipRes = await Sessions.tip(deps.db, sid)
   const prevId = tipRes.isErr() ? null : tipRes.value
@@ -693,6 +709,11 @@ async function persistStep(
   const messageId = insert.value
 
   let seq = 0
+  // Reasoning (thinking) is persisted for display only; it is deliberately
+  // EXCLUDED from the model's rebuilt context (see rebuildHistory/appendStep).
+  if (reasoning !== '') {
+    await Parts.insert(deps.db, messageId, 'reasoning', seq++, { text: reasoning })
+  }
   if (text !== '') {
     await Parts.insert(deps.db, messageId, 'text', seq++, { text })
   }
@@ -724,7 +745,7 @@ async function persistStep(
   projectMessageFact(
     deps.bus,
     sid,
-    factFromPersist(nowStr(), 'assistant', text),
+    factFromPersist(nowStr(), 'assistant', text !== '' ? text : reasoning),
   )
 }
 
