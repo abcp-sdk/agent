@@ -268,14 +268,42 @@ export function buildConnectRoutes(
         const limit = l && l > 0 ? l : 50
         const tipRes = await Sessions.tip(deps.db, id)
         const tipId = tipRes.isErr() ? null : tipRes.value
-        const r = await Messages.chain(deps.db, tipId, limit, before ?? null)
+        // proto3 string defaults to "" (not null): treat empty as "no cursor"
+        // so the chain walks from the tip instead of looking up prev_id of "".
+        const beforeId = before !== undefined && before !== '' ? before : null
+        const r = await Messages.chain(deps.db, tipId, limit, beforeId)
         if (r.isErr()) throw new Error(r.error)
+        const msgIds = r.value.map(m => m.id)
+        const partsRes = await Parts.listByMessages(deps.db, msgIds)
+        const partsByMsg = new Map<
+          string,
+          Array<{
+            id: string
+            message_id: string
+            type: string
+            seq: number
+            data: string
+          }>
+        >()
+        if (partsRes.isOk()) {
+          for (const p of partsRes.value) {
+            const list = partsByMsg.get(p.message_id) ?? []
+            list.push(p)
+            partsByMsg.set(p.message_id, list)
+          }
+        }
         const messages = r.value.map(m => ({
           id: m.id,
           role: m.role,
           prevId: m.prev_id ?? '',
           createdAt: m.created_at ?? '',
-          parts: [],
+          parts: (partsByMsg.get(m.id) ?? []).map(p => ({
+            id: p.id,
+            messageId: p.message_id,
+            type: p.type,
+            seq: p.seq,
+            data: p.data,
+          })),
         }))
         return { ok: true, messages }
       },
