@@ -886,6 +886,25 @@ async function run(
   const toolsAfter = await client.listTools(create(ListToolsRequestSchema, {}))
   check('setExtensionConfig accepted', toolsAfter.tools.length === 11)
 
+  // Generation-model tests are refused with a clear message (test is
+  // text-only); text tests still pass end-to-end against the mock.
+  const genTest = await client.testProvider(
+    create(TestProviderRequestSchema, {
+      providerId: 'openai',
+      apiType: 'openai-compatible',
+      baseUrl: mockUrl,
+      apiKey: 'test-key',
+      model: 'openai/mock-image',
+      capability: 'image',
+    }),
+  )
+  check(
+    'testProvider refuses image capability',
+    genTest.ok === false &&
+      genTest.result.includes('text-only'),
+    genTest.result,
+  )
+
   // Configure the image tool to point at the mock image model, then drive a
   // full image-generate tool call through the turn loop.
   await client.setExtensionConfig(
