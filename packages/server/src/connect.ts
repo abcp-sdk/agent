@@ -603,12 +603,14 @@ export function buildConnectRoutes(
         }
         return { ok: true, result: gen.value.text }
       },
-      async listModels() {
+      async listModels(req) {
         const r = await Providers.list(deps.db)
         if (r.isErr()) throw new Error(r.error)
+        const want = req.providerId ?? ''
         const models: { id: string; name: string }[] = []
         for (const p of r.value) {
           if (!p) continue
+          if (want !== '' && p.provider_id !== want) continue
           let arr: string[] = []
           try {
             arr = JSON.parse(p.models ?? '[]') ?? []
