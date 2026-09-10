@@ -11,6 +11,7 @@ import {
   findVariant,
   fireAndForget,
   getModelsDev,
+  clearActiveRun,
   interruptRun,
   localizeSchema,
   Mailbox,
@@ -23,6 +24,7 @@ import {
   Presets,
   Providers,
   publishLifecycle,
+  readActiveRun,
   readMessageFacts,
   renderTemplate,
   resolveLocale,
@@ -421,22 +423,32 @@ export function buildConnectRoutes(
         // Subscribe live BEFORE replaying so the handover overlaps, not drops.
         const sub = await deps.bus.subscribe(subject)
         const dedup = new EidDedup()
-        // Replay only the trailing in-flight turn (idle sessions have nothing
-        // to recover — GET messages is authoritative).
-        if (await isSessionRunning(deps.bus, id)) {
+        // Replay ONLY the turn that is live RIGHT NOW. The active-run marker
+        // (written when a turn starts, cleared in its finally) identifies it,
+        // and its run_id is stamped on every event of that turn. Finished /
+        // aborted / revoked turns have no marker and their run_id won't match,
+        // so replay can never resurface already-withdrawn content.
+        const activeRun = await readActiveRun(deps.bus, id)
+        if (activeRun !== null) {
           const replay = await agent.replayEvents(id)
-          let tailStart = -1
+          let start = -1
           for (let i = replay.length - 1; i >= 0; i--) {
-            const e = replay[i]?.event
-            const pType = fieldString(replay[i]?.params, 'type')
-            if (e === 'turn-complete' || (e === 'status' && pType === 'busy')) {
-              tailStart = i
+            const raw = replay[i]
+            if (
+              raw?.event === 'status' &&
+              fieldString(raw?.params, 'type') === 'busy' &&
+              fieldString(raw?.params, 'run_id') === activeRun
+            ) {
+              start = i
               break
             }
           }
-          if (tailStart >= 0) {
-            for (let i = tailStart; i < replay.length; i++) {
+          if (start >= 0) {
+            for (let i = start; i < replay.length; i++) {
               const raw = replay[i]
+              // Drop anything not belonging to the live run (e.g. a prior
+              // turn's terminal event inside the window).
+              if (fieldString(raw?.params, 'run_id') !== activeRun) continue
               const eid = fieldString(raw, 'eid')
               dedup.mark(eid)
               yield toWatchEvent(raw)
@@ -545,6 +557,11 @@ export function buildConnectRoutes(
         const inChain = await Messages.isInChain(deps.db, tip, targetId)
         if (inChain.isErr()) throw new Error(inChain.error)
         if (!inChain.value) return { session: sessionToMsg(s) }
+        // Abort any in-flight turn and invalidate its active-run marker BEFORE
+        // moving the tip: a running turn must not keep emitting deltas (or a
+        // late turn-complete) for content we are withdrawing.
+        interruptRun(id)
+        clearActiveRun(deps.bus, id)
         await Sessions.setTip(deps.db, id, target.value.prev_id)
         fireAndForget(deleteSessionIds(deps.bus, id), 'deleteSessionIds')
         return { session: sessionToMsg(s) }

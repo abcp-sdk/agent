@@ -29,7 +29,7 @@ import { type ChainMessage, Messages } from './db-messages.js'
 import { Parts } from './db-parts.js'
 import { Providers } from './db-providers.js'
 import { Sessions } from './db-sessions.js'
-import { events, pushEvent } from './events.js'
+import { clearActiveRun, events, markActiveRun, pushEvent } from './events.js'
 import { renderTemplate } from './extensions.js'
 import type { BlobStore } from './files.js'
 import { rebuildHistory } from './history.js'
@@ -288,7 +288,12 @@ async function runTurnOnce(
   if (typeof prepared === 'string') return prepared
   const { tools, system, maxTurns, model, providerOptions, headers } = prepared
 
-  pushEvent(deps.bus, sid, 'status', { type: 'busy' })
+  // Unique id for THIS turn. Stamped on every event so replay can hand back
+  // only the live turn; the active-run marker tells watchers which run is
+  // live (and is cleared the moment the turn ends, incl. on error/abort).
+  const runId = randomUUID()
+  markActiveRun(deps.bus, sid, runId)
+  pushEvent(deps.bus, sid, 'status', { type: 'busy' }, runId)
 
   // Cross-replica mid-stream interrupt: watch the mailbox wake subject. The
   // HTTP interrupt route publishes directly to this subject (never enqueued
@@ -361,33 +366,33 @@ async function runTurnOnce(
         for await (const part of result.fullStream) {
           switch (part.type) {
             case 'start-step':
-              pushEvent(deps.bus, sid, 'step-start', {})
+              pushEvent(deps.bus, sid, 'step-start', {}, runId)
               break
             case 'text-start':
-              pushEvent(deps.bus, sid, 'text-start', { id: 't0' })
+              pushEvent(deps.bus, sid, 'text-start', { id: 't0' }, runId)
               break
             case 'text-delta':
               text += part.text
               pushEvent(deps.bus, sid, 'text-delta', {
                 id: 't0',
                 text: part.text,
-              })
+              }, runId)
               break
             case 'text-end':
-              pushEvent(deps.bus, sid, 'text-end', { id: 't0' })
+              pushEvent(deps.bus, sid, 'text-end', { id: 't0' }, runId)
               break
             case 'reasoning-start':
-              pushEvent(deps.bus, sid, 'reasoning-start', { id: 'r0' })
+              pushEvent(deps.bus, sid, 'reasoning-start', { id: 'r0' }, runId)
               break
             case 'reasoning-delta':
               reasoning += part.text
               pushEvent(deps.bus, sid, 'reasoning-delta', {
                 id: 'r0',
                 text: part.text,
-              })
+              }, runId)
               break
             case 'reasoning-end':
-              pushEvent(deps.bus, sid, 'reasoning-end', { id: 'r0' })
+              pushEvent(deps.bus, sid, 'reasoning-end', { id: 'r0' }, runId)
               break
             case 'tool-call':
               toolCalls.push({
@@ -399,7 +404,7 @@ async function runTurnOnce(
                 toolCallId: part.toolCallId,
                 toolName: part.toolName,
                 input: part.input,
-              })
+              }, runId)
               break
             case 'tool-result':
               toolResults.push({
@@ -415,7 +420,7 @@ async function runTurnOnce(
                   typeof part.output.metadata?.change_id === 'string'
                     ? part.output.metadata.change_id
                     : undefined,
-              })
+              }, runId)
               break
             case 'tool-error':
               // A tool that failed/aborted still pairs with its call id so the
@@ -428,7 +433,7 @@ async function runTurnOnce(
               pushEvent(deps.bus, sid, 'tool-error', {
                 toolCallId: part.toolCallId,
                 error: String(part.error),
-              })
+              }, runId)
               break
             case 'tool-output-denied':
               toolResults.push({
@@ -519,13 +524,21 @@ async function runTurnOnce(
       }
     }
   } finally {
+    // Guaranteed terminal: clear the active-run marker and ALWAYS emit
+    // turn-complete (even on error/abort/early return). This closes the
+    // "stale status busy" hole that previously let replay anchor on a
+    // long-finished turn.
     if (unsub !== null) unsub()
     clearRun(sid)
+    clearActiveRun(deps.bus, sid)
+    pushEvent(
+      deps.bus,
+      sid,
+      'turn-complete',
+      { reason: interrupted ? 'interrupted' : 'stop' },
+      runId,
+    )
   }
-
-  pushEvent(deps.bus, sid, 'turn-complete', {
-    reason: interrupted ? 'interrupted' : 'stop',
-  })
   return null
 }
 
