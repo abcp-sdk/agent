@@ -607,7 +607,7 @@ export function buildConnectRoutes(
         if (exists.isErr()) throw new Error(exists.error)
         if (exists.value) throw new Error('Session already exists')
         let forkTip: string | null = p.tip_id
-        if (messageId !== undefined) {
+        if (messageId !== undefined && messageId !== '') {
           const target = await Messages.get(deps.db, messageId)
           if (target.isErr()) throw new Error(target.error)
           if (target.value === null) throw new Error('fork message not found')
@@ -686,7 +686,7 @@ export function buildConnectRoutes(
         const tip = s.tip_id
         if (tip === null || tip === '')
           return { session: s ? sessionToMsg(s) : sessionToMsg({ name: id }) }
-        const targetId = messageId ?? tip
+        const targetId = messageId !== '' ? messageId : tip
         const target = await Messages.get(deps.db, targetId)
         if (target.isErr()) throw new Error(target.error)
         if (target.value === null) return { session: sessionToMsg(s) }
@@ -932,10 +932,10 @@ export function buildConnectRoutes(
         const r = await Presets.get(deps.bus, id)
         if (r.isErr()) throw new Error(r.error)
         if (r.value === null) throw new Error('preset not found')
+        const i18n = r.value.system_prompt_i18n
         const template =
-          r.value.system_prompt_i18n !== undefined &&
-          r.value.system_prompt_i18n !== '{}'
-            ? r.value.system_prompt_i18n
+          i18n !== undefined && i18n !== '' && i18n !== '{}'
+            ? i18n
             : r.value.system_prompt
         const rendered = await renderTemplate(template, deps.bus)
         return { template, rendered }

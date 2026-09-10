@@ -31,7 +31,25 @@ npm run dev        # tsx watch (needs NATS + Postgres reachable)
 npm run build      # schema → libs → server (esbuild bundles)
 npm run check      # biome check .
 npm test           # vitest unit tests
+npm run e2e:build  # build the SEA binary, then run the full E2E suite
 ```
+
+## E2E
+
+`scripts/e2e.mts` boots the real agent binary against an ephemeral NATS
+(embedded `nats-server`) + sqlite DB and a local mock OpenAI-compatible LLM,
+then drives **every** `agent.v1.AgentService` RPC over Connect and asserts the
+observable behaviour: session CRUD, streaming turns (reasoning + text), tool
+calling, undo/fork, `watchSession` / `watchSessions`, providers + model
+variants, presets, config, files, interrupt/compact, and delete.
+
+```bash
+npm run build && npm run e2e      # or: E2E_AGENT_BIN=path/to/binary npm run e2e
+```
+
+Environment: `E2E_AGENT_BIN` (binary path; default `.sea/easylab-agent`),
+`ABC_NATS_SERVER_BIN` / `ABC_NATS_URL` (reuse an existing nats-server),
+`E2E_KEEP=1` (keep the temp workdir), `E2E_DEBUG=1` (stream agent logs).
 
 ## Configuration
 

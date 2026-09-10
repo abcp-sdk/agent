@@ -135,6 +135,15 @@ async function main(): Promise<void> {
     },
   })
 
+  // Populate the models.dev catalog cache BEFORE serving. `ListModels` and
+  // `TestProvider` derive reasoning variants from it, so a request racing this
+  // (async) fetch would otherwise observe zero variants on a cold start. The
+  // fetch falls back to the bundled snapshot, so it never blocks boot for long.
+  await refreshModelsDev(bus).then(
+    () => {},
+    e => logger.warn({ err: String(e) }, 'models.dev refresh failed'),
+  )
+
   // ---- serving surface: Connect RPC (hono + createFetchHandler) ----
   // Build the Connect router (grpc + grpc-web + connect protocols), then wrap
   // EACH per-RPC universal handler into a Web Request=>Response fetch handler
@@ -208,13 +217,6 @@ async function main(): Promise<void> {
   // Watch every session's mailbox wake wildcard so this replica can claim and
   // run work for any session — the horizontal scale-out trigger.
   const stopWake = watchMailboxWake(deps)
-
-  // Populate the models.dev catalog cache once at startup (30min TTL); a
-  // failing fetch is non-fatal — the catalog is a prefill convenience.
-  void refreshModelsDev(bus).then(
-    () => {},
-    e => logger.warn({ err: String(e) }, 'models.dev refresh failed'),
-  )
 
   /** Structural access to the sqlite/pg client's close hook (no casts). */
   const closeDb = (): Promise<unknown> => {

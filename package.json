@@ -14,7 +14,9 @@
     "format": "biome format --write .",
     "lint": "biome lint .",
     "start": "node .sea/easylab-agent",
-    "test": "npm test --workspaces --if-present"
+    "test": "npm test --workspaces --if-present",
+    "e2e": "tsx scripts/e2e.mts",
+    "e2e:build": "npm run build && tsx scripts/e2e.mts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.9",
