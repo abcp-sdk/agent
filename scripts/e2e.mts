@@ -121,6 +121,8 @@ interface MockState {
   /** Last `reasoning_effort` observed on a chat request (undefined if none). */
   lastReasoningEffort: string | undefined
   requests: number
+  /** Number of /images/generations calls (image toolchain coverage). */
+  imageRequests: number
 }
 
 function sseChunk(res: import('node:http').ServerResponse, obj: unknown): void {
@@ -138,6 +140,8 @@ function mockResponse(body: Record<string, unknown>): {
   reasoning: string
   text: string
   toolCall: boolean
+  /** Which tool to call when toolCall is true. */
+  toolName: string
   slowMs: number
 } {
   const model = String(body['model'] ?? '')
@@ -147,23 +151,37 @@ function mockResponse(body: Record<string, unknown>): {
       )
     : false
   if (model === 'mock-slow')
-    return { reasoning: '', text: 'SLOW-OK', toolCall: false, slowMs: 8000 }
+    return { reasoning: '', text: 'SLOW-OK', toolCall: false, toolName: '', slowMs: 8000 }
   if (model === 'mock-tool' && !hasTool) {
-    return { reasoning: 'let me think', text: '', toolCall: true, slowMs: 0 }
+    return {
+      reasoning: 'let me think',
+      text: '',
+      toolCall: true,
+      toolName: 'todo-write',
+      slowMs: 0,
+    }
   }
   if (model === 'mock-tool')
-    return { reasoning: '', text: 'TOOL-OK', toolCall: false, slowMs: 0 }
+    return { reasoning: '', text: 'TOOL-OK', toolCall: false, toolName: '', slowMs: 0 }
+  if (model === 'mock-image') {
+    // The image-turn request: call image-generate once, then wrap up.
+    return hasTool
+      ? { reasoning: '', text: 'IMAGE-OK', toolCall: false, toolName: '', slowMs: 0 }
+      : { reasoning: 'drawing', text: '', toolCall: true, toolName: 'image-generate', slowMs: 0 }
+  }
   if (model === 'mock-text')
     return {
       reasoning: 'thinking about it',
       text: 'HELLO-E2E',
       toolCall: false,
+      toolName: '',
       slowMs: 0,
     }
   return {
     reasoning: 'gpt thinking',
     text: 'GPT-OK',
     toolCall: false,
+    toolName: '',
     slowMs: 0,
   }
 }
@@ -172,7 +190,39 @@ async function startMockLlm(
   state: MockState,
 ): Promise<{ url: string; stop: () => Promise<void> }> {
   const port = await freePort()
+  // A 1x1 transparent PNG — enough for the image toolchain round-trip.
+  const pngB64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
   const server = createServer((req, res) => {
+    // Image generation endpoint (openai-compatible imageModel path).
+    if (req.method === 'POST' && req.url?.endsWith('/images/generations')) {
+      const chunks: Buffer[] = []
+      req.on('data', c => chunks.push(c as Buffer))
+      req.on('end', () => {
+        state.requests++
+        let body: Record<string, unknown> = {}
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<
+            string,
+            unknown
+          >
+        } catch {
+          /* ignore */
+        }
+        state.imageRequests++
+        const n = typeof body['n'] === 'number' ? body['n'] : 1
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            created: 1,
+            data: Array.from({ length: n }, () => ({
+              b64_json: pngB64,
+            })),
+          }),
+        )
+      })
+      return
+    }
     if (req.method !== 'POST' || !req.url?.endsWith('/chat/completions')) {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end('{"error":"not found"}')
@@ -205,6 +255,14 @@ async function startMockLlm(
       // `generateText` (testProvider) is non-streaming: answer with a plain
       // chat completion JSON. Only stream when the request asked for it.
       if (body['stream'] !== true) {
+        const toolArgs =
+          plan.toolName === 'image-generate'
+            ? { prompt: 'a cat' }
+            : {
+                todos: [
+                  { content: 'e2e todo', status: 'pending', priority: 'high' },
+                ],
+              }
         const message = plan.toolCall
           ? {
               role: 'assistant',
@@ -214,16 +272,8 @@ async function startMockLlm(
                   id: 'call_e2e_1',
                   type: 'function',
                   function: {
-                    name: 'todo-write',
-                    arguments: JSON.stringify({
-                      todos: [
-                        {
-                          content: 'e2e todo',
-                          status: 'pending',
-                          priority: 'high',
-                        },
-                      ],
-                    }),
+                    name: plan.toolName,
+                    arguments: JSON.stringify(toolArgs),
                   },
                 },
               ],
@@ -276,13 +326,25 @@ async function startMockLlm(
           await sleep(5)
         }
         if (plan.toolCall) {
+          const streamedArgs =
+            plan.toolName === 'image-generate'
+              ? { prompt: 'a cat' }
+              : {
+                  todos: [
+                    {
+                      content: 'e2e todo',
+                      status: 'pending',
+                      priority: 'high',
+                    },
+                  ],
+                }
           send({
             tool_calls: [
               {
                 index: 0,
                 id: 'call_e2e_1',
                 type: 'function',
-                function: { name: 'todo-write', arguments: '' },
+                function: { name: plan.toolName, arguments: '' },
               },
             ],
           })
@@ -291,17 +353,7 @@ async function startMockLlm(
             tool_calls: [
               {
                 index: 0,
-                function: {
-                  arguments: JSON.stringify({
-                    todos: [
-                      {
-                        content: 'e2e todo',
-                        status: 'pending',
-                        priority: 'high',
-                      },
-                    ],
-                  }),
-                },
+                function: { arguments: JSON.stringify(streamedArgs) },
               },
             ],
           })
@@ -414,7 +466,11 @@ async function main(): Promise<void> {
     console.log(`[e2e] nats ${natsUrl}`)
   }
 
-  const state: MockState = { lastReasoningEffort: undefined, requests: 0 }
+  const state: MockState = {
+    lastReasoningEffort: undefined,
+    requests: 0,
+    imageRequests: 0,
+  }
   const mock = await startMockLlm(state)
 
   const httpPort = await freePort()
@@ -483,7 +539,7 @@ async function main(): Promise<void> {
   // Wait until the bundled extension has registered its tools.
   for (let i = 0; i < 60; i++) {
     const r = await client.listTools({})
-    if (r.tools.length >= 9) break
+    if (r.tools.length >= 11) break
     await sleep(200)
   }
 
@@ -561,6 +617,22 @@ async function run(
             name: 'Mock Slow',
             contextLimit: 100000n,
           }),
+          // Generation models: no context_limit, capability-tagged.
+          create(ProviderModelSchema, {
+            id: 'mock-image',
+            name: 'Mock Image',
+            capability: 'image',
+          }),
+          create(ProviderModelSchema, {
+            id: 'mock-video',
+            name: 'Mock Video',
+            capability: 'video',
+          }),
+          create(ProviderModelSchema, {
+            id: 'mock-tts',
+            name: 'Mock TTS',
+            capability: 'speech',
+          }),
         ],
       }),
     }),
@@ -621,6 +693,57 @@ async function run(
   }
   check('listModels rejects empty provider_id', listModelsRejectsEmpty)
 
+  // Generation models must NOT surface as session models (text-only list).
+  check(
+    'listModels hides generation models',
+    !models.models.some(m => ['mock-image', 'mock-video', 'mock-tts'].includes(m.id)),
+    models.models.map(m => m.id),
+  )
+  // And a generation model may register with context_limit = 0.
+  let genZeroCtxOk = false
+  try {
+    await client.registerProvider(
+      create(RegisterProviderRequestSchema, {
+        provider: create(ProviderSchema, {
+          providerId: 'genzero',
+          apiType: 'openai-compatible',
+          baseUrl: mockUrl,
+          models: [
+            create(ProviderModelSchema, {
+              id: 'img-x',
+              capability: 'image',
+            }),
+          ],
+        }),
+      }),
+    )
+    genZeroCtxOk = true
+  } catch {
+    genZeroCtxOk = false
+  }
+  check('generation model with context_limit=0 accepted', genZeroCtxOk)
+  let badCapability = false
+  try {
+    await client.registerProvider(
+      create(RegisterProviderRequestSchema, {
+        provider: create(ProviderSchema, {
+          providerId: 'badcap',
+          apiType: 'openai-compatible',
+          baseUrl: mockUrl,
+          models: [
+            create(ProviderModelSchema, {
+              id: 'x',
+              capability: 'hologram',
+            }),
+          ],
+        }),
+      }),
+    )
+  } catch {
+    badCapability = true
+  }
+  check('unknown capability rejected', badCapability)
+
   const test = await client.testProvider(
     create(TestProviderRequestSchema, {
       providerId: 'openai',
@@ -643,12 +766,12 @@ async function run(
   const toolsEn = await client.listTools(
     create(ListToolsRequestSchema, { locale: 'en' }),
   )
+  const toolNames = toolsEn.tools.map(t => t.name)
   check(
     'listTools returns all bundled tools',
-    toolsEn.tools.length === 9,
-    toolsEn.tools.length,
+    toolsEn.tools.length === 11,
+    `got ${toolsEn.tools.length}: ${toolNames.join(',')}`,
   )
-  const toolNames = toolsEn.tools.map(t => t.name)
   check(
     'tool names are unique',
     new Set(toolNames).size === toolNames.length,
@@ -673,6 +796,16 @@ async function run(
   check(
     'brave-search requires config',
     (brave?.requiredConfig ?? []).includes('brave_api_key'),
+  )
+  for (const gen of ['image-generate', 'image-edit', 'video-generate', 'tts-generate']) {
+    const t = toolsEn.tools.find(t => t.name === gen)
+    check(`${gen} discovered`, t !== undefined, toolNames)
+  }
+  const imageGen = toolsEn.tools.find(t => t.name === 'image-generate')
+  check(
+    'image-generate requires image_model only',
+    (imageGen?.requiredConfig ?? []).join(',') === 'image_model',
+    imageGen?.requiredConfig,
   )
 
   // -------------------------------------------------------------------------
@@ -751,7 +884,80 @@ async function run(
     }),
   )
   const toolsAfter = await client.listTools(create(ListToolsRequestSchema, {}))
-  check('setExtensionConfig accepted', toolsAfter.tools.length === 9)
+  check('setExtensionConfig accepted', toolsAfter.tools.length === 11)
+
+  // Configure the image tool to point at the mock image model, then drive a
+  // full image-generate tool call through the turn loop.
+  await client.setExtensionConfig(
+    create(SetExtensionConfigRequestSchema, {
+      extId: 'bundled',
+      name: 'image_model',
+      value: create(ValueSchema, {
+        kind: { case: 'stringValue', value: 'openai/mock-image' },
+      }),
+    }),
+  )
+  const imgSid = `e2e-image-${uniq}`
+  await client.createSession(
+    create(CreateSessionRequestSchema, {
+      name: imgSid,
+      model: 'openai/mock-image',
+      preset: 'default',
+    }),
+  )
+  const imgEvents: WatchEv[] = []
+  const iac = new AbortController()
+  const imgWatcher = (async () => {
+    try {
+      const stream = client.watchSession(
+        create(WatchSessionRequestSchema, { id: imgSid }),
+        { signal: iac.signal },
+      )
+      for await (const ev of stream) {
+        imgEvents.push({
+          event: ev.event,
+          params: (ev.params ?? {}) as Record<string, unknown>,
+        })
+      }
+    } catch {
+      /* aborted */
+    }
+  })()
+  const ic = collectSession(imgEvents)
+  await sleep(300)
+  const imgPrompt = client.prompt(
+    create(PromptRequestSchema, {
+      id: imgSid,
+      prompt: 'make me a picture',
+    }),
+  )
+  for await (const e of imgPrompt) {
+    if (e.event === 'accepted') break
+  }
+  const imgDone = await ic.waitFor(e => e.event === 'turn-complete', 40000)
+  check('image tool turn complete', imgDone !== null)
+  const imgResult = imgEvents.find(e => e.event === 'tool-result')
+  check(
+    'image-generate tool ran',
+    imgResult !== undefined &&
+      String(imgResult.params['formatted'] ?? '').includes('Generated'),
+    imgResult?.params['formatted'],
+  )
+  check(
+    'mock /images/generations was hit',
+    state.imageRequests >= 1,
+    state.imageRequests,
+  )
+  const imgMsgs = await client.listMessages(
+    create(ListMessagesRequestSchema, { id: imgSid, limit: 50 }),
+  )
+  const imgPart = imgMsgs.messages
+    .flatMap(m => m.parts)
+    .find(p => p.type === 'tool')
+  check('image tool part persisted', imgPart !== undefined)
+  iac.abort()
+  await imgWatcher.catch(() => {})
+  await client.deleteSession(create(DeleteSessionRequestSchema, { id: imgSid }))
 
   const agentCfg = await client.getAgentConfig({})
   check(
