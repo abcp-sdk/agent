@@ -23,6 +23,7 @@ import {
   Presets,
   Providers,
   publishLifecycle,
+  readMessageFacts,
   renderTemplate,
   resolveLocale,
   Sessions,
@@ -146,7 +147,16 @@ function toJsonObject(v: Record<string, unknown>): JsonObject {
   return out
 }
 
-function sessionToMsg(s: SessionRowView) {
+/**
+ * Map a session row to the wire shape. `fact` is the newest-message fact read
+ * from the `abc-session-meta` KV (preview + timestamp); it is the ONLY source
+ * for `lastMessageAt`/`lastMessagePreview` (the sessions table does not store
+ * them). `unreadCount` is always 0 — read state is client-local.
+ */
+function sessionToMsg(
+  s: SessionRowView,
+  fact?: { last_message_at: string; last_message_preview: string },
+) {
   return {
     name: s.name,
     model: s.model ?? '',
@@ -167,9 +177,9 @@ function sessionToMsg(s: SessionRowView) {
     org: s.org ?? '',
     repo: s.repo ?? '',
     branch: s.branch ?? '',
-    unreadCount: s.unread_count ?? 0,
-    lastMessageAt: s.last_message_at ?? '',
-    lastMessagePreview: s.last_message_preview ?? '',
+    unreadCount: 0,
+    lastMessageAt: fact?.last_message_at ?? '',
+    lastMessagePreview: fact?.last_message_preview ?? '',
   }
 }
 
@@ -274,7 +284,11 @@ export function buildConnectRoutes(
       async listSessions() {
         const r = await Sessions.list(deps.db)
         if (r.isErr()) throw new Error(r.error)
-        return { sessions: r.value.map(sessionToMsg) }
+        const facts = await readMessageFacts(
+          deps.bus,
+          r.value.map(s => s.name),
+        )
+        return { sessions: r.value.map(s => sessionToMsg(s, facts.get(s.name))) }
       },
       async createSession(req) {
         const body = req
@@ -295,7 +309,8 @@ export function buildConnectRoutes(
         const r = await Sessions.get(deps.db, req.id)
         if (r.isErr()) throw new Error(r.error)
         if (r.value === null) throw new Error('session not found')
-        return { session: sessionToMsg(r.value) }
+        const facts = await readMessageFacts(deps.bus, [req.id])
+        return { session: sessionToMsg(r.value, facts.get(req.id)) }
       },
       async deleteSession(req) {
         const id = req.id

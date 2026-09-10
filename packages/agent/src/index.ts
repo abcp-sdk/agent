@@ -29,6 +29,7 @@ export {
   calibrateMessageFacts,
   factFromPersist,
   projectMessageFact,
+  readMessageFacts,
   type SessionMessageFact,
 } from './session-state.js'
 export {

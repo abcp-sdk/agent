@@ -88,6 +88,37 @@ export function factFromPersist(
 }
 
 /**
+ * Read the projected message facts for the given sessions from the
+ * `abc-session-meta` KV. Best-effort: a missing/malformed entry is simply
+ * omitted from the map (callers fall back to `updated_at` / no preview).
+ */
+export async function readMessageFacts(
+  bus: Bus,
+  sids: readonly string[],
+): Promise<Map<string, SessionMessageFact>> {
+  const out = new Map<string, SessionMessageFact>()
+  await Promise.all(
+    sids.map(async sid => {
+      const raw = await bus
+        .kvGet(BUCKET_SESSION_STATE, natsToken(sid))
+        .catch(() => null)
+      if (raw === null || raw === undefined) return
+      try {
+        const v = JSON.parse(raw) as Partial<SessionMessageFact>
+        out.set(sid, {
+          last_message_at: String(v.last_message_at ?? ''),
+          last_message_preview: String(v.last_message_preview ?? ''),
+          last_message_role: String(v.last_message_role ?? ''),
+        })
+      } catch {
+        /* ignore malformed fact */
+      }
+    }),
+  )
+  return out
+}
+
+/**
  * One-time startup calibration: refresh the KV projection from PG so facts
  * are correct even if earlier writes were missed (agent down, KV wiped,
  * historical sessions predating this feature). One query per session tip is
