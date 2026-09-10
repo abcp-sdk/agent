@@ -539,7 +539,7 @@ async function main(): Promise<void> {
   // Wait until the bundled extension has registered its tools.
   for (let i = 0; i < 60; i++) {
     const r = await client.listTools({})
-    if (r.tools.length >= 11) break
+    if (r.tools.length >= 12) break
     await sleep(200)
   }
 
@@ -769,7 +769,7 @@ async function run(
   const toolNames = toolsEn.tools.map(t => t.name)
   check(
     'listTools returns all bundled tools',
-    toolsEn.tools.length === 11,
+    toolsEn.tools.length === 12,
     `got ${toolsEn.tools.length}: ${toolNames.join(',')}`,
   )
   check(
@@ -884,7 +884,7 @@ async function run(
     }),
   )
   const toolsAfter = await client.listTools(create(ListToolsRequestSchema, {}))
-  check('setExtensionConfig accepted', toolsAfter.tools.length === 11)
+  check('setExtensionConfig accepted', toolsAfter.tools.length === 12)
 
   // Generation-model tests are refused with a clear message (test is
   // text-only); text tests still pass end-to-end against the mock.

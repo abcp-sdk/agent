@@ -22,17 +22,24 @@ export interface ProviderCredentials {
 
 /**
  * What a provider model generates. `text` (default) = chat/vision language
- * model feeding sessions; `image` / `video` / `speech` = generation models
- * resolved by tools (image-generate / video-generate / tts-generate) through
- * the SAME provider registry — one endpoint, one key, capability-tagged.
+ * model feeding sessions; `image` / `video` / `speech` / `transcription` =
+ * generation models resolved by tools (image-generate / video-generate /
+ * tts-generate / audio-transcribe) through the SAME provider registry — one
+ * endpoint, one key, capability-tagged.
  */
-export type ModelCapability = 'text' | 'image' | 'video' | 'speech'
+export type ModelCapability =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'speech'
+  | 'transcription'
 
 export const MODEL_CAPABILITIES: readonly ModelCapability[] = [
   'text',
   'image',
   'video',
   'speech',
+  'transcription',
 ]
 
 /** Normalize a client-supplied capability string; empty = text. */
@@ -42,7 +49,9 @@ export function parseCapability(raw: string): Result<ModelCapability, string> {
   const hit = MODEL_CAPABILITIES.find(c => c === v)
   return hit !== undefined
     ? ok(hit)
-    : err(`unknown capability: ${raw} (expected text|image|video|speech)`)
+    : err(
+        `unknown capability: ${raw} (expected text|image|video|speech|transcription)`,
+      )
 }
 
 const KNOWN_API_TYPES = new Set([
@@ -115,9 +124,13 @@ export function buildModelForApiType(
  * `generateImage` / `experimental_generateVideo` / `generateSpeech`.
  *
  * api-type support matrix:
- *   - image:  openai, google, openai-compatible
- *   - video:  google (AI SDK video is experimental; openai has none)
- *   - speech: openai, google
+ *   - image:         openai, google, openai-compatible
+ *   - video:         google (AI SDK video is experimental; openai has none)
+ *   - speech:        openai, google
+ *   - transcription: openai (OpenAI-compatible /audio/transcriptions endpoints
+ *                    work through it — the AI SDK posts multipart to
+ *                    `<base>/audio/transcriptions`, which the easylab gateway
+ *                    and most OpenAI-compatible servers implement)
  */
 export function buildGenerativeModel(
   credentials: ProviderCredentials,
@@ -133,6 +146,8 @@ export function buildGenerativeModel(
       const p = createOpenAI({ ...baseURL, apiKey, headers })
       if (capability === 'image') return ok(p.imageModel(modelId))
       if (capability === 'speech') return ok(p.speech(modelId))
+      if (capability === 'transcription')
+        return ok(p.transcription(modelId))
       return err(`api type 'openai' does not support ${capability} generation`)
     }
     case 'google':
@@ -145,6 +160,14 @@ export function buildGenerativeModel(
     }
     case 'openai-compatible':
     case 'openai_compatible': {
+      // The openai provider hits the same OpenAI wire format but implements
+      // the full surface (transcription included); route openai-compatible
+      // transcription requests through it so any OpenAI-shaped ASR endpoint
+      // (e.g. the easylab gateway) resolves via provider/model refs.
+      if (capability === 'transcription') {
+        const p = createOpenAI({ ...baseURL, apiKey, headers })
+        return ok(p.transcription(modelId))
+      }
       const p = createOpenAICompatible({
         name: 'openai-compatible',
         baseURL: baseUrl,
