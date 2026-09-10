@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { Bus } from '../src/bus.js'
 import { SYSTEM_PRESETS } from '../src/default-presets.js'
 import { Presets } from '../src/kv-store.js'
@@ -30,94 +30,45 @@ function fakeBus(initial: KV = {}) {
   return { bus, kv }
 }
 
-describe('system preset set', () => {
-  it('defines plan/explore/build', () => {
-    const ids = SYSTEM_PRESETS.map(p => p.id)
-    expect(ids).toEqual(['plan', 'explore', 'build'])
+// Preset env vars must never leak across tests.
+const PRESET_ENV = [
+  'SYSTEM_PRESETS_FILE',
+  'SYSTEM_PRESETS_JSON',
+  'PRUNE_PRESETS',
+]
+afterEach(() => {
+  for (const k of PRESET_ENV) delete process.env[k]
+})
+
+describe('built-in system preset set', () => {
+  it('ships exactly one generic preset: default', () => {
+    expect(SYSTEM_PRESETS.map(p => p.id)).toEqual(['default'])
   })
 
-  it('build preset includes full capability; plan/explore are restricted', () => {
-    const build = SYSTEM_PRESETS.find(p => p.id === 'build')!
-    const plan = SYSTEM_PRESETS.find(p => p.id === 'plan')!
-    const explore = SYSTEM_PRESETS.find(p => p.id === 'explore')!
-    const buildTools = JSON.parse(build.tools)
-    const planTools = JSON.parse(plan.tools)
-    const exploreTools = JSON.parse(explore.tools)
-    // build has repo writes + sandbox + build/deploy/publish + read-only searches
-    expect(buildTools).toContain('write')
-    expect(buildTools).toContain('vcs-rebase')
-    expect(buildTools).toContain('sandbox-run')
-    expect(buildTools).toContain('container-build')
-    expect(buildTools).toContain('package-publish')
-    expect(buildTools).toContain('service-deploy')
-    expect(buildTools).toContain('container-search')
-    expect(buildTools).toContain('service-list')
-    expect(buildTools).toContain('package-search')
-    expect(buildTools).toContain('pull-git-repo')
-    // no helm / mr in build
-    expect(
-      buildTools.some(
-        (t: string) => t.startsWith('helm') || t.startsWith('mr'),
-      ),
-    ).toBe(false)
-    // plan has no writes/sandbox/build
-    expect(
-      planTools.some(
-        (t: string) =>
-          t.startsWith('sandbox') ||
-          t === 'write' ||
-          t === 'delete' ||
-          t === 'edit' ||
-          t.startsWith('container') ||
-          t.startsWith('package'),
-      ),
-    ).toBe(false)
-    // explore adds sandbox but still no writes/build
-    expect(exploreTools).toContain('sandbox-run')
-    // explore must not port sandbox changes into the repo (the one sandbox
-    // tool that writes the repo — only build may).
-    expect(exploreTools.includes('sandbox-port')).toBe(false)
-    expect(
-      exploreTools.some(
-        (t: string) =>
-          t === 'write' ||
-          t === 'delete' ||
-          t === 'edit' ||
-          t.startsWith('container') ||
-          t.startsWith('package'),
-      ),
-    ).toBe(false)
-  })
-
-  it('every system preset is bilingual and lists known tools', () => {
-    for (const p of SYSTEM_PRESETS) {
-      expect(p.tools).toBeTruthy()
-      expect(JSON.parse(p.tools).length).toBeGreaterThan(0)
-      const i18n = JSON.parse(p.systemPromptI18n)
-      expect(i18n.zh).toMatch(/.+/)
-      expect(i18n.en).toBe(p.systemPrompt)
-    }
+  it('default preset has no whitelist and a bilingual generic prompt', () => {
+    const def = SYSTEM_PRESETS[0]
+    // Empty whitelist = every discovered tool is allowed.
+    expect(JSON.parse(def.tools)).toEqual([])
+    expect(def.isSystem).toBe(true)
+    const i18n = JSON.parse(def.systemPromptI18n)
+    expect(i18n.zh).toBe('你是一个有用的助手。')
+    expect(i18n.en).toBe('You are a helpful assistant.')
+    expect(def.systemPrompt).toBe('You are a helpful assistant.')
   })
 })
 
 describe('Presets.seedDefaults', () => {
-  it('seeds every system preset into an empty bucket', async () => {
+  it('seeds the built-in default preset into an empty bucket', async () => {
     const { bus, kv } = fakeBus()
     const r = await Presets.seedDefaults(bus)
     expect(r.isOk()).toBe(true)
-    for (const p of SYSTEM_PRESETS) {
-      expect(kv[p.id]).toBeDefined()
-    }
-    expect(JSON.parse(kv.__ids__)).toEqual(
-      expect.arrayContaining(SYSTEM_PRESETS.map(p => p.id)),
-    )
+    expect(kv['default']).toBeDefined()
+    expect(JSON.parse(kv.__ids__)).toContain('default')
   })
 
   it('refreshes a drifted system preset to the embedded version', async () => {
     const { bus, kv } = fakeBus()
     await Presets.seedDefaults(bus)
-    // Simulate a restore/another writer drifting one system preset's value
-    // (e.g. an old snake_case tool name from a previous KV seed).
     const edited = SYSTEM_PRESETS[0]
     await bus.kvPut(
       BUCKET,
@@ -133,12 +84,13 @@ describe('Presets.seedDefaults', () => {
         system_prompt_i18n: edited.systemPromptI18n,
         tools: edited.tools,
         max_turns: edited.maxTurns,
+        is_system: true,
       }),
     )
   })
 
   it('leaves an already-correct system preset unchanged', async () => {
-    const { bus, kv } = fakeBus()
+    const { bus } = fakeBus()
     await Presets.seedDefaults(bus)
     const before = await bus.kvGet(BUCKET, SYSTEM_PRESETS[0].id)
     await Presets.seedDefaults(bus)
@@ -146,7 +98,7 @@ describe('Presets.seedDefaults', () => {
   })
 
   it('never touches user presets', async () => {
-    const { bus, kv } = fakeBus()
+    const { bus } = fakeBus()
     await Presets.seedDefaults(bus)
     const mine = JSON.stringify({
       id: 'my',
@@ -161,8 +113,89 @@ describe('Presets.seedDefaults', () => {
   })
 })
 
+describe('host-injected system presets (SYSTEM_PRESETS_JSON)', () => {
+  it('seeds injected presets as immutable system presets', async () => {
+    process.env.SYSTEM_PRESETS_JSON = JSON.stringify([
+      {
+        id: 'plan',
+        system_prompt: 'plan-en',
+        system_prompt_i18n: { en: 'plan-en', zh: 'plan-zh' },
+        tools: ['read', 'ls'],
+        max_turns: 15,
+      },
+    ])
+    const { bus, kv } = fakeBus()
+    const r = await Presets.seedDefaults(bus)
+    expect(r.isOk()).toBe(true)
+    // built-in default + injected plan both present
+    expect(kv['default']).toBeDefined()
+    expect(kv['plan']).toBeDefined()
+    const planRow = JSON.parse(kv['plan'])
+    expect(planRow.is_system).toBe(true)
+    expect(planRow.system_prompt).toBe('plan-en')
+
+    // Injected presets are immutable: upsert/delete rejected.
+    const up = await Presets.upsert(bus, {
+      id: 'plan',
+      systemPrompt: 'x',
+      systemPromptI18n: '{}',
+      tools: '[]',
+      maxTurns: 3,
+    })
+    expect(up.isErr()).toBe(true)
+    expect(String(up.error)).toContain('immutable')
+    const del = await Presets.delete(bus, 'plan')
+    expect(del.isErr()).toBe(true)
+    expect(String(del.error)).toContain('immutable')
+  })
+
+  it('is_system is surfaced on list for injected presets', async () => {
+    process.env.SYSTEM_PRESETS_JSON = JSON.stringify([
+      { id: 'build', system_prompt: 'b', tools: [], max_turns: 30 },
+    ])
+    const { bus } = fakeBus()
+    await Presets.seedDefaults(bus)
+    const list = await Presets.list(bus)
+    expect(list.isOk()).toBe(true)
+    expect(list.value.find(p => p.id === 'build')?.is_system).toBe(true)
+  })
+})
+
+describe('PRUNE_PRESETS removes listed ids on seed', () => {
+  it('removes plan/explore/build but keeps the built-in default', async () => {
+    const { bus, kv } = fakeBus()
+    // Simulate a bucket previously seeded with the easylab trio.
+    for (const id of ['plan', 'explore', 'build', 'my']) {
+      await bus.kvPut(
+        BUCKET,
+        id,
+        JSON.stringify({
+          id,
+          system_prompt: 'x',
+          system_prompt_i18n: '{}',
+          tools: '[]',
+          max_turns: 3,
+        }),
+      )
+    }
+    await bus.kvPut(
+      BUCKET,
+      '__ids__',
+      JSON.stringify(['plan', 'explore', 'build', 'my']),
+    )
+    process.env.PRUNE_PRESETS = 'plan, explore ,build'
+    await Presets.seedDefaults(bus)
+    expect(await bus.kvGet(BUCKET, 'plan')).toBeNull()
+    expect(await bus.kvGet(BUCKET, 'explore')).toBeNull()
+    expect(await bus.kvGet(BUCKET, 'build')).toBeNull()
+    // user preset kept; built-in seeded
+    expect(await bus.kvGet(BUCKET, 'my')).not.toBeNull()
+    expect(await bus.kvGet(BUCKET, 'default')).not.toBeNull()
+  })
+})
+
 describe('system presets are immutable', () => {
-  it('rejects upsert with a system id', async () => {
+  it('rejects upsert with a built-in system id', async () => {
     const { bus } = fakeBus()
     const r = await Presets.upsert(bus, {
       id: SYSTEM_PRESETS[0].id,
@@ -175,7 +208,7 @@ describe('system presets are immutable', () => {
     expect(String(r.error)).toContain('immutable')
   })
 
-  it('rejects delete with a system id', async () => {
+  it('rejects delete with a built-in system id', async () => {
     const { bus } = fakeBus()
     const r = await Presets.delete(bus, SYSTEM_PRESETS[0].id)
     expect(r.isErr()).toBe(true)
@@ -197,12 +230,11 @@ describe('system presets are immutable', () => {
   })
 
   it('exposes is_system on list', async () => {
-    const { bus, kv } = fakeBus()
+    const { bus } = fakeBus()
     await Presets.seedDefaults(bus)
     const list = await Presets.list(bus)
     expect(list.isOk()).toBe(true)
-    const sys = list.value.find(p => p.id === 'build')
-    expect(sys?.is_system).toBe(true)
+    expect(list.value.find(p => p.id === 'default')?.is_system).toBe(true)
     await Presets.upsert(bus, {
       id: 'user1',
       systemPrompt: 's',
@@ -216,14 +248,9 @@ describe('system presets are immutable', () => {
 })
 
 describe('retired system presets are cleaned on seed', () => {
-  it('removes retired ids (orchestrator/executor/analyst) from the bucket', async () => {
-    const { bus, kv } = fakeBus()
-    // Seed retired keys as if a previous preset-set existed.
-    for (const id of ['orchestrator', 'executor', 'analyst', 'my', 'plan']) {
-      const v =
-        id === 'my' || id === 'plan'
-          ? (SYSTEM_PRESETS.find(p => p.id === 'plan')?.tools ?? '[]')
-          : '[]'
+  it('removes retired ids (orchestrator/executor/analyst)', async () => {
+    const { bus } = fakeBus()
+    for (const id of ['orchestrator', 'executor', 'analyst', 'my']) {
       await bus.kvPut(
         BUCKET,
         id,
@@ -231,23 +258,20 @@ describe('retired system presets are cleaned on seed', () => {
           id,
           system_prompt: 'x',
           system_prompt_i18n: '{}',
-          tools: v,
+          tools: '[]',
           max_turns: 3,
         }),
       )
     }
-    // rebuild index
     await bus.kvPut(
       BUCKET,
       '__ids__',
-      JSON.stringify(['orchestrator', 'executor', 'analyst', 'my', 'plan']),
+      JSON.stringify(['orchestrator', 'executor', 'analyst', 'my']),
     )
     await Presets.seedDefaults(bus)
-    // retired ids gone; user 'my' kept; system 'plan' retained
     expect(await bus.kvGet(BUCKET, 'orchestrator')).toBeNull()
     expect(await bus.kvGet(BUCKET, 'executor')).toBeNull()
     expect(await bus.kvGet(BUCKET, 'analyst')).toBeNull()
     expect(await bus.kvGet(BUCKET, 'my')).not.toBeNull()
-    expect(await bus.kvGet(BUCKET, 'plan')).not.toBeNull()
   })
 })

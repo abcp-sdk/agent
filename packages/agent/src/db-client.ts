@@ -5,6 +5,7 @@ import { ResultAsync } from 'neverthrow'
 import postgres, { type Sql } from 'postgres'
 import { z } from 'zod'
 import type { DbBackend } from './config.js'
+import { DEFAULT_PRESET } from './config.js'
 import { parse } from './json.js'
 import { logger } from './logger.js'
 
@@ -198,11 +199,11 @@ const PG_MIGRATIONS = `
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_name;
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_call_id;
     ALTER TABLE sessions DROP COLUMN IF EXISTS last_read_at;
-    UPDATE sessions SET preset = 'plan' WHERE preset = '';
-    UPDATE sessions SET preset = 'plan' WHERE preset = 'orchestrator';
-    UPDATE sessions SET preset = 'plan' WHERE preset = 'executor';
-    UPDATE sessions SET preset = 'plan' WHERE preset = 'analyst';
-    ALTER TABLE sessions ALTER COLUMN preset SET DEFAULT 'plan';
+    UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = '';
+    UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = 'orchestrator';
+    UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = 'executor';
+    UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = 'analyst';
+    ALTER TABLE sessions ALTER COLUMN preset SET DEFAULT '${DEFAULT_PRESET}';
 `
 
 // SQLite: feature detection for columns we never create (they are all in the
@@ -216,7 +217,7 @@ const SQLITE_MIGRATIONS = [
   `ALTER TABLE messages DROP COLUMN tool_name`,
   `ALTER TABLE messages DROP COLUMN tool_call_id`,
   `ALTER TABLE sessions DROP COLUMN last_read_at`,
-  `UPDATE sessions SET preset = 'plan' WHERE preset IN ('', 'orchestrator', 'executor', 'analyst')`,
+  `UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset IN ('', 'orchestrator', 'executor', 'analyst')`,
 ]
 
 /**

@@ -3,6 +3,13 @@ export function envOr(key: string, fallback: string): string {
   return v !== undefined && v !== '' ? v : fallback
 }
 
+/**
+ * Preset applied to a session when none is specified. The generic agent ships
+ * the `default` preset (no tool whitelist); a host can override via
+ * `DEFAULT_PRESET` (e.g. easylab sets `build`).
+ */
+export const DEFAULT_PRESET = envOr('DEFAULT_PRESET', 'default')
+
 export interface ServerConfig {
   port: number
   /** HTTP server transport: "auto" (h1 + h2c) | "h1" | "h2c". */

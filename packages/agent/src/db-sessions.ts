@@ -1,16 +1,13 @@
 import type { SessionRow } from '@easylab-agent/schema'
 import { sql as dsql, eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
+import { DEFAULT_PRESET } from './config.js'
 import type { Db } from './db-client.js'
 import { dbBackend, nowStr, q, rawAll } from './db-client.js'
 import { mailbox, sessions } from './db-schema.js'
 
-/**
- * Default preset applied to every session when none is specified. `plan`
- * is the read-only role (repo inspect + session analysis, no side effects);
- * the sandbox-only `explore` and full-capability `build` presets are opt-in.
- */
-export const DEFAULT_PRESET = 'plan'
+// Re-exported for callers that import the session module directly.
+export { DEFAULT_PRESET } from './config.js'
 
 type Row = typeof sessions.$inferSelect
 
