@@ -29,7 +29,6 @@ import {
   renderTemplate,
   resolveLocale,
   Sessions,
-  sseSubject,
   toModelVariant,
   toolConfigMap,
   variantsForApiType,
@@ -419,36 +418,26 @@ export function buildConnectRoutes(
       async *watchSession(req) {
         const { id } = req
         const agent = new AbcAgent(deps.bus)
-        const subject = sseSubject(id)
-        // Subscribe live BEFORE replaying so the handover overlaps, not drops.
-        const sub = await deps.bus.subscribe(subject)
-        const dedup = new EidDedup()
-        // Replay ONLY the turn that is live RIGHT NOW. The active-run marker
-        // (written when a turn starts, cleared in its finally) identifies it,
-        // and its run_id is stamped on every event of that turn. Finished /
-        // aborted / revoked turns have no marker and their run_id won't match,
-        // so replay can never resurface already-withdrawn content.
+        // Single ordered subscription: retained history from the live turn's
+        // start (or live-from-now when idle), then live events — no separate
+        // replay + subscribe handover, no polling.
         const activeRun = await readActiveRun(deps.bus, id)
-        if (activeRun !== null) {
-          // Window the replay by the turn's START TIME: exact regardless of how
-          // many events other sessions produced (a sequence window can miss a
-          // long turn's 'status busy' anchor entirely).
-          const replay = await agent.replayEvents(id, {
-            startTimeMs: activeRun.startedAtMs,
-          })
-          for (const raw of replay) {
-            // Only the live run's events; a prior turn's terminal event may
-            // fall in the same time window.
-            if (fieldString(raw?.params, 'run_id') !== activeRun.runId) continue
-            const eid = fieldString(raw, 'eid')
-            dedup.mark(eid)
-            yield toWatchEvent(raw)
+        const dedup = new EidDedup()
+        for await (const raw of agent.streamEvents(
+          id,
+          activeRun !== null ? { startTimeMs: activeRun.startedAtMs } : undefined,
+        )) {
+          // Only the live run's events (a prior turn's terminal marker may fall
+          // inside the same time window); never resurface finished/revoked runs.
+          if (
+            activeRun !== null &&
+            fieldString(raw?.params, 'run_id') !== activeRun.runId
+          ) {
+            continue
           }
-        }
-        for await (const m of sub) {
-          const eid = fieldString(m.payload, 'eid')
+          const eid = fieldString(raw, 'eid')
           if (dedup.duplicate(eid)) continue
-          yield toWatchEvent(m.payload)
+          yield toWatchEvent(raw)
         }
       },
 
