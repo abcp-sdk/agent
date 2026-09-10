@@ -8,12 +8,24 @@ export interface AgentEventDeps {
 }
 
 /**
- * Record the session's ACTIVE turn run-id (best-effort). Replay uses this to
- * hand back only the live turn; it is cleared when the turn ends.
+ * Record the session's ACTIVE turn (run-id + wall-clock start). Replay uses
+ * the start time to window exactly one turn (independent of how many events
+ * other sessions produced); it is cleared when the turn ends.
  */
-export function markActiveRun(bus: Bus, sid: string, runId: string): void {
+export interface ActiveRun {
+  runId: string
+  startedAtMs: number
+}
+
+export function markActiveRun(
+  bus: Bus,
+  sid: string,
+  runId: string,
+  startedAtMs: number,
+): void {
+  const value = JSON.stringify({ runId, startedAtMs } satisfies ActiveRun)
   void bus
-    .kvPut(BUCKET_SESSION_RUN, natsToken(sid), runId, 0)
+    .kvPut(BUCKET_SESSION_RUN, natsToken(sid), value, 0)
     .catch(err => {
       logger.warn({ sid, err: String(err) }, 'markActiveRun failed')
     })
@@ -28,13 +40,21 @@ export function clearActiveRun(bus: Bus, sid: string): void {
     })
 }
 
-/** Read the session's active-turn run-id, or null when idle. */
+/** Read the session's active turn, or null when idle. */
 export async function readActiveRun(
   bus: Bus,
   sid: string,
-): Promise<string | null> {
+): Promise<ActiveRun | null> {
   try {
-    return await bus.kvGet(BUCKET_SESSION_RUN, natsToken(sid))
+    const raw = await bus.kvGet(BUCKET_SESSION_RUN, natsToken(sid))
+    if (raw === null || raw === '') return null
+    const v = JSON.parse(raw) as Partial<ActiveRun>
+    if (typeof v.runId !== 'string' || v.runId === '') return null
+    return {
+      runId: v.runId,
+      startedAtMs:
+        typeof v.startedAtMs === 'number' ? v.startedAtMs : Date.now(),
+    }
   } catch {
     return null
   }

@@ -292,7 +292,8 @@ async function runTurnOnce(
   // only the live turn; the active-run marker tells watchers which run is
   // live (and is cleared the moment the turn ends, incl. on error/abort).
   const runId = randomUUID()
-  markActiveRun(deps.bus, sid, runId)
+  const runStartedAtMs = Date.now()
+  markActiveRun(deps.bus, sid, runId, runStartedAtMs)
   pushEvent(deps.bus, sid, 'status', { type: 'busy' }, runId)
 
   // Cross-replica mid-stream interrupt: watch the mailbox wake subject. The

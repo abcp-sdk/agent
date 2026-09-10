@@ -430,29 +430,19 @@ export function buildConnectRoutes(
         // so replay can never resurface already-withdrawn content.
         const activeRun = await readActiveRun(deps.bus, id)
         if (activeRun !== null) {
-          const replay = await agent.replayEvents(id)
-          let start = -1
-          for (let i = replay.length - 1; i >= 0; i--) {
-            const raw = replay[i]
-            if (
-              raw?.event === 'status' &&
-              fieldString(raw?.params, 'type') === 'busy' &&
-              fieldString(raw?.params, 'run_id') === activeRun
-            ) {
-              start = i
-              break
-            }
-          }
-          if (start >= 0) {
-            for (let i = start; i < replay.length; i++) {
-              const raw = replay[i]
-              // Drop anything not belonging to the live run (e.g. a prior
-              // turn's terminal event inside the window).
-              if (fieldString(raw?.params, 'run_id') !== activeRun) continue
-              const eid = fieldString(raw, 'eid')
-              dedup.mark(eid)
-              yield toWatchEvent(raw)
-            }
+          // Window the replay by the turn's START TIME: exact regardless of how
+          // many events other sessions produced (a sequence window can miss a
+          // long turn's 'status busy' anchor entirely).
+          const replay = await agent.replayEvents(id, {
+            startTimeMs: activeRun.startedAtMs,
+          })
+          for (const raw of replay) {
+            // Only the live run's events; a prior turn's terminal event may
+            // fall in the same time window.
+            if (fieldString(raw?.params, 'run_id') !== activeRun.runId) continue
+            const eid = fieldString(raw, 'eid')
+            dedup.mark(eid)
+            yield toWatchEvent(raw)
           }
         }
         for await (const m of sub) {
