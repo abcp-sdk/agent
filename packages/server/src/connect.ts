@@ -1,6 +1,7 @@
 import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
 import {
   appendSessionId,
+  buildModelForApiType,
   Config,
   compactSession,
   deleteSessionIds,
@@ -26,6 +27,8 @@ import {
   DEFAULT_PRESET,
 } from '@easylab-agent/agent'
 import { type AgentDeps } from '@easylab-agent/agent'
+import { generateText } from 'ai'
+import { ResultAsync } from 'neverthrow'
 import { EidDedup } from './context.js'
 import { type ConnectRouter, type ServiceImpl } from '@connectrpc/connect'
 import { create, fromJson, toJson } from '@bufbuild/protobuf'
@@ -541,10 +544,36 @@ export function buildConnectRoutes(
       },
       async testProvider(req) {
         const r = req
-        return {
-          ok: true,
-          result: `testing ${r.providerId ?? r.apiType ?? ''}${r.model ? ' ' + r.model : ''}`,
+        // ONLY a real generation proves a model is usable. No /models fallback:
+        // resolve the model against the supplied creds and run one lightweight
+        // completion. An empty model is an error (nothing to test).
+        if (r.model === undefined || r.model === '') {
+          return { ok: false, result: 'model is required to test' }
         }
+        const built = buildModelForApiType(
+          {
+            apiType: r.apiType,
+            baseUrl: r.baseUrl,
+            apiKey: r.apiKey ?? '',
+            headers: {},
+          },
+          r.model,
+        )
+        if (built.isErr()) {
+          return { ok: false, result: built.error }
+        }
+        const gen = await ResultAsync.fromPromise(
+          generateText({
+            model: built.value,
+            prompt: 'hi',
+            maxOutputTokens: 8,
+          }),
+          e => `provider test: generation failed: ${String(e)}`,
+        )
+        if (gen.isErr()) {
+          return { ok: false, result: gen.error }
+        }
+        return { ok: true, result: gen.value.text }
       },
       async listModels() {
         const r = await Providers.list(deps.db)
