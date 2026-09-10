@@ -4,6 +4,9 @@ import {
   BUCKET_SESSION_STATE,
   buildModelForApiType,
   catalogModel,
+  MODEL_CAPABILITIES,
+  type ModelCapability,
+  parseCapability,
   Config,
   compactSession,
   deleteSessionIds,
@@ -205,6 +208,7 @@ function parseProviderModels(raw: string | null | undefined): {
   id: string
   name: string
   contextLimit: bigint
+  capability: string
 }[] {
   let arr: unknown = []
   try {
@@ -213,20 +217,34 @@ function parseProviderModels(raw: string | null | undefined): {
     return []
   }
   if (!Array.isArray(arr)) return []
-  const out: { id: string; name: string; contextLimit: bigint }[] = []
+  const out: {
+    id: string
+    name: string
+    contextLimit: bigint
+    capability: string
+  }[] = []
   for (const item of arr) {
     if (typeof item === 'string') {
-      if (item !== '') out.push({ id: item, name: item, contextLimit: 0n })
+      if (item !== '')
+        out.push({ id: item, name: item, contextLimit: 0n, capability: 'text' })
       continue
     }
     if (item === null || typeof item !== 'object') continue
     const v = item as Record<string, unknown>
     const id = String(v['id'] ?? '')
     if (id === '') continue
+    const capRaw = String(v['capability'] ?? '').trim().toLowerCase()
+    // Legacy rows (and bare strings) carry no capability: text.
+    const capability = MODEL_CAPABILITIES.includes(
+      capRaw as ModelCapability,
+    )
+      ? capRaw
+      : 'text'
     out.push({
       id,
       name: String(v['name'] ?? id),
       contextLimit: BigInt(Math.trunc(Number(v['context_limit'] ?? 0)) || 0),
+      capability,
     })
   }
   return out
@@ -772,24 +790,33 @@ export function buildConnectRoutes(
       async registerProvider(req) {
         const p = req.provider
         if (!p) throw new Error('provider required')
-        // context_limit is REQUIRED per model (drives compaction budgets); it
-        // is never inferred from an external catalog.
-        const models = (p.models ?? []).map(m => {
+        // context_limit is REQUIRED for text models (drives compaction
+        // budgets); it is never inferred from an external catalog. Generation
+        // models (image/video/speech) have no context window and omit it.
+        // capability defaults to 'text'; unknown values are rejected.
+        const models = []
+        for (const m of p.models ?? []) {
           if (m.id === '') {
             throw new ConnectError('model id is required', Code.InvalidArgument)
           }
-          if (m.contextLimit <= 0n) {
+          const cap = parseCapability(m.capability)
+          if (cap.isErr()) {
+            throw new ConnectError(cap.error, Code.InvalidArgument)
+          }
+          const capability = cap.value
+          if (capability === 'text' && m.contextLimit <= 0n) {
             throw new ConnectError(
-              `model '${m.id}': context_limit is required and must be > 0`,
+              `model '${m.id}': context_limit is required and must be > 0 for text models`,
               Code.InvalidArgument,
             )
           }
-          return {
+          models.push({
             id: m.id,
             name: m.name !== '' ? m.name : m.id,
             context_limit: Number(m.contextLimit),
-          }
-        })
+            capability,
+          })
+        }
         const r = await Providers.upsert(deps.db, {
           providerId: p.providerId,
           apiType: p.apiType,
@@ -877,21 +904,26 @@ export function buildConnectRoutes(
         const provider = r.value.find(p => p?.provider_id === pid)
         const apiType = provider?.api_type ?? ''
         const parsed = provider === undefined ? [] : parseProviderModels(provider.models)
-        // Variants are resolved STRICTLY by provider_id/model_id against the
-        // models.dev catalog; models absent from the catalog have no variants.
-        const models = parsed.map(m => {
-          const meta = catalogModel(catalog, pid, m.id)
-          const variants =
-            meta === null
-              ? []
-              : variantsForApiType(meta, apiType).map(toModelVariant)
-          return {
-            id: m.id,
-            name: m.name,
-            variants,
-            contextLimit: m.contextLimit,
-          }
-        })
+        // Session model listing surfaces TEXT models only: generation models
+        // (image/video/speech) are picked by tools from the provider registry,
+        // never attached to a session. Variants are resolved STRICTLY by
+        // provider_id/model_id against the models.dev catalog; models absent
+        // from the catalog have no variants.
+        const models = parsed
+          .filter(m => m.capability === 'text')
+          .map(m => {
+            const meta = catalogModel(catalog, pid, m.id)
+            const variants =
+              meta === null
+                ? []
+                : variantsForApiType(meta, apiType).map(toModelVariant)
+            return {
+              id: m.id,
+              name: m.name,
+              variants,
+              contextLimit: m.contextLimit,
+            }
+          })
         return { models }
       },
       async listPresets(req) {

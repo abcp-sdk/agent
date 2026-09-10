@@ -8,17 +8,21 @@ import {
   connectBus,
   connectDb,
   type Db,
+  type FileRecord,
   LlmRegistry,
   loadConfig,
   logger,
   Mailbox,
   makeBlobStore,
   Presets,
+  randomCode,
   rawAll,
   rawRun,
   refreshModelsDev,
   runSessionTurn,
+  upsertFile,
   watchMailboxWake,
+  sha256Hex,
 } from '@easylab-agent/agent'
 import { serveBundled } from '@abc-protocol/bundled-extension'
 import { createConnectRouter } from '@connectrpc/connect'
@@ -116,7 +120,32 @@ async function main(): Promise<void> {
   const stopBundled = serveBundled({
     bus,
     resolveModel: (db, modelId) => llm.resolve(db as Db, modelId),
-    blobGet: (code) => files.get(code).then(r => ({ meta: { ...r.meta } as Record<string, unknown>, data: r.data })),
+    // Generation models (image/video/speech) resolve from the SAME provider
+    // registry, capability-tagged; the config knobs hold provider_id/model_id.
+    resolveGenerative: (capability, ref) =>
+      llm.resolveGenerative(db as Db, ref, capability),
+    blobGet: (code) =>
+      files.get(code).then(r => ({
+        meta: { ...r.meta } as Record<string, unknown>,
+        data: r.data,
+      })),
+    // Generated media (images/videos/audio) land in the same blob store as
+    // uploaded files so they can be referenced as file:<code> afterwards.
+    ingestBlob: async ({ bytes, name, mime, session }) => {
+      const data = new Uint8Array(Buffer.from(bytes, 'base64'))
+      const record: FileRecord = {
+        code: randomCode(),
+        sha256: sha256Hex(data),
+        name,
+        mime,
+        size: data.length,
+        uploader_session: session,
+        created_at: new Date().toISOString(),
+      }
+      await files.put(record.code, record, data)
+      await upsertFile(bus, record)
+      return { code: record.code, mime }
+    },
     rawAll: (sql, params) => rawAll(db, sql, params),
     rawRun: (sql, params) => rawRun(db, sql, params),
     // Config lives in the `cfg` KV bucket (source of truth for extensions).

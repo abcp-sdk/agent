@@ -20,6 +20,31 @@ export interface ProviderCredentials {
   headers: Record<string, string>
 }
 
+/**
+ * What a provider model generates. `text` (default) = chat/vision language
+ * model feeding sessions; `image` / `video` / `speech` = generation models
+ * resolved by tools (image-generate / video-generate / tts-generate) through
+ * the SAME provider registry — one endpoint, one key, capability-tagged.
+ */
+export type ModelCapability = 'text' | 'image' | 'video' | 'speech'
+
+export const MODEL_CAPABILITIES: readonly ModelCapability[] = [
+  'text',
+  'image',
+  'video',
+  'speech',
+]
+
+/** Normalize a client-supplied capability string; empty = text. */
+export function parseCapability(raw: string): Result<ModelCapability, string> {
+  const v = raw.trim().toLowerCase()
+  if (v === '') return ok('text')
+  const hit = MODEL_CAPABILITIES.find(c => c === v)
+  return hit !== undefined
+    ? ok(hit)
+    : err(`unknown capability: ${raw} (expected text|image|video|speech)`)
+}
+
 const KNOWN_API_TYPES = new Set([
   'anthropic',
   'claude',
@@ -39,7 +64,7 @@ export function validateApiType(apiType: string): Result<void, string> {
       )
 }
 
-/** Pure model factory — mirrors the provider registry. */
+/** Pure text (language) model factory — mirrors the provider registry. */
 export function buildModelForApiType(
   credentials: ProviderCredentials,
   modelId: string,
@@ -83,11 +108,79 @@ export function buildModelForApiType(
   }
 }
 
+/**
+ * Generation-model factory for the non-text capabilities. Returns the
+ * capability-specific AI-SDK model object (ImageModelV4 /
+ * Experimental_VideoModelV4 / SpeechModelV4) — callers drive it with
+ * `generateImage` / `experimental_generateVideo` / `generateSpeech`.
+ *
+ * api-type support matrix:
+ *   - image:  openai, google, openai-compatible
+ *   - video:  google (AI SDK video is experimental; openai has none)
+ *   - speech: openai, google
+ */
+export function buildGenerativeModel(
+  credentials: ProviderCredentials,
+  modelId: string,
+  capability: Exclude<ModelCapability, 'text'>,
+): Result<unknown, string> {
+  const apiType = credentials.apiType.toLowerCase()
+  const { baseUrl, apiKey, headers } = credentials
+  const baseURL = baseUrl ? { baseURL: baseUrl } : {}
+
+  switch (apiType) {
+    case 'openai': {
+      const p = createOpenAI({ ...baseURL, apiKey, headers })
+      if (capability === 'image') return ok(p.imageModel(modelId))
+      if (capability === 'speech') return ok(p.speech(modelId))
+      return err(`api type 'openai' does not support ${capability} generation`)
+    }
+    case 'google':
+    case 'gemini': {
+      const p = createGoogle({ ...baseURL, apiKey, headers })
+      if (capability === 'image') return ok(p.image(modelId))
+      if (capability === 'video') return ok(p.videoModel(modelId))
+      if (capability === 'speech') return ok(p.speechModel(modelId))
+      return err(`api type 'google' does not support ${capability} generation`)
+    }
+    case 'openai-compatible':
+    case 'openai_compatible': {
+      const p = createOpenAICompatible({
+        name: 'openai-compatible',
+        baseURL: baseUrl,
+        apiKey,
+        headers,
+      })
+      if (capability === 'image') return ok(p.imageModel(modelId))
+      return err(
+        `api type 'openai-compatible' does not support ${capability} generation (use an openai or google provider)`,
+      )
+    }
+    case 'anthropic':
+    case 'claude':
+    case 'deepseek':
+      return err(
+        `api type '${apiType}' does not support ${capability} generation (use an openai or google provider)`,
+      )
+    default:
+      return err(`unknown api type: ${apiType}`)
+  }
+}
+
 export interface ResolvedModel {
   model: LanguageModel
   modelId: string
   providerId: string
   apiType: string
+}
+
+/** A resolved generation model (capability-tagged, not a LanguageModel). */
+export interface ResolvedGenerativeModel {
+  model: unknown
+  modelId: string
+  providerId: string
+  apiType: string
+  capability: Exclude<ModelCapability, 'text'>
 }
 
 /**
@@ -123,9 +216,11 @@ export function modelRef(providerId: string, modelId: string): string {
  */
 export class LlmRegistry {
   private readonly cache = new Map<string, LanguageModel>()
+  private readonly genCache = new Map<string, ResolvedGenerativeModel>()
 
   invalidate(): void {
     this.cache.clear()
+    this.genCache.clear()
   }
 
   /**
@@ -192,6 +287,58 @@ export class LlmRegistry {
       providerId: hit.provider_id,
       apiType: hit.api_type,
     })
+  }
+
+  /**
+   * Resolve a generation model (image / video / speech) from the SAME
+   * provider registry. `ref` is a canonical `provider_id/model_id`; the
+   * referenced provider must exist and the provider's api type must support
+   * the capability. No fallback: a tool asking for a specific model gets that
+   * model or an error.
+   */
+  async resolveGenerative(
+    db: Db,
+    ref: string,
+    capability: Exclude<ModelCapability, 'text'>,
+  ): Promise<Result<ResolvedGenerativeModel, string>> {
+    const parsed = parseProviderModelRef(ref)
+    if (parsed === null) {
+      return err(
+        `no model selected — set a ${capability} model as "provider_id/model_id" (got ${JSON.stringify(ref)})`,
+      )
+    }
+    const rows = await Providers.list(db)
+    if (rows.isErr()) return err(rows.error)
+    const hit = rows.value.find(r => r.provider_id === parsed.providerId)
+    if (hit === undefined) {
+      return err(`provider not found: ${parsed.providerId}`)
+    }
+    const cacheKey = `${hit.provider_id}/${parsed.modelId}#${capability}`
+    const cached = this.genCache.get(cacheKey)
+    if (cached !== undefined) return ok(cached)
+    const creds: ProviderCredentials = {
+      apiType: hit.api_type,
+      baseUrl: hit.base_url,
+      apiKey: hit.api_key,
+      headers: parseHeaders(hit.headers),
+    }
+    const built = buildGenerativeModel(creds, parsed.modelId, capability)
+    if (built.isErr()) {
+      logger.warn(
+        { provider: hit.provider_id, capability, err: built.error },
+        'generative provider unusable',
+      )
+      return err(built.error)
+    }
+    const resolved: ResolvedGenerativeModel = {
+      model: built.value,
+      modelId: parsed.modelId,
+      providerId: hit.provider_id,
+      apiType: hit.api_type,
+      capability,
+    }
+    this.genCache.set(cacheKey, resolved)
+    return ok(resolved)
   }
 }
 
