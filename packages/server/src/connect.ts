@@ -842,6 +842,19 @@ export function buildConnectRoutes(
         if (r.model === undefined || r.model === '') {
           return { ok: false, result: 'model is required to test' }
         }
+        // Capability gates the test path. Generation models (image/video/
+        // speech) are not testable today — building the model object proves
+        // wiring but says nothing about the endpoint, so refuse honestly.
+        const cap = parseCapability(r.capability)
+        if (cap.isErr()) {
+          return { ok: false, result: cap.error }
+        }
+        if (cap.value !== 'text') {
+          return {
+            ok: false,
+            result: `capability '${cap.value}' models cannot be tested yet — test is text-only`,
+          }
+        }
         // `model` accepts a canonical provider/model ref or a bare id; use the
         // trailing model id for the model factory.
         const ref = parseProviderModelRef(r.model)
