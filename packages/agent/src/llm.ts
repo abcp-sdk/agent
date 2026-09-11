@@ -160,13 +160,18 @@ export function buildGenerativeModel(
     }
     case 'openai-compatible':
     case 'openai_compatible': {
-      // The openai provider hits the same OpenAI wire format but implements
-      // the full surface (transcription included); route openai-compatible
-      // transcription requests through it so any OpenAI-shaped ASR endpoint
-      // (e.g. the easylab gateway) resolves via provider/model refs.
+      // The OpenAI provider speaks the same wire format as an
+      // "openai-compatible" server for the non-chat surfaces the compatible
+      // package lacks: transcription (`/audio/transcriptions`) and speech
+      // (`/audio/speech`). Route those through it so any OpenAI-shaped
+      // endpoint (e.g. the easylab gateway) resolves via provider/model refs.
       if (capability === 'transcription') {
         const p = createOpenAI({ ...baseURL, apiKey, headers })
         return ok(p.transcription(modelId))
+      }
+      if (capability === 'speech') {
+        const p = createOpenAI({ ...baseURL, apiKey, headers })
+        return ok(p.speech(modelId))
       }
       const p = createOpenAICompatible({
         name: 'openai-compatible',

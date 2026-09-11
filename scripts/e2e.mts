@@ -123,6 +123,8 @@ interface MockState {
   requests: number
   /** Number of /images/generations calls (image toolchain coverage). */
   imageRequests: number
+  speechRequests: number
+  transcriptionRequests: number
 }
 
 function sseChunk(res: import('node:http').ServerResponse, obj: unknown): void {
@@ -221,6 +223,21 @@ async function startMockLlm(
           }),
         )
       })
+      return
+    }
+    // Speech (TTS) endpoint: the OpenAI speech model reads the body as raw
+    // audio bytes (any content-type works).
+    if (req.method === 'POST' && req.url?.endsWith('/audio/speech')) {
+      state.speechRequests++
+      res.writeHead(200, { 'content-type': 'audio/wav' })
+      res.end(Buffer.from('RIFF....WAVEfmt '))
+      return
+    }
+    // Transcription (ASR) endpoint: multipart in, JSON {text} out.
+    if (req.method === 'POST' && req.url?.endsWith('/audio/transcriptions')) {
+      state.transcriptionRequests++
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ text: 'e2e transcript' }))
       return
     }
     if (req.method !== 'POST' || !req.url?.endsWith('/chat/completions')) {
@@ -470,6 +487,8 @@ async function main(): Promise<void> {
     lastReasoningEffort: undefined,
     requests: 0,
     imageRequests: 0,
+    speechRequests: 0,
+    transcriptionRequests: 0,
   }
   const mock = await startMockLlm(state)
 
@@ -633,6 +652,11 @@ async function run(
             name: 'Mock TTS',
             capability: 'speech',
           }),
+          create(ProviderModelSchema, {
+            id: 'mock-asr',
+            name: 'Mock ASR',
+            capability: 'transcription',
+          }),
         ],
       }),
     }),
@@ -761,6 +785,67 @@ async function run(
     state.lastReasoningEffort,
   )
 
+  // Per-capability test probes (real smallest-possible generations).
+  const tImage = await client.testProvider(
+    create(TestProviderRequestSchema, {
+      providerId: 'openai',
+      apiType: 'openai-compatible',
+      baseUrl: mockUrl,
+      apiKey: 'test-key',
+      model: 'openai/mock-image',
+      capability: 'image',
+    }),
+  )
+  check('testProvider image ok', tImage.ok && tImage.result.includes('image ok'), tImage.result)
+  const tSpeech = await client.testProvider(
+    create(TestProviderRequestSchema, {
+      providerId: 'openai',
+      apiType: 'openai-compatible',
+      baseUrl: mockUrl,
+      apiKey: 'test-key',
+      model: 'openai/mock-tts',
+      capability: 'speech',
+    }),
+  )
+  check('testProvider speech ok', tSpeech.ok && tSpeech.result.includes('speech ok'), tSpeech.result)
+  const tAsr = await client.testProvider(
+    create(TestProviderRequestSchema, {
+      providerId: 'openai',
+      apiType: 'openai-compatible',
+      baseUrl: mockUrl,
+      apiKey: 'test-key',
+      model: 'openai/mock-asr',
+      capability: 'transcription',
+    }),
+  )
+  check(
+    'testProvider transcription ok',
+    tAsr.ok && tAsr.result.includes('transcription ok'),
+    tAsr.result,
+  )
+  check(
+    'mock speech/transcription endpoints hit',
+    state.speechRequests >= 1 && state.transcriptionRequests >= 1,
+    `${state.speechRequests}/${state.transcriptionRequests}`,
+  )
+  // Video: an openai-compatible provider has no AI-SDK video model, so the
+  // test fails honestly (google/Veo only).
+  const tVideo = await client.testProvider(
+    create(TestProviderRequestSchema, {
+      providerId: 'openai',
+      apiType: 'openai-compatible',
+      baseUrl: mockUrl,
+      apiKey: 'test-key',
+      model: 'openai/mock-video',
+      capability: 'video',
+    }),
+  )
+  check(
+    'testProvider video rejected for openai-compatible',
+    tVideo.ok === false,
+    tVideo.result,
+  )
+
   // -------------------------------------------------------------------------
   section('tools discovery + i18n')
   const toolsEn = await client.listTools(
@@ -885,25 +970,6 @@ async function run(
   )
   const toolsAfter = await client.listTools(create(ListToolsRequestSchema, {}))
   check('setExtensionConfig accepted', toolsAfter.tools.length === 12)
-
-  // Generation-model tests are refused with a clear message (test is
-  // text-only); text tests still pass end-to-end against the mock.
-  const genTest = await client.testProvider(
-    create(TestProviderRequestSchema, {
-      providerId: 'openai',
-      apiType: 'openai-compatible',
-      baseUrl: mockUrl,
-      apiKey: 'test-key',
-      model: 'openai/mock-image',
-      capability: 'image',
-    }),
-  )
-  check(
-    'testProvider refuses image capability',
-    genTest.ok === false &&
-      genTest.result.includes('text-only'),
-    genTest.result,
-  )
 
   // Configure the image tool to point at the mock image model, then drive a
   // full image-generate tool call through the turn loop.

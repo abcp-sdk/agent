@@ -2,7 +2,6 @@ import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
 import {
   appendSessionId,
   BUCKET_SESSION_STATE,
-  buildModelForApiType,
   catalogModel,
   MODEL_CAPABILITIES,
   type ModelCapability,
@@ -42,9 +41,9 @@ import {
   DEFAULT_PRESET,
 } from '@easylab-agent/agent'
 import { type AgentDeps } from '@easylab-agent/agent'
-import { generateText } from 'ai'
-import { ResultAsync } from 'neverthrow'
+
 import { EidDedup } from './context.js'
+import { runProviderTest } from './provider-test.js'
 import { type ConnectRouter, type ServiceImpl, ConnectError, Code } from '@connectrpc/connect'
 import { create, fromJson, toJson } from '@bufbuild/protobuf'
 import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
@@ -836,70 +835,54 @@ export function buildConnectRoutes(
       },
       async testProvider(req) {
         const r = req
-        // ONLY a real generation proves a model is usable. No /models fallback:
-        // resolve the model against the supplied creds and run one lightweight
-        // completion. An empty model is an error (nothing to test).
+        // ONLY a real (smallest-possible) generation proves a model is usable.
+        // No /models fallback. An empty model is an error (nothing to test).
         if (r.model === undefined || r.model === '') {
           return { ok: false, result: 'model is required to test' }
         }
-        // Capability gates the test path. Generation models (image/video/
-        // speech) are not testable today — building the model object proves
-        // wiring but says nothing about the endpoint, so refuse honestly.
         const cap = parseCapability(r.capability)
         if (cap.isErr()) {
           return { ok: false, result: cap.error }
-        }
-        if (cap.value !== 'text') {
-          return {
-            ok: false,
-            result: `capability '${cap.value}' models cannot be tested yet — test is text-only`,
-          }
         }
         // `model` accepts a canonical provider/model ref or a bare id; use the
         // trailing model id for the model factory.
         const ref = parseProviderModelRef(r.model)
         const modelId = ref !== null ? ref.modelId : r.model
-        const built = buildModelForApiType(
-          {
-            apiType: r.apiType,
-            baseUrl: r.baseUrl,
-            apiKey: r.apiKey ?? '',
-            headers: {},
-          },
-          modelId,
-        )
-        if (built.isErr()) {
-          return { ok: false, result: built.error }
+        const providerId = r.providerId !== '' ? r.providerId : (ref?.providerId ?? '')
+        // Text models may carry a reasoning variant; resolve it to the
+        // providerOptions the test generation should exercise.
+        let textProviderOptions: Record<string, unknown> | undefined
+        if (cap.value === 'text') {
+          const meta = catalogModel(
+            await getModelsDev(deps.bus),
+            providerId,
+            modelId,
+          )
+          const variantDef =
+            meta === null ? null : findVariant(meta, r.apiType, r.variant ?? '')
+          if (
+            variantDef !== null &&
+            Object.keys(variantDef.providerOptions).length > 0
+          ) {
+            textProviderOptions = variantDef.providerOptions
+          }
         }
-        // Apply the selected variant (if any) to the test generation.
-        const providerProvider =
-          r.providerId !== '' ? r.providerId : (ref?.providerId ?? '')
-        const meta = catalogModel(
-          await getModelsDev(deps.bus),
-          providerProvider,
-          modelId,
-        )
-        const variantDef =
-          meta === null
-            ? null
-            : findVariant(meta, r.apiType, r.variant ?? '')
-        const providerOptions =
-          variantDef !== null && Object.keys(variantDef.providerOptions).length > 0
-            ? variantDef.providerOptions
-            : undefined
-        const gen = await ResultAsync.fromPromise(
-          generateText({
-            model: built.value,
-            prompt: 'hi',
-            maxOutputTokens: 8,
-            ...(providerOptions !== undefined ? { providerOptions } : {}),
-          }),
-          e => `provider test: generation failed: ${String(e)}`,
-        )
-        if (gen.isErr()) {
-          return { ok: false, result: gen.error }
+        try {
+          return await runProviderTest(
+            {
+              apiType: r.apiType,
+              baseUrl: r.baseUrl,
+              apiKey: r.apiKey ?? '',
+              modelId,
+              capability: cap.value,
+              providerId,
+              variant: r.variant ?? '',
+            },
+            textProviderOptions,
+          )
+        } catch (e) {
+          return { ok: false, result: `provider test failed: ${String(e)}` }
         }
-        return { ok: true, result: gen.value.text }
       },
       async listModels(req) {
         const pid = req.providerId
