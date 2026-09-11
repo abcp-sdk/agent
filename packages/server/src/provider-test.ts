@@ -126,10 +126,16 @@ export async function runProviderTest(
     case 'speech': {
       const built = buildGenerativeModel(c, input.modelId, 'speech')
       if (built.isErr()) return { ok: false, result: built.error }
+      // OpenAI's default voice ("alloy") is rejected by generic
+      // OpenAI-compatible TTS servers (e.g. the easylab gateway); an empty
+      // voice lets such a server pick its default. Real OpenAI/Google keep
+      // their provider default.
+      const isCompat = /openai[-_]compatible/.test(input.apiType.toLowerCase())
       const res = await generateSpeech({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         model: built.value as any,
         text: TEST_SPEECH_TEXT,
+        ...(isCompat ? { voice: '' } : {}),
       })
       const bytes = res.audio.uint8Array.length
       return { ok: true, result: `speech ok (${bytes} bytes)` }
