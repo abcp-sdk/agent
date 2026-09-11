@@ -962,6 +962,17 @@ async function run(
       String(imgResult.params['formatted'] ?? '').includes('Generated'),
     imgResult?.params['formatted'],
   )
+  // The live tool-result event carries the structured `data` (media refs) so a
+  // client can render generated images/audio/video directly.
+  const imgData = imgResult?.params['data'] as
+    | { images?: Array<{ code?: string }> }
+    | undefined
+  const imgCode = imgData?.images?.[0]?.code ?? ''
+  check(
+    'image tool-result carries data.images[].code',
+    /^[0-9a-f]{16}$/.test(imgCode),
+    imgCode,
+  )
   check(
     'mock /images/generations was hit',
     state.imageRequests >= 1,
@@ -1360,11 +1371,11 @@ async function run(
   // -------------------------------------------------------------------------
   section('files')
   const fileBytes = Buffer.from('hello e2e file', 'utf8')
-  const code = `e2e${uniq}`
+  const clientCode = `e2e${uniq}`
   const upFile = await client.uploadFile(
     create(UploadFileRequestSchema, {
       file: create(FileRefSchema, {
-        code,
+        code: clientCode,
         name: 'hello.txt',
         mime: 'text/plain',
         size: fileBytes.length,
@@ -1372,7 +1383,14 @@ async function run(
       data: fileBytes.toString('base64'),
     }),
   )
-  check('uploadFile', upFile.ok && upFile.code === code, upFile.code)
+  // The server MINTS the code (16 hex); the client-supplied code is ignored so
+  // every file code in the system is uniform.
+  const code = upFile.code
+  check(
+    'uploadFile mints a 16-hex code (ignores client code)',
+    upFile.ok && /^[0-9a-f]{16}$/.test(code) && code !== clientCode,
+    code,
+  )
   const gotFile = await client.getFile(create(GetFileRequestSchema, { code }))
   check(
     'getFile round-trips bytes',

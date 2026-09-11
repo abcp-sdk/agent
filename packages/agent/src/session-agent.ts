@@ -417,6 +417,10 @@ async function runTurnOnce(
                 toolCallId: part.toolCallId,
                 toolName: part.toolName,
                 formatted: part.output.content,
+                // Structured result data (opaque to the agent): media tools put
+                // their fixed fields (images/videos/audio file refs) here so a
+                // client can render them without re-deriving from the text.
+                data: part.output.metadata ?? null,
                 change_id:
                   typeof part.output.metadata?.change_id === 'string'
                     ? part.output.metadata.change_id

@@ -1065,21 +1065,19 @@ export function buildConnectRoutes(
       async uploadFile(req) {
         const file = req.file
         const data = req.data
-        if (!file?.code || data === undefined)
-          throw new Error('code and data required')
+        if (data === undefined) throw new Error('data required')
+        // The SERVER mints the code (16-hex, deduped by sha): a client-supplied
+        // code is ignored so every file code in the system is uniform. This
+        // closes the only path that could mint non-canonical codes.
         const bytes = new Uint8Array(Buffer.from(data, 'base64'))
-        const record: FileRecord = {
-          code: file.code,
-          name: file.name ?? '',
-          mime: file.mime ?? 'application/octet-stream',
-          sha256: getSha(bytes),
-          size: bytes.length,
-          uploader_session: '',
-          created_at: new Date().toISOString(),
-        }
-        await deps.files.put(record.code, record, bytes)
-        await upsertFile(deps.bus, record)
-        return { ok: true, code: file.code }
+        const record = await storeBytes(
+          deps,
+          bytes,
+          file?.name ?? 'artifact',
+          file?.mime ?? 'application/octet-stream',
+          '',
+        )
+        return { ok: true, code: record.code }
       },
       async ingestFile(req) {
         const { data: raw, name, mime } = req
