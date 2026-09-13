@@ -69,15 +69,41 @@ export function deleteSessionIds(
 
 /** Cache the models.dev catalog JSON in the object store. */
 export function putModelsDev(bus: Bus, json: string): Promise<void> {
+  // Refresh the in-process parsed cache in the same step: a fresh catalog is
+  // being written, so the next reader can skip the object-store round trip
+  // AND the 4 MB JSON.parse.
+  try {
+    modelsDevCache = { value: JSON.parse(json), at: Date.now() }
+  } catch {
+    modelsDevCache = null
+  }
   return bus.objectPut(MODELS_KEY, Buffer.from(json))
 }
 
+/**
+ * In-process cache of the parsed models.dev catalog. The catalog is a ~4 MB
+ * JSON blob (193 providers); reading it from the NATS object store and
+ * `JSON.parse`-ing it on EVERY listModels call dominated that RPC's latency.
+ * The catalog changes at most every 30 min (refreshModelsDev), so a short TTL
+ * is safe and turns the hot path into an in-memory lookup.
+ */
+let modelsDevCache: { value: unknown; at: number } | null = null
+const MODELS_DEV_TTL_MS = 60 * 1000
+
 /** Read the cached models.dev catalog, if present. */
 export async function getModelsDev(bus: Bus): Promise<unknown> {
+  if (
+    modelsDevCache !== null &&
+    Date.now() - modelsDevCache.at < MODELS_DEV_TTL_MS
+  ) {
+    return modelsDevCache.value
+  }
   const data = await bus.objectGet(MODELS_KEY)
   if (data === null || data.length === 0) return null
   try {
-    return JSON.parse(Buffer.from(data).toString('utf8'))
+    const value = JSON.parse(Buffer.from(data).toString('utf8'))
+    modelsDevCache = { value, at: Date.now() }
+    return value
   } catch {
     return null
   }
