@@ -37,6 +37,7 @@ import {
   AgentService,
   AdminService,
   CreateTenantRequestSchema,
+  DeleteTenantRequestSchema,
   IssueTenantTokenRequestSchema,
   ListTenantsRequestSchema,
   ListTenantTokensRequestSchema,
@@ -680,9 +681,14 @@ async function main(): Promise<void> {
         AGENT_BOOTSTRAP_TENANT: E2E_TENANT,
         AGENT_BOOTSTRAP_TOKEN: E2E_TENANT_TOKEN,
       },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
     agent.stderr?.on('data', d => {
+      const s = String(d)
+      agentLog.push(s)
+      if (process.env['E2E_DEBUG'] === '1') process.stderr.write(`[agent] ${s}`)
+    })
+    agent.stdout?.on('data', d => {
       const s = String(d)
       agentLog.push(s)
       if (process.env['E2E_DEBUG'] === '1') process.stderr.write(`[agent] ${s}`)
@@ -775,7 +781,7 @@ async function main(): Promise<void> {
   }
 
   try {
-    await run(client, admin, state, mock.url, mock.gatewayUrl)
+    await run(client, admin, state, mock.url, mock.gatewayUrl, baseUrl)
   } catch (err) {
     bad('suite ran to completion', err)
     console.error(String(err))
@@ -813,6 +819,7 @@ async function run(
   state: MockState,
   mockUrl: string,
   gatewayUrl: string,
+  baseUrl: string,
 ): Promise<void> {
   const uniq = Date.now()
 

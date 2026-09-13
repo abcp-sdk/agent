@@ -364,7 +364,7 @@ export async function rawRun(
 ): Promise<void> {
   const client = db.$client
   if (dbBackend(db) === 'sqlite') {
-    (client as DatabaseSync).prepare(sql).run(...(params as never[]))
+    ;(client as DatabaseSync).prepare(sql).run(...(params as never[]))
     return
   }
   await (client as Sql).unsafe(sql, params as never[])
@@ -462,6 +462,11 @@ async function migrateSchema(
       'created_at',
       'updated_at',
     ])
+    // v1 mailbox carried `session_name ... REFERENCES sessions(name)`. After the
+    // sessions PK becomes (tenant, name) that parent key is no longer unique, so
+    // any FK action on mailbox fails with "foreign key mismatch". SQLite cannot
+    // DROP a constraint, so rebuild the table with the FK-free v2 DDL.
+    rebuildMailboxIfLegacyFk(driver)
   } else {
     await (driver as Sql).unsafe(ddl)
     await (driver as Sql).unsafe(PG_MIGRATIONS)
@@ -471,9 +476,10 @@ async function migrateSchema(
 
 /** Primary-key columns of a sqlite table (in ordinal order). */
 function sqlitePkColumns(raw: DatabaseSync, table: string): string[] {
-  const rows = raw
-    .prepare(`PRAGMA table_info(${table})`)
-    .all() as Array<{ name: string; pk: number }>
+  const rows = raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string
+    pk: number
+  }>
   return rows
     .filter(r => Number(r.pk) > 0)
     .sort((a, b) => Number(a.pk) - Number(b.pk))
@@ -502,10 +508,36 @@ function rebuildIfPkLacksTenant(
     raw.exec(`ALTER TABLE ${table} RENAME TO _${table}_v1`)
     // Recreate the v2 table by re-running the v2 CREATE (the name is now free).
     raw.exec(SQLITE_TABLE_DDL[table] ?? '')
-    raw.exec(
-      `INSERT INTO ${table} (${cols}) SELECT ${cols} FROM _${table}_v1`,
-    )
+    raw.exec(`INSERT INTO ${table} (${cols}) SELECT ${cols} FROM _${table}_v1`)
     raw.exec(`DROP TABLE _${table}_v1`)
+  } finally {
+    raw.exec('PRAGMA legacy_alter_table = OFF')
+    raw.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+/**
+ * Rebuild the sqlite `mailbox` table when it still carries the v1 foreign key
+ * `session_name REFERENCES sessions(name)`. Once `sessions` gains the (tenant,
+ * name) PK that parent key is no longer unique, and every mailbox INSERT/UPDATE
+ * fails with "foreign key mismatch". The v2 DDL drops the FK entirely (mailbox
+ * rows are scoped by tenant + session_name, no referential enforcement), so a
+ * rename+recreate+copy+drop clears it. No-op on fresh (FK-free) databases.
+ */
+function rebuildMailboxIfLegacyFk(raw: DatabaseSync): void {
+  const fks = raw.prepare('PRAGMA foreign_key_list(mailbox)').all() as Array<{
+    table: string
+  }>
+  if (!fks.some(fk => String(fk.table) === 'sessions')) return
+  const cols =
+    'id, tenant, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq'
+  raw.exec('PRAGMA foreign_keys = OFF')
+  raw.exec('PRAGMA legacy_alter_table = ON')
+  try {
+    raw.exec('ALTER TABLE mailbox RENAME TO _mailbox_v1')
+    raw.exec(SQLITE_TABLE_DDL['mailbox'] ?? '')
+    raw.exec(`INSERT INTO mailbox (${cols}) SELECT ${cols} FROM _mailbox_v1`)
+    raw.exec('DROP TABLE _mailbox_v1')
   } finally {
     raw.exec('PRAGMA legacy_alter_table = OFF')
     raw.exec('PRAGMA foreign_keys = ON')
@@ -545,6 +577,18 @@ const SQLITE_TABLE_DDL: Record<string, string> = {
     created_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (tenant, provider_id)
+  )`,
+  mailbox: `CREATE TABLE IF NOT EXISTS mailbox (
+    id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    session_name TEXT NOT NULL,
+    msg_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    effective_at TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    consumed_at TEXT,
+    seq INTEGER
   )`,
 }
 

@@ -1,78 +1,77 @@
 import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
+import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
+import { create, fromJson, toJson } from '@bufbuild/protobuf'
+import { StructSchema, type Value, ValueSchema } from '@bufbuild/protobuf/wkt'
 import {
+  Code,
+  ConnectError,
+  type ConnectRouter,
+  type HandlerContext,
+  type ServiceImpl,
+} from '@connectrpc/connect'
+import {
+  type AgentDeps,
   appendSessionId,
   BUCKET_SESSION_STATE,
-  catalogModel,
-  GATEWAY_API_TYPE,
-  GATEWAY_PROVIDER_ID,
-  isGatewayApiType,
-  parseCapability,
-  validateApiType,
-  discoverGatewayModels,
+  type ChainMessage,
   Config,
+  catalogModel,
+  clearActiveRun,
   compactSession,
+  DEFAULT_PRESET,
   deleteSessionIds,
+  discoverGatewayModels,
   discoverTools,
+  factFromPersist,
   fileByCode,
   findVariant,
   fireAndForget,
+  GATEWAY_API_TYPE,
+  GATEWAY_PROVIDER_ID,
   getModelsDev,
-  clearActiveRun,
   interruptRun,
+  isGatewayApiType,
   localizeSchema,
   Mailbox,
-  mailboxSubject,
   Messages,
-  parseProviderModelRef,
+  mailboxSubject,
   Parts,
-  pickDescription,
-  pickLocalized,
   Presets,
   Providers,
+  parse,
+  parseCapability,
+  parseProviderModelRef,
+  pickDescription,
+  pickLocalized,
+  projectMessageFact,
   publishLifecycle,
   publishSessionChanged,
-  factFromPersist,
-  projectMessageFact,
-  writeMessageFact,
-  parse,
-  TextPartDataSchema,
   readActiveRun,
   readMessageFacts,
   renderTemplate,
   resolveLocale,
   Sessions,
+  TextPartDataSchema,
   toModelVariant,
   toolConfigMap,
+  validateApiType,
   variantsForApiType,
-  DEFAULT_PRESET,
-  type ChainMessage,
+  writeMessageFact,
 } from '@easylab-agent/agent'
-import { type AgentDeps } from '@easylab-agent/agent'
-
-import { EidDedup } from './context.js'
-import { tenantOf } from './tenant.js'
-import { runProviderTest } from './provider-test.js'
-import {
-  type ConnectRouter,
-  type HandlerContext,
-  type ServiceImpl,
-  ConnectError,
-  Code,
-} from '@connectrpc/connect'
-import { create, fromJson, toJson } from '@bufbuild/protobuf'
-import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
-import { StructSchema, ValueSchema, type Value } from '@bufbuild/protobuf/wkt'
 import {
   AgentService,
-  ListToolsResponseSchema,
   GetAgentConfigResponseSchema,
   GetFileResponseSchema,
   IngestFileResponseSchema,
-  WatchSessionResponseSchema,
-  WatchSessionsResponseSchema,
+  ListToolsResponseSchema,
   type WatchSessionResponse,
+  WatchSessionResponseSchema,
   type WatchSessionsResponse,
+  WatchSessionsResponseSchema,
 } from '@easylab-agent/schema'
+import { EidDedup } from './context.js'
+import { runProviderTest } from './provider-test.js'
+import { tenantOf } from './tenant.js'
 
 /**
  * Structural row views for the Connect mappers. Call sites pass concrete DB
@@ -231,8 +230,12 @@ function parseProviderModels(raw: string | null | undefined): {
     return []
   }
   if (!Array.isArray(arr)) return []
-  const out: { id: string; name: string; contextLimit: bigint; modelType: string }[] =
-    []
+  const out: {
+    id: string
+    name: string
+    contextLimit: bigint
+    modelType: string
+  }[] = []
   for (const item of arr) {
     if (typeof item === 'string') {
       if (item !== '')
@@ -311,8 +314,7 @@ export function buildConnectRoutes(
 ): (router: ConnectRouter) => void {
   return router => {
     const impl: ServiceImpl<typeof AgentService> = {
-      async health(_req, ctx: HandlerContext) {
-        const tenant = tenantOf(ctx)
+      async health() {
         return { ok: true, name: 'easylab-agent' }
       },
       async listSessions(_req, ctx: HandlerContext) {
@@ -324,7 +326,9 @@ export function buildConnectRoutes(
           tenant,
           r.value.map(s => s.name),
         )
-        return { sessions: r.value.map(s => sessionToMsg(s, facts.get(s.name))) }
+        return {
+          sessions: r.value.map(s => sessionToMsg(s, facts.get(s.name))),
+        }
       },
       async createSession(req, ctx: HandlerContext) {
         const tenant = tenantOf(ctx)
@@ -339,7 +343,9 @@ export function buildConnectRoutes(
           preset: body.preset,
         })
         if (name.isErr()) throw new Error(name.error)
-        publishLifecycle(deps.bus, tenant, 'created', { session_name: body.name })
+        publishLifecycle(deps.bus, tenant, 'created', {
+          session_name: body.name,
+        })
         return { ok: true, sessionName: name.value }
       },
       async getSession(req, ctx: HandlerContext) {
@@ -411,7 +417,13 @@ export function buildConnectRoutes(
         // segment appended since that anchor; if the anchor is gone (undo /
         // re-pointed chain) we return `resync` so the client drops its cache.
         if (afterId !== null) {
-          const r = await Messages.deltaSince(deps.db, tenant, tipId, afterId, limit)
+          const r = await Messages.deltaSince(
+            deps.db,
+            tenant,
+            tipId,
+            afterId,
+            limit,
+          )
           if (r.isErr()) throw new Error(r.error)
           const resync = !r.value.anchorReached && r.value.reachedRoot
           let messages: Awaited<ReturnType<typeof toMsgs>> = []
@@ -868,7 +880,10 @@ export function buildConnectRoutes(
         const id = req.id
         interruptRun(id)
         void deps.bus
-          .publish(mailboxSubject(tenant, id), { type: 'interrupt', session_name: id })
+          .publish(mailboxSubject(tenant, id), {
+            type: 'interrupt',
+            session_name: id,
+          })
           .catch(() => undefined)
         return { ok: true, interrupted: true }
       },
@@ -915,9 +930,7 @@ export function buildConnectRoutes(
           const existing = await Providers.list(deps.db, tenant)
           if (existing.isErr()) throw new Error(existing.error)
           const other = existing.value.find(
-            r =>
-              isGatewayApiType(r.api_type) &&
-              r.provider_id !== p.providerId,
+            r => isGatewayApiType(r.api_type) && r.provider_id !== p.providerId,
           )
           if (other !== undefined) {
             throw new ConnectError(
@@ -971,7 +984,8 @@ export function buildConnectRoutes(
         // The gateway is the only multimodal provider, so a non-gateway type
         // is rejected here.
         const creds = {
-          providerId: req.providerId !== '' ? req.providerId : GATEWAY_PROVIDER_ID,
+          providerId:
+            req.providerId !== '' ? req.providerId : GATEWAY_PROVIDER_ID,
           apiType: req.apiType,
           baseUrl: req.baseUrl,
           apiKey: req.apiKey ?? '',
@@ -1013,7 +1027,8 @@ export function buildConnectRoutes(
         // trailing model id for the model factory.
         const ref = parseProviderModelRef(r.model)
         const modelId = ref !== null ? ref.modelId : r.model
-        const providerId = r.providerId !== '' ? r.providerId : (ref?.providerId ?? '')
+        const providerId =
+          r.providerId !== '' ? r.providerId : (ref?.providerId ?? '')
         // Text models may carry a reasoning variant; resolve it to the
         // providerOptions the test generation should exercise.
         let textProviderOptions: Record<string, unknown> | undefined
@@ -1065,7 +1080,8 @@ export function buildConnectRoutes(
         const catalog = await getModelsDev(deps.bus)
         const provider = r.value.find(p => p?.provider_id === pid)
         const apiType = provider?.api_type ?? ''
-        const parsed = provider === undefined ? [] : parseProviderModels(provider.models)
+        const parsed =
+          provider === undefined ? [] : parseProviderModels(provider.models)
         // Session model listing surfaces TEXT models only. For a text provider
         // every model is text; for the gateway (superset) only models with a
         // positive context_limit are text (context_limit 0 = multimodal).
@@ -1091,14 +1107,10 @@ export function buildConnectRoutes(
         const r = await Presets.list(deps.bus, tenant)
         if (r.isErr()) throw new Error(r.error)
         // Locale chain: request → config KV → "en".
-        const configLocale = (await Config.get(deps.bus, tenant, 'locale')).unwrapOr(
-          null,
-        )
-        const locale = resolveLocale(
-          req.locale,
-          configLocale,
-          'en',
-        )
+        const configLocale = (
+          await Config.get(deps.bus, tenant, 'locale')
+        ).unwrapOr(null)
+        const locale = resolveLocale(req.locale, configLocale, 'en')
         return { presets: r.value.map(p => presetToMsg(p, locale)) }
       },
       async upsertPreset(req, ctx: HandlerContext) {
@@ -1152,14 +1164,10 @@ export function buildConnectRoutes(
       async listTools(req, ctx: HandlerContext) {
         const tenant = tenantOf(ctx)
         const tools = await discoverTools(deps.bus)
-        const configLocale = (await Config.get(deps.bus, tenant, 'locale')).unwrapOr(
-          null,
-        )
-        const locale = resolveLocale(
-          req.locale,
-          configLocale,
-          'en',
-        )
+        const configLocale = (
+          await Config.get(deps.bus, tenant, 'locale')
+        ).unwrapOr(null)
+        const locale = resolveLocale(req.locale, configLocale, 'en')
         return create(ListToolsResponseSchema, {
           tools: tools.map(t => ({
             name: t.name,
@@ -1258,10 +1266,7 @@ export function buildConnectRoutes(
           throw new ConnectError('file name is required', Code.InvalidArgument)
         }
         if (cleanMime === '') {
-          throw new ConnectError(
-            'file mime is required',
-            Code.InvalidArgument,
-          )
+          throw new ConnectError('file mime is required', Code.InvalidArgument)
         }
         const record = await storeBytes(
           deps,
@@ -1305,8 +1310,9 @@ export function buildConnectRoutes(
         const providers: Record<string, string> = {}
         for (const p of r.value) {
           if (p) {
-            providers[p.provider_id] = JSON.stringify(providerToMsg(p), (_k, v) =>
-              typeof v === 'bigint' ? v.toString() : v,
+            providers[p.provider_id] = JSON.stringify(
+              providerToMsg(p),
+              (_k, v) => (typeof v === 'bigint' ? v.toString() : v),
             )
           }
         }
@@ -1334,12 +1340,7 @@ async function refreshMessageFactFromTip(
   const tipRes = await Sessions.tip(deps.db, tenant, sid)
   const tipId = tipRes.isErr() ? null : tipRes.value
   if (tipId === null || tipId === '') {
-    await writeMessageFact(
-      deps.bus,
-      tenant,
-      sid,
-      factFromPersist('', '', ''),
-    )
+    await writeMessageFact(deps.bus, tenant, sid, factFromPersist('', '', ''))
     return
   }
   const target = await Messages.get(deps.db, tenant, tipId)
@@ -1371,13 +1372,13 @@ async function refreshMessageFactFromTip(
   )
 }
 
+import { createHash } from 'node:crypto'
 import {
-  upsertFile,
+  type FileRecord,
   fileBySha,
   randomCode,
-  type FileRecord,
+  upsertFile,
 } from '@easylab-agent/agent'
-import { createHash } from 'node:crypto'
 
 function getSha(data: Uint8Array): string {
   return createHash('sha256').update(data).digest('hex')

@@ -1,7 +1,12 @@
-import { Code, ConnectError } from '@connectrpc/connect'
 import type { ConnectRouter, HandlerContext } from '@connectrpc/connect'
+import { Code, ConnectError } from '@connectrpc/connect'
 import type { AgentDeps } from '@easylab-agent/agent'
-import { Tenants, type TenantRow, type TenantTokenRow } from '@easylab-agent/agent'
+import {
+  Presets,
+  type TenantRow,
+  Tenants,
+  type TenantTokenRow,
+} from '@easylab-agent/agent'
 import {
   AdminService,
   CreateTenantRequestSchema,
@@ -76,7 +81,10 @@ export function buildAdminRoutes(
         const existing = await Tenants.get(deps.db, id)
         if (existing.isErr()) throw new Error(existing.error)
         if (existing.value !== null) {
-          throw new ConnectError(`tenant already exists: ${id}`, Code.AlreadyExists)
+          throw new ConnectError(
+            `tenant already exists: ${id}`,
+            Code.AlreadyExists,
+          )
         }
         const created = await Tenants.create(deps.db, id, req.name)
         if (created.isErr()) throw new Error(created.error)
@@ -84,6 +92,9 @@ export function buildAdminRoutes(
         const issued = await Tenants.issueToken(deps.db, id, 'bootstrap')
         if (issued.isErr()) throw new Error(issued.error)
         invalidateAuthCache()
+        // Runtime-created tenants get their system presets immediately (boot
+        // seeding only covers tenants that existed at startup).
+        void Presets.seedDefaults(deps.bus, id)
         return {
           tenant: tenantMsg(created.value),
           token: issued.value.plaintext,
@@ -93,8 +104,10 @@ export function buildAdminRoutes(
       async updateTenant(req, ctx: HandlerContext) {
         requireAdmin(ctx)
         const id = req.id
-        const patch: { name?: string | undefined; disabled?: boolean | undefined } =
-          {}
+        const patch: {
+          name?: string | undefined
+          disabled?: boolean | undefined
+        } = {}
         if (req.name !== undefined) patch.name = req.name
         if (req.disabled !== undefined) patch.disabled = req.disabled
         const r = await Tenants.update(deps.db, id, patch)

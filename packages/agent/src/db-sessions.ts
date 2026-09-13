@@ -1,5 +1,5 @@
 import type { SessionRow } from '@easylab-agent/schema'
-import { and, eq, sql as dsql } from 'drizzle-orm'
+import { and, sql as dsql, eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import { DEFAULT_PRESET } from './config.js'
 import type { Db } from './db-client.js'
@@ -8,6 +8,7 @@ import { mailbox, sessions } from './db-schema.js'
 
 // Re-exported for callers that import the session module directly.
 export { DEFAULT_PRESET } from './config.js'
+
 type Row = typeof sessions.$inferSelect
 
 const toRow = (r: Row): SessionRow => ({
@@ -116,9 +117,7 @@ export const Sessions = {
       // private mailbox queue and the session row, never message history.
       await db
         .delete(mailbox)
-        .where(
-          and(eq(mailbox.tenant, tenant), eq(mailbox.sessionName, name)),
-        )
+        .where(and(eq(mailbox.tenant, tenant), eq(mailbox.sessionName, name)))
       await db
         .delete(sessions)
         .where(and(eq(sessions.tenant, tenant), eq(sessions.name, name)))
@@ -244,11 +243,7 @@ export const Sessions = {
     ).map(() => undefined)
   },
 
-  exists(
-    db: Db,
-    tenant: string,
-    name: string,
-  ): ResultAsync<boolean, string> {
+  exists(db: Db, tenant: string, name: string): ResultAsync<boolean, string> {
     return q(
       () =>
         db
@@ -263,9 +258,12 @@ export const Sessions = {
 }
 
 /**
- * Every tenant id present in the database (sessions ∪ providers). Used at boot
- * to run per-tenant migrations/seeding without an external tenant registry.
- * Always includes `fallbackTenant` so a fresh install still seeds.
+ * Every tenant id present in the database (tenants ∪ sessions ∪ providers).
+ * Used at boot to run per-tenant migrations/seeding without an external
+ * tenant registry. Always includes `fallbackTenant` so a fresh install still
+ * seeds. The `tenants` table must be part of the union: a freshly
+ * bootstrapped (or admin-created) tenant has no sessions/providers yet, but
+ * its system presets still have to be seeded before its first turn.
  */
 export function knownTenants(
   db: Db,
@@ -275,7 +273,9 @@ export function knownTenants(
     () =>
       rawAll(
         db,
-        `SELECT tenant FROM sessions UNION SELECT tenant FROM providers`,
+        `SELECT tenant AS tenant FROM sessions
+          UNION SELECT tenant FROM providers
+          UNION SELECT id AS tenant FROM tenants`,
       ).then(rows => {
         const set = new Set<string>([fallbackTenant])
         for (const r of rows) {

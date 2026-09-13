@@ -1,15 +1,16 @@
-import { buildConnectRoutes } from './connect.js'
-import { buildAdminRoutes } from './admin.js'
-import { makeAuth } from './auth.js'
-import { defaultTenant } from './tenant.js'
+import { createServer as createHttpServer } from 'node:http'
+import * as http2Module from 'node:http2'
+import { serveBundled } from '@abc-protocol/bundled-extension'
+import { createConnectRouter } from '@connectrpc/connect'
+import { createFetchHandler } from '@connectrpc/connect/protocol'
 import {
   type AgentDeps,
   type Bus,
   backfillKvFromPg,
   backfillModelRefs,
+  Config,
   calibrateMessageFacts,
   connectBus,
-  Config,
   connectDb,
   type Db,
   type FileRecord,
@@ -25,20 +26,19 @@ import {
   rawRun,
   refreshModelsDev,
   runSessionTurn,
+  type ServerConfig,
+  sha256Hex,
   Tenants,
+  tenantKVKey,
   upsertFile,
   watchMailboxWake,
-  tenantKVKey,
-  sha256Hex,
-  type ServerConfig,
 } from '@easylab-agent/agent'
-import { serveBundled } from '@abc-protocol/bundled-extension'
-import { createConnectRouter } from '@connectrpc/connect'
-import { createFetchHandler } from '@connectrpc/connect/protocol'
-import { Hono } from 'hono'
 import { getRequestListener } from '@hono/node-server'
-import { createServer as createHttpServer } from 'node:http'
-import * as http2Module from 'node:http2'
+import { Hono } from 'hono'
+import { buildAdminRoutes } from './admin.js'
+import { makeAuth } from './auth.js'
+import { buildConnectRoutes } from './connect.js'
+import { defaultTenant } from './tenant.js'
 
 /** Structural type guard for an unknown value (used for db close hooks). */
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -76,6 +76,14 @@ async function main(): Promise<void> {
   // single-tenant deployments).
   const fallbackTenant = defaultTenant()
 
+  // First-boot bootstrap: when the tenant table is empty and a bootstrap
+  // tenant+token are configured, create the tenant and mint that exact token.
+  // This is how a fresh standalone deployment gets its first credential.
+  // MUST run before the tenant enumeration below: everything keyed by the
+  // known-tenant set (preset seeding, message-fact calibration) has to
+  // already see the bootstrap tenant on its very first boot.
+  await bootstrapTenantIfEmpty(db, config)
+
   // The tenants this deployment knows about. There is no external tenant
   // registry: the set is derived from the DB plus the configured fallback.
   const tenants = await knownTenants(db, fallbackTenant).then(
@@ -103,11 +111,6 @@ async function main(): Promise<void> {
   // One-time PG → KV migration for presets / config / files-meta (marker-
   // guarded per domain; a failure retries on the next boot).
   void backfillKvFromPg(db, bus)
-
-  // First-boot bootstrap: when the tenant table is empty and a bootstrap
-  // tenant+token are configured, create the tenant and mint that exact token.
-  // This is how a fresh standalone deployment gets its first credential.
-  await bootstrapTenantIfEmpty(db, config)
 
   // Seed the immutable system presets per tenant (create-if-absent).
   // Idempotent across replicas and restarts; never overwrites what a
@@ -151,7 +154,12 @@ async function main(): Promise<void> {
     // Generation models (image/video/speech) resolve from the SAME provider
     // registry, capability-tagged; the config knobs hold provider_id/model_id.
     resolveGenerative: (capability, ref, tenant) =>
-      llm.resolveGenerative(db as Db, tenant ?? fallbackTenant, ref, capability),
+      llm.resolveGenerative(
+        db as Db,
+        tenant ?? fallbackTenant,
+        ref,
+        capability,
+      ),
     blobGet: (code, tenant) =>
       files.get(tenant ?? fallbackTenant, code).then(r => ({
         meta: { ...r.meta } as Record<string, unknown>,
@@ -202,9 +210,7 @@ async function main(): Promise<void> {
         }
       }
       if (sessionName !== undefined && sessionName !== '') {
-        const scoped = await readCfg(
-          `bundled.${sessionName}.${name}`,
-        )
+        const scoped = await readCfg(`bundled.${sessionName}.${name}`)
         if (scoped !== undefined) return scoped
       }
       return readCfg(`bundled.${name}`)
@@ -262,7 +268,10 @@ async function main(): Promise<void> {
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   }
-  app.options('*', c => new Response(null, { status: 204, headers: corsHeaders }))
+  app.options(
+    '*',
+    c => new Response(null, { status: 204, headers: corsHeaders }),
+  )
   app.use('*', async (c, next) => {
     await next()
     for (const [k, v] of Object.entries(corsHeaders)) c.res.headers.set(k, v)
@@ -273,11 +282,16 @@ async function main(): Promise<void> {
     const fetchHandler = createFetchHandler(uHandler)
     app.all(uHandler.requestPath, c => fetchHandler(c.req.raw))
   }
-  app.all('*', () =>
-    new Response(JSON.stringify({ code: 'unimplemented', message: 'not found' }), {
-      status: 404,
-      headers: { 'content-type': 'application/json' },
-    }),
+  app.all(
+    '*',
+    () =>
+      new Response(
+        JSON.stringify({ code: 'unimplemented', message: 'not found' }),
+        {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        },
+      ),
   )
 
   // A single node-compatible request listener that adapts http/http2
@@ -317,9 +331,7 @@ async function main(): Promise<void> {
     server = s
   }
   const closeServer = (): Promise<unknown> =>
-    new Promise(resolve =>
-      server?.close?.(() => resolve(undefined)),
-    )
+    new Promise(resolve => server?.close?.(() => resolve(undefined)))
 
   // Watch every session's mailbox wake wildcard so this replica can claim and
   // run work for any session — the horizontal scale-out trigger.
