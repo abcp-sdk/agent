@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import type { Bus } from './bus.js'
-import { BUCKET_SESSION_RUN, natsToken, sseSubject, tenantKVKey } from './bus.js'
+import {
+  BUCKET_SESSION_RUN,
+  natsToken,
+  sseSubject,
+  tenantKVKey,
+} from './bus.js'
 import { logger } from './logger.js'
 
 export interface AgentEventDeps {
@@ -39,11 +44,9 @@ export function markActiveRun(
 
 /** Clear the session's active-turn marker (turn ended / aborted). */
 export function clearActiveRun(bus: Bus, tenant: string, sid: string): void {
-  void bus
-    .kvDelete(BUCKET_SESSION_RUN, runKey(tenant, sid))
-    .catch(err => {
-      logger.warn({ tenant, sid, err: String(err) }, 'clearActiveRun failed')
-    })
+  void bus.kvDelete(BUCKET_SESSION_RUN, runKey(tenant, sid)).catch(err => {
+    logger.warn({ tenant, sid, err: String(err) }, 'clearActiveRun failed')
+  })
 }
 
 /** Read the session's active turn, or null when idle. */
@@ -96,6 +99,39 @@ export function pushEvent(
     })
 }
 
+/**
+ * Announce that a session's MESSAGE CHAIN changed out-of-band (an undo /
+ * retry withdraw moved the tip backwards). Published on the same per-session
+ * event stream as turn events but WITHOUT a `run_id`, so `watchSession`'s
+ * live-run filter must exempt it. Every other client viewing the session
+ * reacts by re-fetching the authoritative chain — this is what makes a revert
+ * converge across devices.
+ */
+export function pushChainChanged(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+  tipId: string | null,
+  reason: string,
+): void {
+  void bus
+    .inboxPublish(
+      sseSubject(tenant, sid),
+      {
+        event: 'chain-changed',
+        params: { tip_id: tipId ?? '', reason },
+        eid: randomUUID(),
+      },
+      { id: randomUUID(), tenant },
+    )
+    .catch(err => {
+      logger.warn(
+        { tenant, sid, err: String(err) },
+        'chain-changed publish failed',
+      )
+    })
+}
+
 export const events = {
   status: (type: string) => ({ event: 'status', params: { type } }),
   textDelta: (text: string) => ({ event: 'text-delta', params: { text } }),
@@ -129,13 +165,12 @@ export function publishSessionChanged(
   sid: string,
 ): void {
   void bus
-    .publish(
-      `abc.${tenant}.session.changed`,
-      { session_name: sid },
-      { tenant },
-    )
+    .publish(`abc.${tenant}.session.changed`, { session_name: sid }, { tenant })
     .catch(err => {
-      logger.warn({ tenant, sid, err: String(err) }, 'session-changed publish failed')
+      logger.warn(
+        { tenant, sid, err: String(err) },
+        'session-changed publish failed',
+      )
     })
 }
 
@@ -162,6 +197,9 @@ export function publishLifecycle(
       { id: randomUUID(), tenant },
     )
     .catch(err => {
-      logger.warn({ tenant, event, err: String(err) }, 'lifecycle publish failed')
+      logger.warn(
+        { tenant, event, err: String(err) },
+        'lifecycle publish failed',
+      )
     })
 }

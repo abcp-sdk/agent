@@ -48,6 +48,7 @@ import {
   projectMessageFact,
   publishLifecycle,
   publishSessionChanged,
+  pushChainChanged,
   readActiveRun,
   readMessageFacts,
   renderTemplate,
@@ -624,7 +625,11 @@ export function buildConnectRoutes(
         )) {
           // Only the live run's events (a prior turn's terminal marker may fall
           // inside the same time window); never resurface finished/revoked runs.
+          // EXEMPT chain-changed: it is an out-of-band chain notification with
+          // no run_id, and MUST reach viewers even while a turn is running.
+          const isChainChanged = raw?.event === 'chain-changed'
           if (
+            !isChainChanged &&
             activeRun !== null &&
             fieldString(raw?.params, 'run_id') !== activeRun.runId
           ) {
@@ -903,6 +908,9 @@ export function buildConnectRoutes(
         // same ordering guarantee. `message_seq` is preserved (a withdraw is not
         // a new message).
         await refreshMessageFactFromTip(deps, tenant, id)
+        // Announce the withdrawn chain on the session event stream so any
+        // OTHER device viewing this session refetches (cross-device revert).
+        pushChainChanged(deps.bus, tenant, id, target.value.prev_id, 'undo')
         return { session: sessionToMsg(s) }
       },
       async state(req, ctx: HandlerContext) {
