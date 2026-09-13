@@ -7,6 +7,7 @@ import {
 import { jsonSchema, type Tool } from 'ai'
 import { z } from 'zod'
 import type { Bus } from './bus.js'
+import { GLOBAL_TENANT, tenantKVKey } from './bus.js'
 import { EXTENSION_DISCOVER_SUBJECT } from './extensions.js'
 import { localizeSchema, pickDescription } from './i18n.js'
 import { parse, type ToolResult } from './json.js'
@@ -22,24 +23,28 @@ export const ToolManifestSchema = z.object({
 export const EXT_CONFIG_KV_BUCKET = 'cfg'
 
 /**
- * KV key for a global extension config value, mirroring the SDK's
- * `kvKey(extId, 'global', '', name) => '${extId}.${name}'`. Session-scoped
- * overrides would add an escaped segment and are not part of the global
- * config surface surfaced here.
+ * Tenant-scoped KV key for a global extension config value, mirroring the
+ * SDK's `kvKey(extId, 'global', '', name) => 't.<tenant>.<extId>.<name>'`.
+ * Session-scoped overrides add an escaped segment and are not part of the
+ * global config surface surfaced here.
  */
-function extConfigKey(extId: string, name: string): string {
-  return `${extId}.${name}`
+function extConfigKey(tenant: string, extId: string, name: string): string {
+  return tenantKVKey(tenant, `${extId}.${name}`)
 }
 
-/// Read a global extension config value from the `cfg` bucket. Returns
-/// `undefined` when unset. Handles the SDK envelope (`{r,v}`) and the
+/// Read a global extension config value from the `cfg` bucket for a tenant.
+/// Returns `undefined` when unset. Handles the SDK envelope (`{r,v}`) and the
 /// pre-envelope bare-value fallback.
 async function readExtConfigValue(
   bus: Bus,
+  tenant: string,
   extId: string,
   name: string,
 ): Promise<unknown> {
-  const raw = await bus.kvGet(EXT_CONFIG_KV_BUCKET, extConfigKey(extId, name))
+  const raw = await bus.kvGet(
+    EXT_CONFIG_KV_BUCKET,
+    extConfigKey(tenant, extId, name),
+  )
   if (raw === null || raw === undefined) return undefined
   try {
     const parsed: unknown = JSON.parse(raw)
@@ -60,12 +65,13 @@ async function readExtConfigValue(
  */
 export async function toolConfigMap(
   bus: Bus,
+  tenant: string,
 ): Promise<Record<string, Record<string, unknown>>> {
   const discovered = await discoverToolsCached(bus)
   const out: Record<string, Record<string, unknown>> = {}
   for (const t of discovered) {
     for (const c of t.extConfig ?? []) {
-      const v = await readExtConfigValue(bus, t.extId, c.name)
+      const v = await readExtConfigValue(bus, tenant, t.extId, c.name)
       if (v !== undefined) {
         const bucket = out[t.name] ?? {}
         bucket[c.name] = v
@@ -85,12 +91,13 @@ export async function toolConfigMap(
  */
 export async function toolsBlockedByMissingRequired(
   bus: Bus,
+  tenant: string,
   discovered: DiscoveredTool[],
 ): Promise<Set<string>> {
   const blocked = new Set<string>()
   for (const t of discovered) {
     for (const c of t.requiredConfig ?? []) {
-      const v = await readExtConfigValue(bus, t.extId, c)
+      const v = await readExtConfigValue(bus, tenant, t.extId, c)
       if (v === undefined || v === null || v === '') {
         blocked.add(toolQualifiedName(discovered, t))
         break
@@ -148,7 +155,10 @@ export async function discoverTools(
   maxWaitMs = 500,
 ): Promise<DiscoveredTool[]> {
   const replies = await bus
-    .requestMany(EXTENSION_DISCOVER_SUBJECT, {}, { maxWaitMs })
+    .requestMany(EXTENSION_DISCOVER_SUBJECT, {}, {
+      maxWaitMs,
+      tenant: GLOBAL_TENANT,
+    })
     .catch(() => [])
   const out: DiscoveredTool[] = []
   for (const env of replies) {
@@ -268,6 +278,7 @@ export function buildAiTools(
   discovered: DiscoveredTool[],
   bus: Bus,
   timeoutMs: number,
+  tenant: string,
   sessionId?: string,
   abortSignal?: AbortSignal,
   locale?: string,
@@ -297,7 +308,7 @@ export function buildAiTools(
       execute: async (args, { toolCallId }) => {
         return await raceFinal(
           new AbcAgent(bus)
-            .callTool(sessionId ?? '', t.extId, t.name, toolCallId, args ?? {})
+            .callTool(tenant, sessionId ?? '', t.extId, t.name, toolCallId, args ?? {})
             .then(r => {
               // A tool that failed surfaces its message in `r.error` (set by the
               // extension server). Propagate it as a thrown error so the AI SDK

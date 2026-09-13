@@ -1,4 +1,7 @@
 import { buildConnectRoutes } from './connect.js'
+import { buildAdminRoutes } from './admin.js'
+import { makeAuth } from './auth.js'
+import { defaultTenant } from './tenant.js'
 import {
   type AgentDeps,
   type Bus,
@@ -6,9 +9,11 @@ import {
   backfillModelRefs,
   calibrateMessageFacts,
   connectBus,
+  Config,
   connectDb,
   type Db,
   type FileRecord,
+  knownTenants,
   LlmRegistry,
   loadConfig,
   logger,
@@ -20,9 +25,12 @@ import {
   rawRun,
   refreshModelsDev,
   runSessionTurn,
+  Tenants,
   upsertFile,
   watchMailboxWake,
+  tenantKVKey,
   sha256Hex,
+  type ServerConfig,
 } from '@easylab-agent/agent'
 import { serveBundled } from '@abc-protocol/bundled-extension'
 import { createConnectRouter } from '@connectrpc/connect'
@@ -64,10 +72,21 @@ async function main(): Promise<void> {
   }
   const db: Db = dbRes.value
 
+  // The tenant a request falls back to when none is supplied (pre-auth /
+  // single-tenant deployments).
+  const fallbackTenant = defaultTenant()
+
+  // The tenants this deployment knows about. There is no external tenant
+  // registry: the set is derived from the DB plus the configured fallback.
+  const tenants = await knownTenants(db, fallbackTenant).then(
+    r => (r.isOk() ? r.value : [fallbackTenant]),
+    () => [fallbackTenant],
+  )
+
   // One-time migration: rewrite legacy bare model ids to canonical
   // `provider_id/model_id` references (flat model lookup is gone). Blocks boot
   // because turns must not run against un-migrated refs.
-  await backfillModelRefs(db)
+  await backfillModelRefs(db, tenants)
 
   const busRes = await connectBus(config.natsUrl)
   if (busRes.isErr()) {
@@ -79,15 +98,21 @@ async function main(): Promise<void> {
   // One-time message-fact calibration: refresh the abc-session-state KV
   // projection from PG so chat-list previews are correct even for sessions
   // that predate the projection or whose KV writes were missed.
-  void calibrateMessageFacts(bus, db)
+  for (const t of tenants) void calibrateMessageFacts(bus, t, db)
 
   // One-time PG → KV migration for presets / config / files-meta (marker-
   // guarded per domain; a failure retries on the next boot).
   void backfillKvFromPg(db, bus)
 
-  // Seed the immutable system presets (create-if-absent). Idempotent across
-  // replicas and restarts; never overwrites what a restore/user already set.
-  void Presets.seedDefaults(bus)
+  // First-boot bootstrap: when the tenant table is empty and a bootstrap
+  // tenant+token are configured, create the tenant and mint that exact token.
+  // This is how a fresh standalone deployment gets its first credential.
+  await bootstrapTenantIfEmpty(db, config)
+
+  // Seed the immutable system presets per tenant (create-if-absent).
+  // Idempotent across replicas and restarts; never overwrites what a
+  // restore/user already set.
+  for (const t of tenants) void Presets.seedDefaults(bus, t)
 
   // Mailbox retention: consumed rows are audit-only, prune past a fixed window.
   const retentionDays = 7
@@ -119,19 +144,23 @@ async function main(): Promise<void> {
   // (the agent still works standalone without the bundled toolset).
   const stopBundled = serveBundled({
     bus,
-    resolveModel: (db, modelId) => llm.resolve(db as Db, modelId),
+    // `db` is structurally passed by the extension but is always null — the
+    // resolver owns the real handle (`deps.db` from the closure).
+    resolveModel: (_db, modelId, tenant) =>
+      llm.resolve(db as Db, tenant ?? fallbackTenant, modelId),
     // Generation models (image/video/speech) resolve from the SAME provider
     // registry, capability-tagged; the config knobs hold provider_id/model_id.
-    resolveGenerative: (capability, ref) =>
-      llm.resolveGenerative(db as Db, ref, capability),
-    blobGet: (code) =>
-      files.get(code).then(r => ({
+    resolveGenerative: (capability, ref, tenant) =>
+      llm.resolveGenerative(db as Db, tenant ?? fallbackTenant, ref, capability),
+    blobGet: (code, tenant) =>
+      files.get(tenant ?? fallbackTenant, code).then(r => ({
         meta: { ...r.meta } as Record<string, unknown>,
         data: r.data,
       })),
     // Generated media (images/videos/audio) land in the same blob store as
     // uploaded files so they can be referenced as file:<code> afterwards.
-    ingestBlob: async ({ bytes, name, mime, session }) => {
+    ingestBlob: async ({ bytes, name, mime, session, tenant }) => {
+      const t = tenant ?? fallbackTenant
       const data = new Uint8Array(Buffer.from(bytes, 'base64'))
       const record: FileRecord = {
         code: randomCode(),
@@ -142,8 +171,8 @@ async function main(): Promise<void> {
         uploader_session: session,
         created_at: new Date().toISOString(),
       }
-      await files.put(record.code, record, data)
-      await upsertFile(bus, record)
+      await files.put(t, record.code, record, data)
+      await upsertFile(bus, t, record)
       return { code: record.code, mime }
     },
     rawAll: (sql, params) => rawAll(db, sql, params),
@@ -151,16 +180,34 @@ async function main(): Promise<void> {
     // Config lives in the `cfg` KV bucket (source of truth for extensions).
     // Session-scoped overrides are applied by the Extension itself; here we
     // resolve the effective global value (envelope-aware {r,v} format).
-    resolveConfig: async (name, _sessionName) => {
-      const raw = await bus.kvGet('cfg', `bundled.${name}`)
-      if (raw === null || raw === undefined) return undefined
-      try {
-        const z = JSON.parse(raw) as { v?: unknown }
-        if (z && typeof z === 'object' && 'v' in z) return z.v
-        return z
-      } catch {
-        return raw
+    resolveConfig: async (name, sessionName, tenant) => {
+      const t = tenant ?? fallbackTenant
+      // Extension config lives in the `cfg` KV bucket (the SDK's
+      // ConfigAuthority writes there), keyed tenant-first:
+      //   global  -> t.<tenant>.<extId>.<name>
+      //   session -> t.<tenant>.<extId>.<escapedSession>.<name>
+      // Read the effective value envelope-aware ({r,v} with a bare fallback),
+      // trying the session override first.
+      const readCfg = async (key: string): Promise<unknown> => {
+        const raw = await bus.kvGet('cfg', tenantKVKey(t, key))
+        if (raw === null || raw === undefined || raw === '') return undefined
+        try {
+          const z = JSON.parse(raw) as unknown
+          if (z !== null && typeof z === 'object' && 'v' in z) {
+            return (z as { v: unknown }).v
+          }
+          return z
+        } catch {
+          return raw
+        }
       }
+      if (sessionName !== undefined && sessionName !== '') {
+        const scoped = await readCfg(
+          `bundled.${sessionName}.${name}`,
+        )
+        if (scoped !== undefined) return scoped
+      }
+      return readCfg(`bundled.${name}`)
     },
   })
 
@@ -181,14 +228,45 @@ async function main(): Promise<void> {
   //   "auto" — both HTTP/1.1 and cleartext HTTP/2 (h2c) on one port
   //   "h1"   — HTTP/1.1 only
   //   "h2c"  — cleartext HTTP/2 only
+  // ---- authentication (token -> tenant) ----
+  // A single interceptor gates BOTH services: Health is public; AdminService
+  // requires the static admin token; AgentService requires a tenant token.
+  const auth = makeAuth(deps, {
+    mode: config.authMode,
+    adminToken: config.adminToken,
+    defaultTenant: config.defaultTenant,
+  })
   const connectRouter = createConnectRouter({
     grpc: true,
     grpcWeb: true,
     connect: true,
+    interceptors: [auth.interceptor],
   })
   buildConnectRoutes(deps)(connectRouter)
+  buildAdminRoutes(deps, auth.invalidate)(connectRouter)
 
   const app = new Hono()
+  // ---- CORS (browser / Flutter Web clients) ----
+  // Connect RPC uses POST with a non-simple content-type, so the browser sends
+  // an OPTIONS preflight. Answer it and attach the CORS headers to every
+  // response. `AGENT_CORS_ORIGIN` (default `*`) sets the allowed origin.
+  const corsOrigin = config.corsOrigin
+  const corsHeaders: Record<string, string> = {
+    'Access-Control-Allow-Origin': corsOrigin,
+    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+    'Access-Control-Allow-Headers':
+      'content-type, connect-protocol-version, connect-timeout-ms, ' +
+      'grpc-timeout, x-grpc-web, x-user-agent, authorization',
+    'Access-Control-Expose-Headers':
+      'grpc-status, grpc-message, connect-protocol-version',
+    'Access-Control-Max-Age': '86400',
+    Vary: 'Origin',
+  }
+  app.options('*', c => new Response(null, { status: 204, headers: corsHeaders }))
+  app.use('*', async (c, next) => {
+    await next()
+    for (const [k, v] of Object.entries(corsHeaders)) c.res.headers.set(k, v)
+  })
   // createFetchHandler goes from a UniversalHandlerFn to (req: Request) =>
   // Response. Each ConnectRouter handler is one RPC; regнster it by path.
   for (const uHandler of connectRouter.handlers) {
@@ -281,13 +359,55 @@ async function main(): Promise<void> {
   // (exactly one wins the per-session lease).
   const pending = await Mailbox.pendingSessions(db)
   if (pending.isOk()) {
-    for (const sid of pending.value) {
-      void runSessionTurn(deps, sid).then(
+    for (const item of pending.value) {
+      void runSessionTurn(deps, item.tenant, item.session_name).then(
         () => {},
-        e => logger.error({ sid, err: String(e) }, 'recovery turn crashed'),
+        e =>
+          logger.error(
+            { tenant: item.tenant, sid: item.session_name, err: String(e) },
+            'recovery turn crashed',
+          ),
       )
     }
   }
 }
 
 void main()
+
+/**
+ * First-boot bootstrap: when the tenant table is empty and both
+ * AGENT_BOOTSTRAP_TENANT and AGENT_BOOTSTRAP_TOKEN are set, create that tenant
+ * and store the given token (hashed). Idempotent: a non-empty table is a no-op,
+ * and a lost race is swallowed.
+ */
+async function bootstrapTenantIfEmpty(
+  db: Db,
+  config: ServerConfig,
+): Promise<void> {
+  if (config.bootstrapTenant === '' || config.bootstrapToken === '') return
+  const existing = await Tenants.list(db)
+  if (existing.isErr()) {
+    logger.warn({ err: existing.error }, 'bootstrap: list tenants failed')
+    return
+  }
+  if (existing.value.length > 0) return
+  const created = await Tenants.create(db, config.bootstrapTenant, 'bootstrap')
+  if (created.isErr()) {
+    logger.warn({ err: created.error }, 'bootstrap: create tenant failed')
+    return
+  }
+  const issued = await Tenants.issueToken(
+    db,
+    config.bootstrapTenant,
+    'bootstrap',
+    config.bootstrapToken,
+  )
+  if (issued.isErr()) {
+    logger.warn({ err: issued.error }, 'bootstrap: issue token failed')
+    return
+  }
+  logger.info(
+    { tenant: config.bootstrapTenant },
+    'bootstrap: created initial tenant + token',
+  )
+}

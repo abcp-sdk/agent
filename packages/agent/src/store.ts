@@ -1,5 +1,5 @@
 import type { Bus } from './bus.js'
-import { natsToken } from './bus.js'
+import { natsToken, tenantKVKey } from './bus.js'
 
 /**
  * App-layer caches over the abc Bus (protocol-level helpers only; the SDK
@@ -15,10 +15,11 @@ const MODELS_KEY = 'models-dev-catalog.json'
 /** Read the cached context id list for a session, or null when absent. */
 export async function getSessionIds(
   bus: Bus,
+  tenant: string,
   sessionName: string,
 ): Promise<string[] | null> {
   const raw = await bus
-    .kvGet(IDS_BUCKET, natsToken(sessionName))
+    .kvGet(IDS_BUCKET, tenantKVKey(tenant, natsToken(sessionName)))
     .catch(() => null)
   if (raw === null) return null
   try {
@@ -32,12 +33,13 @@ export async function getSessionIds(
 /** Overwrite the cached context id list for a session. */
 export function putSessionIds(
   bus: Bus,
+  tenant: string,
   sessionName: string,
   ids: string[],
 ): Promise<void> {
   return bus.kvPut(
     IDS_BUCKET,
-    natsToken(sessionName),
+    tenantKVKey(tenant, natsToken(sessionName)),
     JSON.stringify(ids),
     IDS_TTL_MS,
   )
@@ -46,18 +48,23 @@ export function putSessionIds(
 /** Append one message id to the session context id list (no-op on miss). */
 export async function appendSessionId(
   bus: Bus,
+  tenant: string,
   sessionName: string,
   id: string,
 ): Promise<void> {
-  const ids = await getSessionIds(bus, sessionName)
+  const ids = await getSessionIds(bus, tenant, sessionName)
   if (ids === null) return
   ids.push(id)
-  await putSessionIds(bus, sessionName, ids)
+  await putSessionIds(bus, tenant, sessionName, ids)
 }
 
 /** Drop the session context id-list cache (force a re-walk). */
-export function deleteSessionIds(bus: Bus, sessionName: string): Promise<void> {
-  return bus.kvDelete(IDS_BUCKET, natsToken(sessionName))
+export function deleteSessionIds(
+  bus: Bus,
+  tenant: string,
+  sessionName: string,
+): Promise<void> {
+  return bus.kvDelete(IDS_BUCKET, tenantKVKey(tenant, natsToken(sessionName)))
 }
 
 /** Cache the models.dev catalog JSON in the object store. */

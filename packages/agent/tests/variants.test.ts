@@ -105,7 +105,7 @@ describe('variantsForApiType', () => {
     const vs = variantsForApiType(m, 'openai-compatible')
     expect(vs.map(v => v.id)).toEqual(['high', 'max'])
     expect(vs[0]!.providerOptions).toEqual({
-      'openai-compatible': { reasoningEffort: 'high' },
+      openaiCompatible: { reasoningEffort: 'high' },
     })
   })
 

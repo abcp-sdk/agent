@@ -6,6 +6,8 @@ import type {
   Subscription as AbcSubscription,
 } from '@abc-protocol/sdk'
 import { Agent as AbcAgent, connectNatsBus } from '@abc-protocol/sdk'
+import { CH, GLOBAL_TENANT } from '@abc-protocol/sdk'
+import { subjectTenant, tenantKVKey, tenantObjectName } from '@abc-protocol/sdk'
 import { ResultAsync } from 'neverthrow'
 
 /**
@@ -30,10 +32,15 @@ export async function connectBus(
 /** The agent-side role over the abc transport. */
 export const Agent = AbcAgent
 
-// wire subject helpers (abc protocol subjects, prefix `abc.`)
-export const mailboxSubject = (sid: string) => `abc.mailbox.${natsToken(sid)}`
-export const sseSubject = (sid: string) =>
-  `abc.session.events.${natsToken(sid)}`
+// wire subject helpers (v2 abc protocol subjects: abc.<tenant>.<...>).
+export const mailboxSubject = (tenant: string, sid: string) =>
+  CH.mailbox(tenant, sid)
+export const sseSubject = (tenant: string, sid: string) =>
+  CH.sessionEvents(tenant, sid)
+
+// Re-export the v2 tenant helpers so the rest of the agent imports them from
+// one place.
+export { GLOBAL_TENANT, subjectTenant, tenantKVKey, tenantObjectName }
 
 // stream/bucket names on the abc wire (session events share the mailbox
 // stream; the object bucket carries tool payloads)

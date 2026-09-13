@@ -10,6 +10,7 @@ export * from './db-parts.js'
 export * from './db-providers.js'
 export * from './db-schema.js'
 export * from './db-sessions.js'
+export * from './db-tenants.js'
 export * from './default-presets.js'
 export * from './events.js'
 export * from './extensions.js'
@@ -30,6 +31,7 @@ export {
   factFromPersist,
   projectMessageFact,
   readMessageFacts,
+  writeMessageFact,
   type SessionMessageFact,
 } from './session-state.js'
 export {

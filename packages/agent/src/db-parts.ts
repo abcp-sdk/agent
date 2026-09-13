@@ -1,5 +1,5 @@
 import type { PartRow } from '@easylab-agent/schema'
-import { inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'
 import { q, uuid } from './db-client.js'
@@ -16,6 +16,7 @@ const toRow = (r: typeof parts.$inferSelect): PartRow => ({
 export const Parts = {
   insert(
     db: Db,
+    tenant: string,
     messageId: string,
     type: string,
     seq: number,
@@ -26,6 +27,7 @@ export const Parts = {
       () =>
         db.insert(parts).values({
           id,
+          tenant,
           messageId,
           type,
           seq,
@@ -36,7 +38,11 @@ export const Parts = {
   },
 
   /** Parts for a set of message ids (COW-shared chains). */
-  listByMessages(db: Db, messageIds: string[]): ResultAsync<PartRow[], string> {
+  listByMessages(
+    db: Db,
+    tenant: string,
+    messageIds: string[],
+  ): ResultAsync<PartRow[], string> {
     if (messageIds.length === 0) {
       return ResultAsync.fromSafePromise(Promise.resolve<PartRow[]>([]))
     }
@@ -45,7 +51,9 @@ export const Parts = {
         db
           .select()
           .from(parts)
-          .where(inArray(parts.messageId, messageIds))
+          .where(
+            and(eq(parts.tenant, tenant), inArray(parts.messageId, messageIds)),
+          )
           .orderBy(parts.messageId, parts.seq)
           .then(rows => rows.map(toRow)),
       'list parts by messages',
@@ -55,11 +63,12 @@ export const Parts = {
   /** Insert the compaction message's summary part (with the tail boundary). */
   insertSummary(
     db: Db,
+    tenant: string,
     messageId: string,
     summary: string,
     tailFromId: string | null,
   ): ResultAsync<string, string> {
-    return Parts.insert(db, messageId, 'summary', 0, {
+    return Parts.insert(db, tenant, messageId, 'summary', 0, {
       summary,
       tail_from: tailFromId,
     })

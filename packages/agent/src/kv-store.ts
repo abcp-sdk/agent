@@ -2,7 +2,7 @@ import type { PresetRow } from '@easylab-agent/schema'
 import { readFileSync } from 'node:fs'
 import { ResultAsync } from 'neverthrow'
 import type { Bus } from './bus.js'
-import { BUCKET_CONFIG, BUCKET_PRESETS } from './bus.js'
+import { BUCKET_CONFIG, BUCKET_PRESETS, tenantKVKey } from './bus.js'
 import {
   isRetiredSystemPreset,
   isSystemPreset,
@@ -75,8 +75,18 @@ function toRow(r: PresetRowInternal): PresetRow {
   }
 }
 
-async function readPresetIndex(bus: Bus): Promise<string[]> {
-  const raw = await bus.kvGet(BUCKET_PRESETS, PRESET_INDEX_KEY)
+/** Per-tenant preset index key (`t.<tenant>.__ids__`). */
+function presetIndexKey(tenant: string): string {
+  return tenantKVKey(tenant, PRESET_INDEX_KEY)
+}
+
+/** Per-tenant preset row key (`t.<tenant>.<id>`). */
+function presetKey(tenant: string, id: string): string {
+  return tenantKVKey(tenant, id)
+}
+
+async function readPresetIndex(bus: Bus, tenant: string): Promise<string[]> {
+  const raw = await bus.kvGet(BUCKET_PRESETS, presetIndexKey(tenant))
   if (raw === null) return []
   try {
     const ids = JSON.parse(raw)
@@ -92,21 +102,34 @@ async function readPresetIndex(bus: Bus): Promise<string[]> {
  * upserts (losing one id from the index) is accepted; re-running the
  * upsert self-heals. `list` also drops ids whose key is gone.
  */
-async function addToPresetIndex(bus: Bus, id: string): Promise<void> {
-  const ids = await readPresetIndex(bus)
+async function addToPresetIndex(
+  bus: Bus,
+  tenant: string,
+  id: string,
+): Promise<void> {
+  const ids = await readPresetIndex(bus, tenant)
   if (!ids.includes(id)) {
     await bus.kvPut(
       BUCKET_PRESETS,
-      PRESET_INDEX_KEY,
+      presetIndexKey(tenant),
       JSON.stringify([...ids, id]),
       NO_TTL,
     )
   }
 }
 
-async function removeFromPresetIndex(bus: Bus, id: string): Promise<void> {
-  const ids = (await readPresetIndex(bus)).filter(x => x !== id)
-  await bus.kvPut(BUCKET_PRESETS, PRESET_INDEX_KEY, JSON.stringify(ids), NO_TTL)
+async function removeFromPresetIndex(
+  bus: Bus,
+  tenant: string,
+  id: string,
+): Promise<void> {
+  const ids = (await readPresetIndex(bus, tenant)).filter(x => x !== id)
+  await bus.kvPut(
+    BUCKET_PRESETS,
+    presetIndexKey(tenant),
+    JSON.stringify(ids),
+    NO_TTL,
+  )
 }
 
 /** Load host-injected system presets from `SYSTEM_PRESETS_FILE`: a JSON file
@@ -156,13 +179,13 @@ function loadInjectedPresets(): PresetRowInternal[] {
 }
 
 export const Presets = {
-  list(bus: Bus): ResultAsync<PresetRow[], string> {
+  list(bus: Bus, tenant: string): ResultAsync<PresetRow[], string> {
     return ra(
       (async () => {
-        const ids = await readPresetIndex(bus)
+        const ids = await readPresetIndex(bus, tenant)
         const out: PresetRow[] = []
         for (const id of ids) {
-          const raw = await bus.kvGet(BUCKET_PRESETS, id)
+          const raw = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, id))
           if (raw === null) continue
           const row = jsonToRow(raw)
           if (row === null) continue
@@ -174,10 +197,14 @@ export const Presets = {
     )
   },
 
-  get(bus: Bus, id: string): ResultAsync<PresetRow | null, string> {
+  get(
+    bus: Bus,
+    tenant: string,
+    id: string,
+  ): ResultAsync<PresetRow | null, string> {
     return ra(
       (async () => {
-        const raw = await bus.kvGet(BUCKET_PRESETS, id)
+        const raw = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, id))
         if (raw === null) return null
         const row = jsonToRow(raw)
         return row === null ? null : toRow(row)
@@ -186,7 +213,11 @@ export const Presets = {
     )
   },
 
-  upsert(bus: Bus, row: PresetRowInternal): ResultAsync<void, string> {
+  upsert(
+    bus: Bus,
+    tenant: string,
+    row: PresetRowInternal,
+  ): ResultAsync<void, string> {
     return ra(
       (async () => {
         // A preset is immutable when it is a built-in system preset OR the
@@ -195,29 +226,33 @@ export const Presets = {
         if (isSystemPreset(row.id)) {
           throw new Error(`system preset '${row.id}' is immutable`)
         }
-        const existing = await bus.kvGet(BUCKET_PRESETS, row.id)
+        const existing = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, row.id))
         if (existing !== null && jsonToRow(existing)?.isSystem === true) {
           throw new Error(`system preset '${row.id}' is immutable`)
         }
-        await bus.kvPut(BUCKET_PRESETS, row.id, rowToJson(row), NO_TTL)
-        await addToPresetIndex(bus, row.id)
+        await bus.kvPut(BUCKET_PRESETS, presetKey(tenant, row.id), rowToJson(row), NO_TTL)
+        await addToPresetIndex(bus, tenant, row.id)
       })(),
       'upsert preset',
     )
   },
 
-  delete(bus: Bus, id: string): ResultAsync<void, string> {
+  delete(
+    bus: Bus,
+    tenant: string,
+    id: string,
+  ): ResultAsync<void, string> {
     return ra(
       (async () => {
         if (isSystemPreset(id)) {
           throw new Error(`system preset '${id}' is immutable`)
         }
-        const existing = await bus.kvGet(BUCKET_PRESETS, id)
+        const existing = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, id))
         if (existing !== null && jsonToRow(existing)?.isSystem === true) {
           throw new Error(`system preset '${id}' is immutable`)
         }
-        await bus.kvDelete(BUCKET_PRESETS, id)
-        await removeFromPresetIndex(bus, id)
+        await bus.kvDelete(BUCKET_PRESETS, presetKey(tenant, id))
+        await removeFromPresetIndex(bus, tenant, id)
       })(),
       'delete preset',
     )
@@ -231,7 +266,7 @@ export const Presets = {
    * into the generic agent. All injected presets are marked `is_system`.
    * Content drift is refreshed in place; retired ids are pruned.
    */
-  seedDefaults(bus: Bus): ResultAsync<void, string> {
+  seedDefaults(bus: Bus, tenant: string): ResultAsync<void, string> {
     return ra(
       (async () => {
         const injected = loadInjectedPresets()
@@ -240,27 +275,27 @@ export const Presets = {
         )
         for (const d of [...SYSTEM_PRESETS, ...injected]) {
           const want = rowToJson({ ...d, isSystem: true })
-          const existing = await bus.kvGet(BUCKET_PRESETS, d.id)
+          const existing = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, d.id))
           const created =
             existing === null
-              ? await bus.kvCreate(BUCKET_PRESETS, d.id, want, NO_TTL)
+              ? await bus.kvCreate(BUCKET_PRESETS, presetKey(tenant, d.id), want, NO_TTL)
               : null
           if (created !== null) {
-            await addToPresetIndex(bus, d.id)
+            await addToPresetIndex(bus, tenant, d.id)
           } else if (existing !== want) {
             // Drifted system preset (renamed/fixed tool names, kebab-case):
             // refresh in place so the bucket mirrors the shipped preset.
-            await bus.kvPut(BUCKET_PRESETS, d.id, want, NO_TTL)
+            await bus.kvPut(BUCKET_PRESETS, presetKey(tenant, d.id), want, NO_TTL)
           }
         }
         // Clean retired system-preset ids that are no longer seeded. Never
         // touches seeded presets or other user presets.
-        const ids = await readPresetIndex(bus)
+        const ids = await readPresetIndex(bus, tenant)
         for (const id of ids) {
           if (seededIds.has(id)) continue
           if (isRetiredSystemPreset(id)) {
-            await bus.kvDelete(BUCKET_PRESETS, id)
-            await removeFromPresetIndex(bus, id)
+            await bus.kvDelete(BUCKET_PRESETS, presetKey(tenant, id))
+            await removeFromPresetIndex(bus, tenant, id)
           }
         }
       })(),
@@ -270,11 +305,26 @@ export const Presets = {
 }
 
 export const Config = {
-  get(bus: Bus, key: string): ResultAsync<string | null, string> {
-    return ra(bus.kvGet(BUCKET_CONFIG, key), 'get config')
+  get(
+    bus: Bus,
+    tenant: string,
+    key: string,
+  ): ResultAsync<string | null, string> {
+    return ra(
+      bus.kvGet(BUCKET_CONFIG, tenantKVKey(tenant, key)),
+      'get config',
+    )
   },
 
-  set(bus: Bus, key: string, value: string): ResultAsync<void, string> {
-    return ra(bus.kvPut(BUCKET_CONFIG, key, value, NO_TTL), 'set config')
+  set(
+    bus: Bus,
+    tenant: string,
+    key: string,
+    value: string,
+  ): ResultAsync<void, string> {
+    return ra(
+      bus.kvPut(BUCKET_CONFIG, tenantKVKey(tenant, key), value, NO_TTL),
+      'set config',
+    )
   },
 }

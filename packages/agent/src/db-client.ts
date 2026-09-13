@@ -6,7 +6,6 @@ import postgres, { type Sql } from 'postgres'
 import { z } from 'zod'
 import type { DbBackend } from './config.js'
 import { DEFAULT_PRESET } from './config.js'
-import { logger } from './logger.js'
 
 /**
  * The drizzle database handle. The query surface we use — insert/select/update/
@@ -50,7 +49,8 @@ export {
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS sessions (
-    name TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    name TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT '',
     variant TEXT NOT NULL DEFAULT '',
     preset TEXT NOT NULL DEFAULT '',
@@ -64,13 +64,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_output_tokens BIGINT NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (NOW()::text),
     updated_at TEXT NOT NULL DEFAULT (NOW()::text),
-    last_used_at TEXT
+    last_used_at TEXT,
+    locale TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant, name)
 );
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS locale TEXT NOT NULL DEFAULT '';
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variant TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
 
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
     role TEXT NOT NULL,
     prev_id TEXT,
     created_at TEXT NOT NULL DEFAULT (NOW()::text)
@@ -79,6 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_prev ON messages (prev_id);
 
 CREATE TABLE IF NOT EXISTS parts (
     id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
     message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     type TEXT NOT NULL,
     seq INTEGER NOT NULL DEFAULT 0,
@@ -88,7 +93,8 @@ CREATE INDEX IF NOT EXISTS idx_parts_message ON parts (message_id, seq);
 
 CREATE TABLE IF NOT EXISTS mailbox (
     id TEXT PRIMARY KEY,
-    session_name TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    session_name TEXT NOT NULL,
     msg_type TEXT NOT NULL,
     payload TEXT NOT NULL DEFAULT '{}',
     effective_at TEXT,
@@ -97,18 +103,39 @@ CREATE TABLE IF NOT EXISTS mailbox (
     consumed_at TEXT,
     seq INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (session_name);
-
 CREATE TABLE IF NOT EXISTS providers (
-    provider_id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    provider_id TEXT NOT NULL,
     api_type TEXT NOT NULL DEFAULT 'openai-compatible',
     base_url TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT '',
     headers TEXT NOT NULL DEFAULT 'null',
     models TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant, provider_id)
+);
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+
+-- Multi-tenant identity: tenants + their bearer tokens. Done in a single
+-- statement list so sqlite/pg share the shape.
+CREATE TABLE IF NOT EXISTS tenants (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    disabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS tenant_tokens (
+    token_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    token_sha256 TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    last_used_at TEXT,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tenant_tokens_tenant ON tenant_tokens (tenant_id);
 
 -- presets / config / files-meta moved to NATS KV buckets (abc-presets,
 -- abc-agent-config, abc-files-meta). The legacy PG tables are intentionally
@@ -121,7 +148,8 @@ CREATE TABLE IF NOT EXISTS providers (
 // already-created file), and rejects some unused PG column operators.
 const SQLITE_DDL = `
 CREATE TABLE IF NOT EXISTS sessions (
-    name TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    name TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT '',
     variant TEXT NOT NULL DEFAULT '',
     preset TEXT NOT NULL DEFAULT '',
@@ -136,11 +164,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_used_at TEXT,
-    locale TEXT NOT NULL DEFAULT ''
+    locale TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant, name)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
     role TEXT NOT NULL,
     prev_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -149,6 +179,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_prev ON messages (prev_id);
 
 CREATE TABLE IF NOT EXISTS parts (
     id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
     message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     type TEXT NOT NULL,
     seq INTEGER NOT NULL DEFAULT 0,
@@ -158,7 +189,8 @@ CREATE INDEX IF NOT EXISTS idx_parts_message ON parts (message_id, seq);
 
 CREATE TABLE IF NOT EXISTS mailbox (
     id TEXT PRIMARY KEY,
-    session_name TEXT NOT NULL REFERENCES sessions(name) ON DELETE CASCADE,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    session_name TEXT NOT NULL,
     msg_type TEXT NOT NULL,
     payload TEXT NOT NULL DEFAULT '{}',
     effective_at TEXT,
@@ -167,18 +199,36 @@ CREATE TABLE IF NOT EXISTS mailbox (
     consumed_at TEXT,
     seq INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (session_name);
-
 CREATE TABLE IF NOT EXISTS providers (
-    provider_id TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    provider_id TEXT NOT NULL,
     api_type TEXT NOT NULL DEFAULT 'openai-compatible',
     base_url TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT '',
     headers TEXT NOT NULL DEFAULT 'null',
     models TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant, provider_id)
+);
+
+CREATE TABLE IF NOT EXISTS tenants (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    disabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS tenant_tokens (
+    token_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    token_sha256 TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    last_used_at TEXT,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tenant_tokens_tenant ON tenant_tokens (tenant_id);
 `
 
 // PG-specific additive migrations (safe to re-run; destructive-free). Kept as
@@ -189,6 +239,11 @@ const PG_MIGRATIONS = `
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variant TEXT NOT NULL DEFAULT '';
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_input_tokens BIGINT NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_output_tokens BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE parts ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE mailbox ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE providers ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_name;
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_call_id;
     ALTER TABLE sessions DROP COLUMN IF EXISTS last_read_at;
@@ -197,6 +252,20 @@ const PG_MIGRATIONS = `
     UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = 'executor';
     UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = 'analyst';
     ALTER TABLE sessions ALTER COLUMN preset SET DEFAULT '${DEFAULT_PRESET}';
+    CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages (tenant, id);
+    CREATE INDEX IF NOT EXISTS idx_parts_tenant ON parts (tenant, message_id);
+    DROP INDEX IF EXISTS idx_mb_sess;
+    CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (tenant, session_name);
+`
+
+// Composite-primary-key swap for a pre-v2 (tenant-less) PG database. Guarded
+// on the tenant column so it only runs during the v1 -> v2 upgrade.
+const PG_TENANT_PK_MIGRATIONS = `
+    ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_pkey;
+    ALTER TABLE sessions ADD PRIMARY KEY (tenant, name);
+    ALTER TABLE providers DROP CONSTRAINT IF EXISTS providers_pkey;
+    ALTER TABLE providers ADD PRIMARY KEY (tenant, provider_id);
+    ALTER TABLE mailbox DROP CONSTRAINT IF EXISTS mailbox_session_name_fkey;
 `
 
 // SQLite: feature detection for columns we never create (they are all in the
@@ -208,10 +277,18 @@ const SQLITE_MIGRATIONS = [
   `ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE sessions ADD COLUMN last_input_tokens INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE sessions ADD COLUMN last_output_tokens INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE sessions ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
+  `ALTER TABLE messages ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
+  `ALTER TABLE parts ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
+  `ALTER TABLE mailbox ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
+  `ALTER TABLE providers ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE messages DROP COLUMN tool_name`,
   `ALTER TABLE messages DROP COLUMN tool_call_id`,
   `ALTER TABLE sessions DROP COLUMN last_read_at`,
   `UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset IN ('', 'orchestrator', 'executor', 'analyst')`,
+  `CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages (tenant, id)`,
+  `CREATE INDEX IF NOT EXISTS idx_parts_tenant ON parts (tenant, message_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (tenant, session_name)`,
 ]
 
 /**
@@ -294,8 +371,10 @@ export async function rawRun(
 }
 
 /**
- * Connect (idempotent DDL) and import any legacy providers blob from the
- * config table into the providers table (single source of truth).
+ * Connect (idempotent DDL). The providers table is the single source of truth
+ * and is NEVER wiped at boot: registered providers (and their models) must
+ * survive restarts, rollouts and redeploys. Schema evolution is expressed as
+ * additive migrations (see [migrateSchema]), not a drop-and-recreate reset.
  */
 export function connectDb(
   backend: DbBackend,
@@ -314,14 +393,12 @@ export function connectDb(
         const db = drizzleSqlite({ client: raw } as never) as unknown as Db
         ;(db as { __backend?: DbBackend }).__backend = 'sqlite'
         await migrateSchema(raw, ddl)
-        await wipeLegacyProviders(db)
         return db
       }
       const sql = postgres(url, { max: 10 })
       await migrateSchema(sql, DDL)
       const db = drizzle({ client: sql }) as unknown as Db
       ;(db as { __backend?: DbBackend }).__backend = 'pg'
-      await wipeLegacyProviders(db)
       return db
     })(),
     e => `db connect failed: ${String(e)}`,
@@ -335,6 +412,12 @@ export function connectDb(
  * every conversation on each deploy and break cross-replica durable mailbox
  * delivery). Column/table changes must be expressed as additive migrations,
  * not a drop-and-recreate reset.
+ *
+ * v1 -> v2 multi-tenant upgrade: `sessions` and `providers` need a COMPOSITE
+ * primary key (tenant, …). SQLite cannot alter a PK in place, so those two
+ * tables are rebuilt (copying rows, backfilling tenant='default') when the
+ * existing table's PK lacks `tenant`. `messages`/`parts`/`mailbox` keep their
+ * PKs and only gain a `tenant` column.
  */
 async function migrateSchema(
   driver: Sql | DatabaseSync,
@@ -349,29 +432,120 @@ async function migrateSchema(
         // duplicate column on an already-migrated file: best-effort
       }
     }
+    rebuildIfPkLacksTenant(driver, 'sessions', [
+      'tenant',
+      'name',
+      'model',
+      'variant',
+      'preset',
+      'tip_id',
+      'max_turns',
+      'system_prompt',
+      'input_tokens',
+      'output_tokens',
+      'total_tokens',
+      'last_input_tokens',
+      'last_output_tokens',
+      'created_at',
+      'updated_at',
+      'last_used_at',
+      'locale',
+    ])
+    rebuildIfPkLacksTenant(driver, 'providers', [
+      'tenant',
+      'provider_id',
+      'api_type',
+      'base_url',
+      'api_key',
+      'headers',
+      'models',
+      'created_at',
+      'updated_at',
+    ])
   } else {
     await (driver as Sql).unsafe(ddl)
     await (driver as Sql).unsafe(PG_MIGRATIONS)
+    await (driver as Sql).unsafe(PG_TENANT_PK_MIGRATIONS)
   }
 }
 
+/** Primary-key columns of a sqlite table (in ordinal order). */
+function sqlitePkColumns(raw: DatabaseSync, table: string): string[] {
+  const rows = raw
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as Array<{ name: string; pk: number }>
+  return rows
+    .filter(r => Number(r.pk) > 0)
+    .sort((a, b) => Number(a.pk) - Number(b.pk))
+    .map(r => String(r.name))
+}
+
 /**
- * Delete every provider row at boot. Provider `models` used to be a JSON
- * array of bare model-id strings with no context window; the contract now
- * requires `[{ id, name, context_limit }]` (context_limit mandatory). Because
- * context_limit cannot be inferred (and must not be guessed), stale rows are
- * removed so users re-register their providers explicitly.
+ * Rebuild a sqlite table whose PRIMARY KEY must gain `tenant`. No-op when the
+ * PK already includes tenant. Copies every column by name (tenant defaults to
+ * 'default' for pre-v2 rows).
  */
-async function wipeLegacyProviders(db: Db): Promise<void> {
+function rebuildIfPkLacksTenant(
+  raw: DatabaseSync,
+  table: string,
+  columns: string[],
+): void {
+  const pk = sqlitePkColumns(raw, table)
+  if (pk.length === 0 || pk.includes('tenant')) return
+  const cols = columns.join(', ')
+  // legacy_alter_table keeps other tables' FK references pointing at the
+  // ORIGINAL name across the RENAME, so (e.g.) mailbox's FK to sessions is not
+  // silently rewritten to the temp table we immediately drop.
+  raw.exec('PRAGMA foreign_keys = OFF')
+  raw.exec('PRAGMA legacy_alter_table = ON')
   try {
-    if (dbBackend(db) === 'sqlite') {
-      ;(db.$client as DatabaseSync).prepare(`DELETE FROM providers`).run()
-    } else {
-      await (db.$client as Sql).unsafe(`DELETE FROM providers`)
-    }
-  } catch (e) {
-    logger.warn({ err: String(e) }, 'provider wipe skipped')
+    raw.exec(`ALTER TABLE ${table} RENAME TO _${table}_v1`)
+    // Recreate the v2 table by re-running the v2 CREATE (the name is now free).
+    raw.exec(SQLITE_TABLE_DDL[table] ?? '')
+    raw.exec(
+      `INSERT INTO ${table} (${cols}) SELECT ${cols} FROM _${table}_v1`,
+    )
+    raw.exec(`DROP TABLE _${table}_v1`)
+  } finally {
+    raw.exec('PRAGMA legacy_alter_table = OFF')
+    raw.exec('PRAGMA foreign_keys = ON')
   }
+}
+
+/** The v2 CREATE TABLE statement for a table that may require a PK rebuild. */
+const SQLITE_TABLE_DDL: Record<string, string> = {
+  sessions: `CREATE TABLE IF NOT EXISTS sessions (
+    tenant TEXT NOT NULL DEFAULT 'default',
+    name TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    variant TEXT NOT NULL DEFAULT '',
+    preset TEXT NOT NULL DEFAULT '',
+    tip_id TEXT,
+    max_turns INTEGER NOT NULL DEFAULT 0,
+    system_prompt TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    last_input_tokens INTEGER NOT NULL DEFAULT 0,
+    last_output_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT,
+    locale TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant, name)
+  )`,
+  providers: `CREATE TABLE IF NOT EXISTS providers (
+    tenant TEXT NOT NULL DEFAULT 'default',
+    provider_id TEXT NOT NULL,
+    api_type TEXT NOT NULL DEFAULT 'openai-compatible',
+    base_url TEXT NOT NULL DEFAULT '',
+    api_key TEXT NOT NULL DEFAULT '',
+    headers TEXT NOT NULL DEFAULT 'null',
+    models TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant, provider_id)
+  )`,
 }
 
 /** Wrap a throwing async query into a ResultAsync with context.

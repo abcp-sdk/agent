@@ -5,6 +5,9 @@ import { type FileRecord, upsertFile } from './files.js'
 import { Config, Presets } from './kv-store.js'
 import { logger } from './logger.js'
 
+/** The tenant legacy (pre-v2) rows are backfilled into. */
+const LEGACY_TENANT = 'default'
+
 const MARKER_KEY = '__pg_backfill__'
 
 /**
@@ -47,7 +50,7 @@ async function backfillPresets(db: Db, bus: Bus): Promise<void> {
   for (const r of rows) {
     const id = String(r.id ?? '')
     if (id === '') continue
-    const res = await Presets.upsert(bus, {
+    const res = await Presets.upsert(bus, LEGACY_TENANT, {
       id,
       systemPrompt: String(r.system_prompt ?? ''),
       systemPromptI18n: String(r.system_prompt_i18n ?? '{}'),
@@ -67,7 +70,7 @@ async function backfillConfig(db: Db, bus: Bus): Promise<void> {
   for (const r of rows) {
     const key = String(r.key ?? '')
     if (key === '') continue
-    const res = await Config.set(bus, key, String(r.value ?? '{}'))
+    const res = await Config.set(bus, LEGACY_TENANT, key, String(r.value ?? '{}'))
     if (res.isOk()) n++
   }
   await setMarker(bus, 'config')
@@ -90,7 +93,7 @@ async function backfillFiles(db: Db, bus: Bus): Promise<void> {
       uploader_session: String(r.uploader_session ?? ''),
       created_at: String(r.created_at ?? ''),
     }
-    const res = await upsertFile(bus, record)
+    const res = await upsertFile(bus, LEGACY_TENANT, record)
     if (res.isOk()) n++
   }
   await setMarker(bus, 'files')

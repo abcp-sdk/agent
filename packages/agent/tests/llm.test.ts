@@ -29,19 +29,19 @@ const fakeDb = {} as Db
 
 describe('LlmRegistry.resolve (no fallback)', () => {
   it('rejects an empty model reference', async () => {
-    const r = await new LlmRegistry().resolve(fakeDb, '')
+    const r = await new LlmRegistry().resolve(fakeDb, 't1', '')
     expect(r.isErr()).toBe(true)
     expect(r._unsafeUnwrapErr()).toContain('no model selected')
   })
 
   it('rejects a bare model id (no flat lookup)', async () => {
-    const r = await new LlmRegistry().resolve(fakeDb, 'gpt-5.4')
+    const r = await new LlmRegistry().resolve(fakeDb, 't1', 'gpt-5.4')
     expect(r.isErr()).toBe(true)
     expect(r._unsafeUnwrapErr()).toContain('no model selected')
   })
 
   it('rejects a malformed ref', async () => {
-    const r = await new LlmRegistry().resolve(fakeDb, '/x')
+    const r = await new LlmRegistry().resolve(fakeDb, 't1', '/x')
     expect(r.isErr()).toBe(true)
   })
 })
@@ -49,7 +49,13 @@ describe('LlmRegistry.resolve (no fallback)', () => {
 describe('variant + model composition', () => {
   it('builds a model and resolves the variant providerOptions', () => {
     const built = buildModelForApiType(
-      { apiType: 'openai', baseUrl: 'http://x/v1', apiKey: 'k', headers: {} },
+      {
+        providerId: 'openai',
+        apiType: 'openai',
+        baseUrl: 'http://x/v1',
+        apiKey: 'k',
+        headers: {},
+      },
       'gpt-5.4',
     )
     expect(built.isOk()).toBe(true)

@@ -1,9 +1,14 @@
 import type { ProviderRow } from '@easylab-agent/schema'
-import { eq } from 'drizzle-orm'
+import { and, eq, or } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'
 import { nowStr, q } from './db-client.js'
 import { providers } from './db-schema.js'
+
+/** The reserved tenant owning shared, read-only infrastructure providers
+ *  (e.g. the platform gateway). Every tenant may USE these but must not
+ *  mutate them. */
+export const SHARED_TENANT = 'global'
 
 export interface ProviderInput {
   providerId: string
@@ -25,24 +30,61 @@ const toRow = (r: typeof providers.$inferSelect): ProviderRow => ({
 })
 
 export const Providers = {
-  list(db: Db): ResultAsync<ProviderRow[], string> {
+  /** Providers visible to a tenant: its own rows plus the shared (global)
+   *  ones. A tenant-local row with the same provider_id shadows the shared
+   *  one, so a tenant may register its own credentials for a shared provider
+   *  id if it wants to. */
+  list(db: Db, tenant: string): ResultAsync<ProviderRow[], string> {
     return q(
       () =>
         db
           .select()
           .from(providers)
+          .where(or(eq(providers.tenant, tenant), eq(providers.tenant, SHARED_TENANT)))
           .orderBy(providers.providerId)
-          .then(rows => rows.map(toRow)),
+          .then(rows => {
+            // Tenant-local rows shadow shared (global) rows with the same id.
+            const byId = new Map<string, ProviderRow>()
+            for (const r of rows) {
+              const isShared = r.tenant === SHARED_TENANT
+              const existing = byId.get(r.providerId)
+              if (existing === undefined || !isShared) {
+                byId.set(r.providerId, toRow(r))
+              }
+            }
+            return [...byId.values()]
+          }),
       'list providers',
     )
   },
 
-  upsert(db: Db, input: ProviderInput): ResultAsync<void, string> {
+  listTenants(
+    db: Db,
+    tenant: string,
+  ): ResultAsync<ProviderRow[], string> {
+    return q(
+      () =>
+        db
+          .select()
+          .from(providers)
+          .where(eq(providers.tenant, tenant))
+          .orderBy(providers.providerId)
+          .then(rows => rows.map(toRow)),
+      'list tenant providers',
+    )
+  },
+
+  upsert(
+    db: Db,
+    tenant: string,
+    input: ProviderInput,
+  ): ResultAsync<void, string> {
     return q(
       () =>
         db
           .insert(providers)
           .values({
+            tenant,
             providerId: input.providerId,
             apiType: input.apiType,
             baseUrl: input.baseUrl,
@@ -53,7 +95,7 @@ export const Providers = {
             updatedAt: nowStr(),
           })
           .onConflictDoUpdate({
-            target: providers.providerId,
+            target: [providers.tenant, providers.providerId],
             set: {
               apiType: input.apiType,
               baseUrl: input.baseUrl,
@@ -67,12 +109,16 @@ export const Providers = {
     ).map(() => undefined)
   },
 
-  delete(db: Db, id: string): ResultAsync<boolean, string> {
+  delete(
+    db: Db,
+    tenant: string,
+    id: string,
+  ): ResultAsync<boolean, string> {
     return q(
       () =>
         db
           .delete(providers)
-          .where(eq(providers.providerId, id))
+          .where(and(eq(providers.tenant, tenant), eq(providers.providerId, id)))
           .returning({ id: providers.providerId })
           .then(rows => rows.length > 0),
       'delete provider',

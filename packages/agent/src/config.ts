@@ -11,6 +11,23 @@ export interface ServerConfig {
   toolTimeoutMs: number
   /** Max agent steps per turn when neither the session nor its preset sets one. */
   defaultMaxTurns: number
+  /**
+   * CORS allow-origin for browser (Flutter Web) clients. `*` allows any
+   * origin; set an explicit origin to lock it down.
+   */
+  corsOrigin: string
+  /** Request authentication mode. `required` (default) verifies bearer tokens;
+   *  `none` disables auth and pins every request to {@link defaultTenant}. */
+  authMode: 'required' | 'none'
+  /** Static admin bearer token (unused when authMode='none'). */
+  adminToken: string
+  /** Tenant a request is pinned to when authMode='none' (and the migration
+   *  target for pre-v2 data). */
+  defaultTenant: string
+  /** Optional first-boot bootstrap: a tenant id to create (and mint a token
+   *  for) when the tenant table is empty. Both must be set to take effect. */
+  bootstrapTenant: string
+  bootstrapToken: string
 }
 
 export type DbBackend = 'pg' | 'sqlite'
@@ -76,5 +93,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     natsUrl: or('NATS_URL', 'nats://nats.easylab.svc.cluster.local:4222'),
     toolTimeoutMs: TOOL_TIMEOUT_MS,
     defaultMaxTurns: DEFAULT_MAX_TURNS,
+    corsOrigin: or('AGENT_CORS_ORIGIN', '*'),
+    authMode: or('AGENT_AUTH_MODE', 'required') === 'none' ? 'none' : 'required',
+    adminToken: or('AGENT_ADMIN_TOKEN', ''),
+    defaultTenant: or('AGENT_DEFAULT_TENANT', 'default'),
+    bootstrapTenant: or('AGENT_BOOTSTRAP_TENANT', ''),
+    bootstrapToken: or('AGENT_BOOTSTRAP_TOKEN', ''),
   }
 }

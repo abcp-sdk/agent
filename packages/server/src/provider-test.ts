@@ -76,6 +76,7 @@ export interface ProviderTestResult {
 
 function creds(input: ProviderTestInput): ProviderCredentials {
   return {
+    providerId: input.providerId,
     apiType: input.apiType,
     baseUrl: input.baseUrl,
     apiKey: input.apiKey,
@@ -126,16 +127,10 @@ export async function runProviderTest(
     case 'speech': {
       const built = buildGenerativeModel(c, input.modelId, 'speech')
       if (built.isErr()) return { ok: false, result: built.error }
-      // OpenAI's default voice ("alloy") is rejected by generic
-      // OpenAI-compatible TTS servers (e.g. the easylab gateway); an empty
-      // voice lets such a server pick its default. Real OpenAI/Google keep
-      // their provider default.
-      const isCompat = /openai[-_]compatible/.test(input.apiType.toLowerCase())
       const res = await generateSpeech({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         model: built.value as any,
         text: TEST_SPEECH_TEXT,
-        ...(isCompat ? { voice: '' } : {}),
       })
       const bytes = res.audio.uint8Array.length
       return { ok: true, result: `speech ok (${bytes} bytes)` }
@@ -156,8 +151,6 @@ export async function runProviderTest(
       }
     }
     case 'video': {
-      // Only google/Veo has an AI-SDK video model. Others (openai /
-      // openai-compatible) are not supported by the SDK.
       const built = buildGenerativeModel(c, input.modelId, 'video')
       if (built.isErr()) return { ok: false, result: built.error }
       const res = await experimental_generateVideo({
@@ -165,6 +158,8 @@ export async function runProviderTest(
         model: built.value as any,
         prompt: 'a cat sitting still',
         duration: TEST_VIDEO_SECONDS,
+        // Force the async start/status flow (the gateway's native contract).
+        poll: { intervalMs: 2000, timeoutMs: TEST_VIDEO_TIMEOUT_MS },
         abortSignal: AbortSignal.timeout(TEST_VIDEO_TIMEOUT_MS),
       })
       const bytes = res.videos[0]?.uint8Array?.length ?? 0

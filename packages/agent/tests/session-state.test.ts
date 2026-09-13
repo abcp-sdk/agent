@@ -6,6 +6,8 @@ import {
   readMessageFacts,
 } from '../src/session-state.js'
 
+const T = 't1'
+
 /** In-memory bus stub exposing just the KV + publish surface used here. */
 function fakeBus() {
   const kv = new Map<string, string>()
@@ -36,18 +38,20 @@ describe('projectMessageFact', () => {
     const { bus } = fakeBus()
     projectMessageFact(
       bus,
+      T,
       'sess-seq-a',
       factFromPersist('2026-01-01T00:00:00Z', 'user', 'hello'),
     )
     await settle()
     projectMessageFact(
       bus,
+      T,
       'sess-seq-a',
       factFromPersist('2026-01-01T00:00:01Z', 'assistant', 'hi there'),
     )
     await settle()
 
-    const facts = await readMessageFacts(bus, ['sess-seq-a'])
+    const facts = await readMessageFacts(bus, T, ['sess-seq-a'])
     const f = facts.get('sess-seq-a')
     expect(f?.message_seq).toBe(2)
     expect(f?.last_message_role).toBe('assistant')
@@ -61,13 +65,14 @@ describe('projectMessageFact', () => {
     for (let i = 0; i < 5; i++) {
       projectMessageFact(
         bus,
+        T,
         sid,
         factFromPersist('2026-01-01T00:00:00Z', 'assistant', `m${i}`),
       )
     }
     await settle()
     await settle()
-    const facts = await readMessageFacts(bus, [sid])
+    const facts = await readMessageFacts(bus, T, [sid])
     expect(facts.get(sid)?.message_seq).toBe(5)
   })
 
@@ -75,6 +80,7 @@ describe('projectMessageFact', () => {
     const { bus, published } = fakeBus()
     projectMessageFact(
       bus,
+      T,
       'sess-seq-c',
       factFromPersist('2026-01-01T00:00:00Z', 'user', 'x'),
     )

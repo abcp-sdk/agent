@@ -6,6 +6,7 @@ import {
 } from '@abc-protocol/sdk'
 import { ResultAsync } from 'neverthrow'
 import type { Bus } from './bus.js'
+import { GLOBAL_TENANT } from './bus.js'
 import { parse } from './json.js'
 
 /**
@@ -38,7 +39,7 @@ export function discoverExtensions(
   maxWaitMs = 500,
 ): ResultAsync<ResolvedExtension[], string> {
   return ResultAsync.fromPromise(
-    bus.requestMany(EXTENSION_DISCOVER_SUBJECT, {}, { maxWaitMs }),
+    bus.requestMany(EXTENSION_DISCOVER_SUBJECT, {}, { maxWaitMs, tenant: GLOBAL_TENANT }),
     e => `discover: ${String(e)}`,
   ).map(replies => {
     const out: ResolvedExtension[] = []
@@ -83,6 +84,7 @@ function builtinVariableValue(name: string): string | null {
 export async function renderTemplate(
   template: string,
   bus: Bus,
+  tenant: string,
   sessionName?: string,
 ): Promise<string> {
   const matches = [...template.matchAll(VAR_TOKEN)]
@@ -100,7 +102,7 @@ export async function renderTemplate(
     if (provider === 'builtin') {
       value = builtinVariableValue(name)
     } else {
-      value = await agent.resolveVariable(provider, name, sessionName)
+      value = await agent.resolveVariable(tenant, provider, name, sessionName)
     }
 
     if (value !== null) {

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { Bus } from '../src/bus.js'
 import { publishLifecycle, publishSessionChanged } from '../src/events.js'
 
+const T = 't1'
+
 function fakeBus() {
   const published: Array<{ subject: string; payload: unknown }> = []
   const bus = {
@@ -20,23 +22,24 @@ function fakeBus() {
 describe('publishLifecycle', () => {
   it('publishes to abc.session.lifecycle.{event} with kind in payload', async () => {
     const { bus, published } = fakeBus()
-    publishLifecycle(bus, 'created', { session_name: 'acme.api.main' })
-    publishLifecycle(bus, 'forked', {
+    publishLifecycle(bus, T, 'created', { session_name: 'acme.api.main' })
+    publishLifecycle(bus, T, 'forked', {
       session_name: 'acme.api.feat',
       parent: 'acme.api.main',
     })
-    publishLifecycle(bus, 'renamed', { from: 'a.b.c', to: 'a.b.d' })
-    publishLifecycle(bus, 'deleted', { session_name: 'a.b.c' })
+    publishLifecycle(bus, T, 'renamed', { from: 'a.b.c', to: 'a.b.d' })
+    publishLifecycle(bus, T, 'deleted', { session_name: 'a.b.c' })
     await new Promise(r => setImmediate(r))
 
     expect(published.map(p => p.subject)).toEqual([
-      'abc.session.lifecycle.created',
-      'abc.session.lifecycle.forked',
-      'abc.session.lifecycle.renamed',
-      'abc.session.lifecycle.deleted',
+      'abc.t1.session.lifecycle.created',
+      'abc.t1.session.lifecycle.forked',
+      'abc.t1.session.lifecycle.renamed',
+      'abc.t1.session.lifecycle.deleted',
     ])
     expect(published[1]?.payload).toEqual({
       kind: 'forked',
+      tenant: 't1',
       session_name: 'acme.api.feat',
       parent: 'acme.api.main',
     })
@@ -47,17 +50,17 @@ describe('publishLifecycle', () => {
       inboxPublish: () => Promise.reject(new Error('nats down')),
     } as unknown as Bus
     expect(() =>
-      publishLifecycle(bus, 'deleted', { session_name: 'x' }),
+      publishLifecycle(bus, T, 'deleted', { session_name: 'x' }),
     ).not.toThrow()
     await new Promise(r => setImmediate(r))
   })
 
   it('publishes session-changed nudges on the live pub subject', async () => {
     const { bus, published } = fakeBus()
-    publishSessionChanged(bus, 'sess-a')
+    publishSessionChanged(bus, T, 'sess-a')
     await new Promise(r => setImmediate(r))
     expect(published).toEqual([
-      { subject: 'abc.session.changed', payload: { session_name: 'sess-a' } },
+      { subject: 'abc.t1.session.changed', payload: { session_name: 'sess-a' } },
     ])
   })
 })

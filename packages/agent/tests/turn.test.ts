@@ -5,6 +5,8 @@ import { Mailbox } from '../src/db-mailbox.js'
 import type { AgentDeps } from '../src/session-agent.js'
 import { runSessionTurn } from '../src/session-agent.js'
 
+const T = 't1'
+
 function fakeBus(overrides: {
   claim: (sid: string) => Promise<number | null>
   release?: (sid: string) => Promise<void>
@@ -42,6 +44,7 @@ describe('runSessionTurn', () => {
     const bus = fakeBus({ claim: () => Promise.resolve(null) })
     await runSessionTurn(
       { db: {}, bus, config: {}, llm: {} } as AgentDeps,
+      T,
       'a:b:main',
     )
     expect(drain).not.toHaveBeenCalled()
@@ -59,6 +62,7 @@ describe('runSessionTurn', () => {
     })
     await runSessionTurn(
       { db: {}, bus, config: {}, llm: {} } as AgentDeps,
+      T,
       'a:b:main',
     )
     expect(released).toBe(true)
@@ -77,6 +81,7 @@ describe('runSessionTurn', () => {
     await expect(
       runSessionTurn(
         { db: {}, bus, config: {}, llm: {} } as AgentDeps,
+        T,
         'a:b:main',
       ),
     ).rejects.toThrow('db down')

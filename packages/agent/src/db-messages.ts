@@ -1,5 +1,5 @@
 import type { FilePartData, MessageRow } from '@easylab-agent/schema'
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { err, ok, ResultAsync } from 'neverthrow'
 import { z } from 'zod'
 import type { Db } from './db-client.js'
@@ -44,6 +44,7 @@ export type MessageRole = 'user' | 'assistant' | 'event' | 'compaction'
 export const Messages = {
   insert(
     db: Db,
+    tenant: string,
     role: MessageRole,
     prevId: string | null,
   ): ResultAsync<string, string> {
@@ -52,6 +53,7 @@ export const Messages = {
       () =>
         db.insert(messages).values({
           id,
+          tenant,
           role,
           prevId,
           createdAt: nowStr(),
@@ -60,13 +62,17 @@ export const Messages = {
     ).map(() => id)
   },
 
-  get(db: Db, id: string): ResultAsync<MessageRow | null, string> {
+  get(
+    db: Db,
+    tenant: string,
+    id: string,
+  ): ResultAsync<MessageRow | null, string> {
     return q(
       () =>
         db
           .select()
           .from(messages)
-          .where(eq(messages.id, id))
+          .where(and(eq(messages.tenant, tenant), eq(messages.id, id)))
           .limit(1)
           .then(rows => {
             const r = rows[0]
@@ -84,6 +90,7 @@ export const Messages = {
    */
   isInChain(
     db: Db,
+    tenant: string,
     tipId: string,
     targetId: string,
   ): ResultAsync<boolean, string> {
@@ -94,20 +101,25 @@ export const Messages = {
       const rows = await rawAll(
         db,
         `WITH RECURSIVE chain AS (
-           SELECT id, prev_id FROM messages WHERE id = ?
+           SELECT id, prev_id FROM messages WHERE id = ? AND tenant = ?
            UNION
            SELECT m.id, m.prev_id
            FROM messages m JOIN chain c ON m.id = c.prev_id
+           WHERE m.tenant = ?
          )
          SELECT 1 FROM chain WHERE id = ? LIMIT 1`,
-        [tipId, targetId],
+        [tipId, tenant, tenant, targetId],
       )
       return rows.length > 0
     }, 'message in chain')
   },
 
   /** Messages for a set of ids, oldest-first by chain order (cache hit path). */
-  byIds(db: Db, ids: string[]): ResultAsync<ChainMessage[], string> {
+  byIds(
+    db: Db,
+    tenant: string,
+    ids: string[],
+  ): ResultAsync<ChainMessage[], string> {
     if (ids.length === 0) {
       return ResultAsync.fromSafePromise(Promise.resolve<ChainMessage[]>([]))
     }
@@ -115,15 +127,15 @@ export const Messages = {
       const rows = await db
         .select()
         .from(messages)
-        .where(inArray(messages.id, ids))
+        .where(and(eq(messages.tenant, tenant), inArray(messages.id, ids)))
       const byId = new Map(rows.map(r => [r.id, r]))
       const ordered = ids.flatMap(id => {
         const r = byId.get(id)
         return r === undefined ? [] : [toRow(r)]
       })
-      const contentByMsg = await textContentByMessages(db, ids)
-      const toolPartsByMsg = await toolPartsByMessages(db, ids)
-      const filePartsByMsg = await filePartsByMessages(db, ids)
+      const contentByMsg = await textContentByMessages(db, tenant, ids)
+      const toolPartsByMsg = await toolPartsByMessages(db, tenant, ids)
+      const filePartsByMsg = await filePartsByMessages(db, tenant, ids)
       return ordered.map(m => ({
         ...m,
         content: contentByMsg.get(m.id) ?? '',
@@ -136,26 +148,15 @@ export const Messages = {
   /**
    * Walk the prev_id chain backwards from the tip (or from `before`'s
    * predecessor), newest → oldest, up to `limit`, then return oldest-first.
-   *
-   * Uses a single `WITH RECURSIVE` query instead of an N+1 loop: the whole
-   * chain is pulled back in one round-trip. The recursive body joins on
-   * `m.id = c.prev_id`, which is served by `idx_messages_prev` so each step
-   * is an index scan. `UNION` (rather than `UNION ALL`) dedupes by row, which
-   * also protects against a malformed `prev_id` cycle looping forever; `depth
-   * < limit` additionally bounds the walk.
-   *
-   * Raw rows are validated with `safeParse` (a schema mismatch surfaces as a
-   * Result error, never a throw). Each row's `content` is derived by
-   * concatenating its text parts in `seq` order — messages carry no inline
-   * content column.
    */
   chain(
     db: Db,
+    tenant: string,
     tipId: string | null,
     limit: number,
     before: string | null,
   ): ResultAsync<ChainMessage[], string> {
-    return rawChainRows(db, tipId, limit, before)
+    return rawChainRows(db, tenant, tipId, limit, before)
       .andThen(rows => {
         const parsed = ChainRowSchema.array().safeParse(rows)
         return parsed.success
@@ -164,7 +165,81 @@ export const Messages = {
               `query message chain: schema mismatch: ${z.treeifyError(parsed.error)}`,
             )
       })
-      .andThen(rows => hydrateChain(db, rows))
+      .andThen(rows => hydrateChain(db, tenant, rows))
+  },
+
+  deltaSince(
+    db: Db,
+    tenant: string,
+    tipId: string | null,
+    anchorId: string,
+    limit: number,
+  ): ResultAsync<
+    {
+      messages: ChainMessage[]
+      anchorReached: boolean
+      reachedRoot: boolean
+    },
+    string
+  > {
+    if (tipId === null || tipId === '') {
+      return ResultAsync.fromSafePromise(
+        Promise.resolve({ messages: [], anchorReached: false, reachedRoot: true }),
+      )
+    }
+    if (anchorId === tipId) {
+      return ResultAsync.fromSafePromise(
+        Promise.resolve({ messages: [], anchorReached: true, reachedRoot: false }),
+      )
+    }
+    return q(async () => {
+      // Pull `limit + 1` newest rows: the extra one lets us tell "anchor is the
+      // next (older) row" from "we merely hit the limit".
+      const rows = await rawAll(
+        db,
+        `WITH RECURSIVE chain AS (
+           SELECT id, role, prev_id, created_at, 0 AS depth
+           FROM messages WHERE id = ? AND tenant = ?
+           UNION
+           SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
+           FROM messages m JOIN chain c ON m.id = c.prev_id
+           WHERE m.tenant = ? AND c.depth < ?
+         )
+         SELECT id, role, prev_id, created_at, depth
+         FROM chain ORDER BY depth ASC`,
+        [tipId, tenant, tenant, limit],
+      )
+      const parsed = z
+        .object({
+          id: z.string(),
+          role: z.string(),
+          prev_id: z.string().nullable(),
+          created_at: z.string(),
+          depth: z.number(),
+        })
+        .array()
+        .safeParse(rows)
+      if (!parsed.success) {
+        throw new Error(
+          `query delta: schema mismatch: ${z.treeifyError(parsed.error)}`,
+        )
+      }
+      const all = parsed.data // newest-first (depth ASC)
+      const anchorIdx = all.findIndex(r => r.id === anchorId)
+      if (anchorIdx >= 0) {
+        return { rows: all.slice(0, anchorIdx), anchorReached: true, reachedRoot: false }
+      }
+      const reachedRoot = all.some(r => r.prev_id === null || r.prev_id === '')
+      return { rows: all, anchorReached: false, reachedRoot }
+    }, 'query message delta')
+      .andThen(r =>
+        hydrateChain(db, tenant, r.rows).map(messages => ({
+          // Return oldest-first (the chain order the UI expects).
+          messages: [...messages].reverse(),
+          anchorReached: r.anchorReached,
+          reachedRoot: r.reachedRoot,
+        })),
+      )
   },
 }
 
@@ -183,6 +258,7 @@ const ChainRowSchema = z.object({
  */
 function rawChainRows(
   db: Db,
+  tenant: string,
   tipId: string | null,
   limit: number,
   before: string | null,
@@ -192,8 +268,8 @@ function rawChainRows(
     if (before !== null) {
       const bm = await rawAll(
         db,
-        `SELECT prev_id FROM messages WHERE id = ? LIMIT 1`,
-        [before],
+        `SELECT prev_id FROM messages WHERE id = ? AND tenant = ? LIMIT 1`,
+        [before, tenant],
       )
       cursor = (bm[0]?.prev_id as string | null) ?? null
     } else {
@@ -208,15 +284,16 @@ function rawChainRows(
       `WITH RECURSIVE chain AS (
          SELECT id, role, prev_id, created_at,
                 0 AS depth
-         FROM messages WHERE id = ?
+         FROM messages WHERE id = ? AND tenant = ?
          UNION
          SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
          FROM messages m JOIN chain c ON m.id = c.prev_id
+         WHERE m.tenant = ?
        )
        SELECT id, role, prev_id, created_at
        FROM chain WHERE depth < ?
        ORDER BY depth DESC`,
-      [cursor, limit],
+      [cursor, tenant, tenant, limit],
     )
   }, 'query message chain')
 }
@@ -224,14 +301,15 @@ function rawChainRows(
 /** Attach per-message text/summary content to validated chain rows. */
 function hydrateChain(
   db: Db,
+  tenant: string,
   raw: Array<z.infer<typeof ChainRowSchema>>,
 ): ResultAsync<ChainMessage[], string> {
   return q(async () => {
     const chainMsgs = raw.map(toChain)
     const ids = chainMsgs.map(m => m.id)
-    const contentByMsg = await textContentByMessages(db, ids)
-    const toolPartsByMsg = await toolPartsByMessages(db, ids)
-    const filePartsByMsg = await filePartsByMessages(db, ids)
+    const contentByMsg = await textContentByMessages(db, tenant, ids)
+    const toolPartsByMsg = await toolPartsByMessages(db, tenant, ids)
+    const filePartsByMsg = await filePartsByMessages(db, tenant, ids)
     return chainMsgs.map(m => ({
       ...m,
       content: contentByMsg.get(m.id) ?? '',
@@ -254,6 +332,7 @@ const toChain = (r: z.infer<typeof ChainRowSchema>): ChainMessage => ({
 /** Message id → concatenated text parts (seq order). */
 async function textContentByMessages(
   db: Db,
+  tenant: string,
   ids: string[],
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>()
@@ -261,7 +340,7 @@ async function textContentByMessages(
   const rows = await db
     .select()
     .from(parts)
-    .where(inArray(parts.messageId, ids))
+    .where(and(eq(parts.tenant, tenant), inArray(parts.messageId, ids)))
     .orderBy(parts.messageId, parts.seq)
   for (const p of rows) {
     if (p.type === 'text') {
@@ -280,6 +359,7 @@ async function textContentByMessages(
 /** Message id → ordered `file` part data (attachment refs), in seq order. */
 async function filePartsByMessages(
   db: Db,
+  tenant: string,
   ids: string[],
 ): Promise<Map<string, FilePartData[]>> {
   const out = new Map<string, FilePartData[]>()
@@ -287,7 +367,7 @@ async function filePartsByMessages(
   const rows = await db
     .select()
     .from(parts)
-    .where(inArray(parts.messageId, ids))
+    .where(and(eq(parts.tenant, tenant), inArray(parts.messageId, ids)))
     .orderBy(parts.messageId, parts.seq)
   for (const p of rows) {
     if (p.type !== 'file') continue
@@ -304,6 +384,7 @@ async function filePartsByMessages(
 /** Message id → structured tool-call parts (name/input + paired result). */
 async function toolPartsByMessages(
   db: Db,
+  tenant: string,
   ids: string[],
 ): Promise<Map<string, ChainMessage['tool_parts']>> {
   const out = new Map<string, ChainMessage['tool_parts']>()
@@ -311,7 +392,7 @@ async function toolPartsByMessages(
   const rows = await db
     .select()
     .from(parts)
-    .where(inArray(parts.messageId, ids))
+    .where(and(eq(parts.tenant, tenant), inArray(parts.messageId, ids)))
     .orderBy(parts.messageId, parts.seq)
   const byMsg = new Map<string, (typeof rows)[number][]>()
   for (const p of rows) {

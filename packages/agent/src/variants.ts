@@ -143,7 +143,11 @@ function apiNamespace(apiType: string): string {
   const t = apiType.toLowerCase()
   if (t === 'claude') return 'anthropic'
   if (t === 'gemini') return 'google'
-  if (t === 'openai_compatible') return 'openai-compatible'
+  // The @ai-sdk/openai-compatible provider is registered under the camelCase
+  // name `openaiCompatible`; the legacy kebab-case key triggers a deprecation
+  // warning, so map both spellings to the camelCase namespace.
+  if (t === 'openai_compatible' || t === 'openai-compatible')
+    return 'openaiCompatible'
   return t
 }
 

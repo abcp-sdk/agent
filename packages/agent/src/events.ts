@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Bus } from './bus.js'
-import { BUCKET_SESSION_RUN, natsToken, sseSubject } from './bus.js'
+import { BUCKET_SESSION_RUN, natsToken, sseSubject, tenantKVKey } from './bus.js'
 import { logger } from './logger.js'
 
 export interface AgentEventDeps {
@@ -17,36 +17,43 @@ export interface ActiveRun {
   startedAtMs: number
 }
 
+/** Lease/active-run KV key: `t.<tenant>.<sessionToken>`. */
+function runKey(tenant: string, sid: string): string {
+  return tenantKVKey(tenant, natsToken(sid))
+}
+
 export function markActiveRun(
   bus: Bus,
+  tenant: string,
   sid: string,
   runId: string,
   startedAtMs: number,
 ): void {
   const value = JSON.stringify({ runId, startedAtMs } satisfies ActiveRun)
   void bus
-    .kvPut(BUCKET_SESSION_RUN, natsToken(sid), value, 0)
+    .kvPut(BUCKET_SESSION_RUN, runKey(tenant, sid), value, 0)
     .catch(err => {
-      logger.warn({ sid, err: String(err) }, 'markActiveRun failed')
+      logger.warn({ tenant, sid, err: String(err) }, 'markActiveRun failed')
     })
 }
 
 /** Clear the session's active-turn marker (turn ended / aborted). */
-export function clearActiveRun(bus: Bus, sid: string): void {
+export function clearActiveRun(bus: Bus, tenant: string, sid: string): void {
   void bus
-    .kvDelete(BUCKET_SESSION_RUN, natsToken(sid))
+    .kvDelete(BUCKET_SESSION_RUN, runKey(tenant, sid))
     .catch(err => {
-      logger.warn({ sid, err: String(err) }, 'clearActiveRun failed')
+      logger.warn({ tenant, sid, err: String(err) }, 'clearActiveRun failed')
     })
 }
 
 /** Read the session's active turn, or null when idle. */
 export async function readActiveRun(
   bus: Bus,
+  tenant: string,
   sid: string,
 ): Promise<ActiveRun | null> {
   try {
-    const raw = await bus.kvGet(BUCKET_SESSION_RUN, natsToken(sid))
+    const raw = await bus.kvGet(BUCKET_SESSION_RUN, runKey(tenant, sid))
     if (raw === null || raw === '') return null
     const v = JSON.parse(raw) as Partial<ActiveRun>
     if (typeof v.runId !== 'string' || v.runId === '') return null
@@ -68,6 +75,7 @@ export async function readActiveRun(
  */
 export function pushEvent(
   bus: Bus,
+  tenant: string,
   sid: string,
   event: string,
   params: unknown = {},
@@ -79,12 +87,12 @@ export function pushEvent(
       : params
   void bus
     .inboxPublish(
-      sseSubject(sid),
+      sseSubject(tenant, sid),
       { event, params: p, eid: randomUUID() },
-      { id: randomUUID() },
+      { id: randomUUID(), tenant },
     )
     .catch(err => {
-      logger.warn({ sid, err: String(err) }, 'sse publish failed')
+      logger.warn({ tenant, sid, err: String(err) }, 'sse publish failed')
     })
 }
 
@@ -106,10 +114,8 @@ export const events = {
   }),
 }
 
-/** Lifecycle event kinds published on `abc.session.lifecycle.{kind}`. */
+/** Lifecycle event kinds published on `abc.<tenant>.session.lifecycle.{kind}`. */
 export type LifecycleEvent = 'created' | 'forked' | 'renamed' | 'deleted'
-
-const SESSION_CHANGED_SUBJECT = 'abc.session.changed'
 
 /**
  * Announce that a session's mutable state changed (a message landed or its
@@ -117,17 +123,21 @@ const SESSION_CHANGED_SUBJECT = 'abc.session.changed'
  * `pub` (not durable): a watcher that connects later gets current state from
  * its initial snapshot, so only connected watchers need the nudge.
  */
-export function publishSessionChanged(bus: Bus, sid: string): void {
+export function publishSessionChanged(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+): void {
   void bus
-    .publish(SESSION_CHANGED_SUBJECT, { session_name: sid })
+    .publish(
+      `abc.${tenant}.session.changed`,
+      { session_name: sid },
+      { tenant },
+    )
     .catch(err => {
-      logger.warn({ sid, err: String(err) }, 'session-changed publish failed')
+      logger.warn({ tenant, sid, err: String(err) }, 'session-changed publish failed')
     })
 }
-
-export const SESSION_CHANGED = SESSION_CHANGED_SUBJECT
-
-/** Lifecycle event kinds published on `abc.session.lifecycle.{kind}`. */
 
 /**
  * Trigger hook: after a session lifecycle action commits, notify the durable
@@ -137,19 +147,21 @@ export const SESSION_CHANGED = SESSION_CHANGED_SUBJECT
  */
 export function publishLifecycle(
   bus: Bus,
+  tenant: string,
   event: LifecycleEvent,
   payload: Record<string, unknown>,
 ): void {
   void bus
     .inboxPublish(
-      `abc.session.lifecycle.${event}`,
+      `abc.${tenant}.session.lifecycle.${event}`,
       {
         kind: event,
+        tenant,
         ...payload,
       },
-      { id: randomUUID() },
+      { id: randomUUID(), tenant },
     )
     .catch(err => {
-      logger.warn({ event, err: String(err) }, 'lifecycle publish failed')
+      logger.warn({ tenant, event, err: String(err) }, 'lifecycle publish failed')
     })
 }

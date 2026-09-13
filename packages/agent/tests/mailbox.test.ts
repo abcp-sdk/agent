@@ -4,6 +4,8 @@ import { Mailbox } from '../src/db-mailbox.js'
 import type { AgentDeps } from '../src/session-agent.js'
 import { handleMailboxMessage } from '../src/session-agent.js'
 
+const T = 't1'
+
 describe('handleMailboxMessage', () => {
   it('persists a valid envelope (handler acks via abc consumer)', async () => {
     const enqueue = vi
@@ -16,16 +18,21 @@ describe('handleMailboxMessage', () => {
       llm: {},
     } as unknown as AgentDeps
 
-    await handleMailboxMessage(deps, {
+    await handleMailboxMessage(deps, T, {
       id: 'e1',
       sessionName: 'a:b:main',
       type: 'event',
       payload: { text: 'hi' },
     })
 
-    expect(enqueue).toHaveBeenCalledWith(deps.db, 'e1', 'a:b:main', 'event', {
-      text: 'hi',
-    })
+    expect(enqueue).toHaveBeenCalledWith(
+      deps.db,
+      T,
+      'e1',
+      'a:b:main',
+      'event',
+      { text: 'hi' },
+    )
     enqueue.mockRestore()
   })
 
@@ -34,7 +41,7 @@ describe('handleMailboxMessage', () => {
       err('insert ... violates foreign key constraint (23503)') as never,
     )
     await expect(
-      handleMailboxMessage({} as AgentDeps, {
+      handleMailboxMessage({} as AgentDeps, T, {
         id: 'e2',
         sessionName: 'gone',
         type: 'event',
@@ -48,7 +55,7 @@ describe('handleMailboxMessage', () => {
       err('connection refused') as never,
     )
     await expect(
-      handleMailboxMessage({} as AgentDeps, {
+      handleMailboxMessage({} as AgentDeps, T, {
         id: 'e3',
         sessionName: 'a:b:main',
         type: 'event',

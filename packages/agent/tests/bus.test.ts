@@ -2,6 +2,8 @@ import { Agent } from '@abc-protocol/sdk'
 import { describe, expect, it } from 'vitest'
 import { mailboxSubject, natsToken, sseSubject } from '../src/bus.js'
 
+const T = 't1'
+
 const NATS_TOKEN_RE = /^[A-Za-z0-9_-]+$/
 
 describe('natsToken', () => {
@@ -34,9 +36,9 @@ describe('natsToken', () => {
 
   it('subjects never contain the raw session name', () => {
     const sid = 'acme:my.repo:main'
-    expect(sseSubject(sid)).toBe(`abc.session.events.${natsToken(sid)}`)
-    expect(mailboxSubject(sid)).toBe(`abc.mailbox.${natsToken(sid)}`)
-    expect(sseSubject(sid)).not.toContain(':')
+    expect(sseSubject(T, sid)).toBe(`abc.${T}.session.events.${natsToken(sid)}`)
+    expect(mailboxSubject(T, sid)).toBe(`abc.${T}.mailbox.${natsToken(sid)}`)
+    expect(sseSubject(T, sid)).not.toContain(':')
   })
 })
 
@@ -44,7 +46,7 @@ describe('Agent lease (moved from natsErrorCode/claimSession)', () => {
   it('claims, renews and releases a session lease', async () => {
     // A fake Bus exercising the Agent high-level lease methods is covered by
     // abc-protocol sdk's own tests; here we just assert the subjects are stable.
-    expect(mailboxSubject('a:b:main')).toBe(mailboxSubject('a:b:main'))
+    expect(mailboxSubject(T, 'a:b:main')).toBe(mailboxSubject(T, 'a:b:main'))
   })
 })
 

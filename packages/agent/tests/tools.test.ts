@@ -64,13 +64,15 @@ const tool: DiscoveredTool = {
 
 const execOpts = (toolCallId: string) => ({ toolCallId, messages: [] }) as never
 
+const T = 't1'
+
 describe('buildAiTools session_name envelope', () => {
   it('carries the session envelope when sessionId given', async () => {
     const { bus, published } = fakeBus()
-    const tools = buildAiTools([tool], bus, 500, 'acme--api--main')
+    const tools = buildAiTools([tool], bus, 500, T, 'acme--api--main')
     const result = await tools.read.execute({ path: 'x' }, execOpts('c1'))
     expect(result).toEqual({ content: 'ok', metadata: null })
-    const call = published.find(p => p.subject === 'abc.tool.call.repo.read')
+    const call = published.find(p => p.subject === 'abc.t1.tool.call.repo.read')
     expect(call?.payload).toEqual({
       call_id: 'c1',
       session_name: 'acme--api--main',
@@ -80,9 +82,9 @@ describe('buildAiTools session_name envelope', () => {
 
   it('passes arguments unchanged when no sessionId', async () => {
     const { bus, published } = fakeBus()
-    const tools = buildAiTools([tool], bus, 500)
+    const tools = buildAiTools([tool], bus, 500, T)
     await tools.read.execute({ path: 'x' }, execOpts('c2'))
-    const call = published.find(p => p.subject === 'abc.tool.call.repo.read')
+    const call = published.find(p => p.subject === 'abc.t1.tool.call.repo.read')
     expect(call?.payload).toEqual({
       call_id: 'c2',
       session_name: '',
@@ -92,9 +94,9 @@ describe('buildAiTools session_name envelope', () => {
 
   it('issues one request per call (reply routing is transport-internal)', async () => {
     const { bus, log } = fakeBus()
-    const tools = buildAiTools([tool], bus, 500, 's')
+    const tools = buildAiTools([tool], bus, 500, T, 's')
     await tools.read.execute({}, execOpts('c3'))
-    expect(log).toEqual(['req:abc.tool.call.repo.read'])
+    expect(log).toEqual(['req:abc.t1.tool.call.repo.read'])
   })
 
   it('maps the wire data field onto the canonical metadata', async () => {
@@ -105,7 +107,7 @@ describe('buildAiTools session_name envelope', () => {
       content: 'payload text',
       data: { rows: 3 },
     }))
-    const tools = buildAiTools([tool], bus, 500, 's')
+    const tools = buildAiTools([tool], bus, 500, T, 's')
     const out = await tools.read.execute({}, execOpts('c4'))
     expect(out).toEqual({ content: 'payload text', metadata: { rows: 3 } })
   })

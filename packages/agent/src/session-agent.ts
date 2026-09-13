@@ -89,7 +89,7 @@ export function watchMailboxWake(deps: AgentDeps): () => void {
   void agent
     .consumeMailbox(async msg => {
       if (stopped) return
-      await handleMailboxMessage(deps, msg)
+      await handleMailboxMessage(deps, msg.tenant, msg)
     })
     .then(
       shutdown => {
@@ -112,6 +112,7 @@ export function watchMailboxWake(deps: AgentDeps): () => void {
  */
 export async function handleMailboxMessage(
   deps: AgentDeps,
+  tenant: string,
   msg: { id: string; sessionName: string; type: string; payload?: unknown },
 ): Promise<void> {
   const env = {
@@ -125,6 +126,7 @@ export async function handleMailboxMessage(
 
   const enq = await Mailbox.enqueueIdempotent(
     deps.db,
+    tenant,
     env.id,
     env.session_name,
     env.type,
@@ -133,12 +135,12 @@ export async function handleMailboxMessage(
   if (enq.isErr()) {
     if (isForeignKeyViolation(enq.error)) {
       logger.warn(
-        { sid: env.session_name },
+        { tenant, sid: env.session_name },
         'mailbox: session missing — discarding',
       )
     } else {
       logger.warn(
-        { sid: env.session_name, err: String(enq.error) },
+        { tenant, sid: env.session_name, err: String(enq.error) },
         'mailbox: enqueue failed — redelivering',
       )
       throw enq.error
@@ -146,10 +148,13 @@ export async function handleMailboxMessage(
     return
   }
 
-  void runSessionTurn(deps, env.session_name).then(
+  void runSessionTurn(deps, tenant, env.session_name).then(
     () => {},
     e =>
-      logger.error({ sid: env.session_name, err: String(e) }, 'turn crashed'),
+      logger.error(
+        { tenant, sid: env.session_name, err: String(e) },
+        'turn crashed',
+      ),
   )
 }
 
@@ -162,15 +167,16 @@ export async function handleMailboxMessage(
  */
 export async function runSessionTurn(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
 ): Promise<void> {
   for (;;) {
     const agent = new AbcAgent(deps.bus)
     let revision: number | null
     try {
-      revision = await claimSession(deps.bus, sid)
+      revision = await claimSession(deps.bus, tenant, sid)
     } catch (e) {
-      logger.warn({ sid, err: String(e) }, 'claim error')
+      logger.warn({ tenant, sid, err: String(e) }, 'claim error')
       return
     }
     if (revision === null) {
@@ -184,11 +190,11 @@ export async function runSessionTurn(
     // returns the NEW revision, which must be fed into the next renew; using
     // the original revision forever would fail every update after the first.
     const renewTimer = setInterval(() => {
-      void renewSession(deps.bus, sid, revision as number).then(
+      void renewSession(deps.bus, tenant, sid, revision as number).then(
         next => {
           if (next === null) {
             logger.warn(
-              { sid },
+              { tenant, sid },
               'lease lost: another replica may be running it',
             )
             return
@@ -196,40 +202,41 @@ export async function runSessionTurn(
           revision = next
         },
         err => {
-          logger.warn({ sid, err: String(err) }, 'renew session failed')
+          logger.warn({ tenant, sid, err: String(err) }, 'renew session failed')
         },
       )
     }, SESSION_LEASE_MS / 3)
 
     try {
       for (;;) {
-        const item = await drainOne(deps, sid)
+        const item = await drainOne(deps, tenant, sid)
         if (item === null) {
           // Re-drain after a short grace to close the enqueue/drain race.
           await sleep(DRAIN_GRACE_MS)
-          const again = await drainOne(deps, sid)
+          const again = await drainOne(deps, tenant, sid)
           if (again === null) break
-          await handleItem(deps, sid, again)
+          await handleItem(deps, tenant, sid, again)
           continue
         }
-        await handleItem(deps, sid, item)
+        await handleItem(deps, tenant, sid, item)
       }
     } finally {
       clearInterval(renewTimer)
-      await releaseSession(deps.bus, sid)
+      await releaseSession(deps.bus, tenant, sid)
     }
 
     // Released: confirm nothing arrived during the release window. If it did,
     // loop and re-claim (the lease is now free, so the claim wins).
-    const leftover = await drainOne(deps, sid)
+    const leftover = await drainOne(deps, tenant, sid)
     if (leftover === null) break
-    await handleItem(deps, sid, leftover)
+    await handleItem(deps, tenant, sid, leftover)
   }
-  pushEvent(deps.bus, sid, 'status', { type: 'idle' })
+  pushEvent(deps.bus, tenant, sid, 'status', { type: 'idle' })
 }
 
 async function handleItem(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
   item: { msg_type: string; payload: string },
 ): Promise<void> {
@@ -240,19 +247,19 @@ async function handleItem(
   }
 
   if (item.msg_type === 'user_prompt') {
-    const r = await runTurnOnce(deps, sid)
+    const r = await runTurnOnce(deps, tenant, sid)
     if (r !== null) {
-      pushEvent(deps.bus, sid, 'error', { message: r })
+      pushEvent(deps.bus, tenant, sid, 'error', { message: r })
     }
     return
   }
 
   // Everything else is an event: fold into the chain so it reaches the model.
-  await persistEvent(deps, sid, item.payload)
+  await persistEvent(deps, tenant, sid, item.payload)
 }
 
-async function drainOne(deps: AgentDeps, sid: string) {
-  const r = await Mailbox.drainOne(deps.db, sid)
+async function drainOne(deps: AgentDeps, tenant: string, sid: string) {
+  const r = await Mailbox.drainOne(deps.db, tenant, sid)
   return r.isErr() ? null : r.value
 }
 
@@ -281,10 +288,11 @@ interface TurnCtx {
  */
 async function runTurnOnce(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
 ): Promise<string | null> {
   const ctrl = getAbortController(sid)
-  const prepared = await prepare(deps, sid, ctrl.signal)
+  const prepared = await prepare(deps, tenant, sid, ctrl.signal)
   if (typeof prepared === 'string') return prepared
   const { tools, system, maxTurns, model, providerOptions, headers } = prepared
 
@@ -293,15 +301,17 @@ async function runTurnOnce(
   // live (and is cleared the moment the turn ends, incl. on error/abort).
   const runId = randomUUID()
   const runStartedAtMs = Date.now()
-  markActiveRun(deps.bus, sid, runId, runStartedAtMs)
-  pushEvent(deps.bus, sid, 'status', { type: 'busy' }, runId)
+  markActiveRun(deps.bus, tenant, sid, runId, runStartedAtMs)
+  pushEvent(deps.bus, tenant, sid, 'status', { type: 'busy' }, runId)
 
   // Cross-replica mid-stream interrupt: watch the mailbox wake subject. The
   // HTTP interrupt route publishes directly to this subject (never enqueued
   // in the mailbox), so whichever replica is running the session aborts
   // immediately; an event envelope also carries the same shape but is ignored
   // here (only `interrupt` acts as an abort).
-  const sub = await deps.bus.subscribe(mailboxSubject(sid)).catch(() => null)
+  const sub = await deps.bus
+    .subscribe(mailboxSubject(tenant, sid))
+    .catch(() => null)
   let unsub: (() => void | Promise<void>) | null = null
   if (sub !== null) {
     unsub = () => sub.close()
@@ -317,7 +327,7 @@ async function runTurnOnce(
     })()
   }
 
-  let messages = await loadHistory(deps, sid)
+  let messages = await loadHistory(deps, tenant, sid)
   let interrupted = false
   let finished = false
   let step = 0
@@ -367,33 +377,33 @@ async function runTurnOnce(
         for await (const part of result.fullStream) {
           switch (part.type) {
             case 'start-step':
-              pushEvent(deps.bus, sid, 'step-start', {}, runId)
+              pushEvent(deps.bus, tenant, sid, 'step-start', {}, runId)
               break
             case 'text-start':
-              pushEvent(deps.bus, sid, 'text-start', { id: 't0' }, runId)
+              pushEvent(deps.bus, tenant, sid, 'text-start', { id: 't0' }, runId)
               break
             case 'text-delta':
               text += part.text
-              pushEvent(deps.bus, sid, 'text-delta', {
+              pushEvent(deps.bus, tenant, sid, 'text-delta', {
                 id: 't0',
                 text: part.text,
               }, runId)
               break
             case 'text-end':
-              pushEvent(deps.bus, sid, 'text-end', { id: 't0' }, runId)
+              pushEvent(deps.bus, tenant, sid, 'text-end', { id: 't0' }, runId)
               break
             case 'reasoning-start':
-              pushEvent(deps.bus, sid, 'reasoning-start', { id: 'r0' }, runId)
+              pushEvent(deps.bus, tenant, sid, 'reasoning-start', { id: 'r0' }, runId)
               break
             case 'reasoning-delta':
               reasoning += part.text
-              pushEvent(deps.bus, sid, 'reasoning-delta', {
+              pushEvent(deps.bus, tenant, sid, 'reasoning-delta', {
                 id: 'r0',
                 text: part.text,
               }, runId)
               break
             case 'reasoning-end':
-              pushEvent(deps.bus, sid, 'reasoning-end', { id: 'r0' }, runId)
+              pushEvent(deps.bus, tenant, sid, 'reasoning-end', { id: 'r0' }, runId)
               break
             case 'tool-call':
               toolCalls.push({
@@ -401,7 +411,7 @@ async function runTurnOnce(
                 name: part.toolName,
                 input: part.input,
               })
-              pushEvent(deps.bus, sid, 'tool-call', {
+              pushEvent(deps.bus, tenant, sid, 'tool-call', {
                 toolCallId: part.toolCallId,
                 toolName: part.toolName,
                 input: part.input,
@@ -413,7 +423,7 @@ async function runTurnOnce(
                 name: part.toolName,
                 result: part.output,
               })
-              pushEvent(deps.bus, sid, 'tool-result', {
+              pushEvent(deps.bus, tenant, sid, 'tool-result', {
                 toolCallId: part.toolCallId,
                 toolName: part.toolName,
                 formatted: part.output.content,
@@ -435,7 +445,7 @@ async function runTurnOnce(
                 name: part.toolName,
                 result: { content: String(part.error), metadata: null },
               })
-              pushEvent(deps.bus, sid, 'tool-error', {
+              pushEvent(deps.bus, tenant, sid, 'tool-error', {
                 toolCallId: part.toolCallId,
                 error: String(part.error),
               }, runId)
@@ -461,9 +471,9 @@ async function runTurnOnce(
               if (isContextOverflowFailure(error)) {
                 // Context overflow: compact and retry once with the trimmed
                 // context — transparent to the caller.
-                const compacted = await compactSession(deps, sid, 'overflow')
+                const compacted = await compactSession(deps, tenant, sid, 'overflow')
                 if (compacted.isOk() && compacted.value) {
-                  stepMessages = await loadHistory(deps, sid)
+                  stepMessages = await loadHistory(deps, tenant, sid)
                   return 'retry'
                 }
               }
@@ -491,10 +501,11 @@ async function runTurnOnce(
       // Persist this step (reasoning + text + fully-paired tool calls/results)
       // and advance the chain tip before considering the next iteration.
       const { text, reasoning, toolCalls, toolResults, usage } = stepResult
-      await persistStep(deps, sid, reasoning, text, toolCalls, toolResults)
+      await persistStep(deps, tenant, sid, reasoning, text, toolCalls, toolResults)
       if (usage !== null) {
         await Sessions.addUsage(
           deps.db,
+          tenant,
           sid,
           usage.inputTokens,
           usage.outputTokens,
@@ -507,7 +518,7 @@ async function runTurnOnce(
       // Step boundary: inject any newly-arrived mailbox messages. A fresh
       // user_prompt continues the loop (the model responds to it); events fold
       // into context; a full stop with nothing new ends the turn.
-      const injectedUserPrompt = await drainAndInject(deps, sid, ctrl)
+      const injectedUserPrompt = await drainAndInject(deps, tenant, sid, ctrl)
       if (ctrl.signal.aborted && injectedUserPrompt.length === 0) break
 
       if (
@@ -535,9 +546,10 @@ async function runTurnOnce(
     // long-finished turn.
     if (unsub !== null) unsub()
     clearRun(sid)
-    clearActiveRun(deps.bus, sid)
+    clearActiveRun(deps.bus, tenant, sid)
     pushEvent(
       deps.bus,
+      tenant,
       sid,
       'turn-complete',
       { reason: interrupted ? 'interrupted' : 'stop' },
@@ -549,17 +561,18 @@ async function runTurnOnce(
 
 async function prepare(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
   abortSignal: AbortSignal,
 ): Promise<TurnCtx | string> {
-  const sessionRes = await Sessions.get(deps.db, sid)
+  const sessionRes = await Sessions.get(deps.db, tenant, sid)
   if (sessionRes.isErr()) return sessionRes.error
   const session = sessionRes.value
   if (session === null) return 'session not found'
 
   const presetRow =
     session.preset !== ''
-      ? (await Presets.get(deps.bus, session.preset)).unwrapOr(null)
+      ? (await Presets.get(deps.bus, tenant, session.preset)).unwrapOr(null)
       : null
   const presetTools = parse(z.array(z.string()), presetRow?.tools ?? '[]')
   const toolNames = presetTools.isOk() ? presetTools.value : []
@@ -570,7 +583,7 @@ async function prepare(
   // turn (no restart), while per-session `PATCH /sessions/{id}/settings`
   // {locale} still wins. Used to localize tool descriptions and the system
   // prompt, and projected as vars.agent.locale.
-  const configLocale = (await Config.get(deps.bus, 'locale')).unwrapOr(null)
+  const configLocale = (await Config.get(deps.bus, tenant, 'locale')).unwrapOr(null)
   const locale = resolveLocale(
     session.locale,
     configLocale,
@@ -592,7 +605,7 @@ async function prepare(
   )
   // Hard-disable tools whose required config is unset: the model must not call
   // a tool it cannot run. Reads the `cfg` bucket per turn (cheap, few knobs).
-  const blocked = await toolsBlockedByMissingRequired(deps.bus, active)
+  const blocked = await toolsBlockedByMissingRequired(deps.bus, tenant, active)
   if (blocked.size > 0) {
     logger.info(
       { sid, blocked: [...blocked] },
@@ -603,6 +616,7 @@ async function prepare(
     active,
     deps.bus,
     deps.config.toolTimeoutMs,
+    tenant,
     sid,
     abortSignal,
     locale,
@@ -634,6 +648,7 @@ async function prepare(
   const renderedPrompt = await renderTemplate(
     systemPrompt,
     deps.bus,
+    tenant,
     sessionName,
   )
 
@@ -649,7 +664,7 @@ async function prepare(
     return `max_turns must be > 0 (session/preset/default all resolved to 0)`
   }
 
-  const resolved = await deps.llm.resolve(deps.db, session.model)
+  const resolved = await deps.llm.resolve(deps.db, tenant, session.model)
   if (resolved.isErr()) return resolved.error
 
   // Resolve the selected reasoning variant (if any) into AI-SDK
@@ -666,7 +681,7 @@ async function prepare(
   // Project the effective locale as a session variable so extensions can
   // localize their tool-result text. Written by the agent (provider "agent")
   // into the shared vars bucket during each turn.
-  void setSessionVariable(deps.bus, 'agent', sid, 'locale', locale)
+  void setSessionVariable(deps.bus, tenant, 'agent', sid, 'locale', locale)
 
   return {
     tools,
@@ -709,6 +724,7 @@ interface ToolResultRec {
 /** Persist one step: chained assistant message + text/tool/tool_result parts. */
 async function persistStep(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
   reasoning: string,
   text: string,
@@ -717,9 +733,9 @@ async function persistStep(
 ): Promise<void> {
   if (reasoning === '' && text === '' && toolCalls.length === 0) return
 
-  const tipRes = await Sessions.tip(deps.db, sid)
+  const tipRes = await Sessions.tip(deps.db, tenant, sid)
   const prevId = tipRes.isErr() ? null : tipRes.value
-  const insert = await Messages.insert(deps.db, 'assistant', prevId)
+  const insert = await Messages.insert(deps.db, tenant, 'assistant', prevId)
   if (insert.isErr()) {
     logger.error({ sid, err: String(insert.error) }, 'persist step failed')
     return
@@ -730,14 +746,14 @@ async function persistStep(
   // Reasoning (thinking) is persisted for display only; it is deliberately
   // EXCLUDED from the model's rebuilt context (see rebuildHistory/appendStep).
   if (reasoning !== '') {
-    await Parts.insert(deps.db, messageId, 'reasoning', seq++, { text: reasoning })
+    await Parts.insert(deps.db, tenant, messageId, 'reasoning', seq++, { text: reasoning })
   }
   if (text !== '') {
-    await Parts.insert(deps.db, messageId, 'text', seq++, { text })
+    await Parts.insert(deps.db, tenant, messageId, 'text', seq++, { text })
   }
   for (const tc of toolCalls) {
     const result = toolResults.find(r => r.id === tc.id)?.result
-    await Parts.insert(deps.db, messageId, 'tool', seq++, {
+    await Parts.insert(deps.db, tenant, messageId, 'tool', seq++, {
       id: tc.id,
       name: tc.name,
       input: tc.input,
@@ -750,41 +766,52 @@ async function persistStep(
         ? result.content
         : `tool '${tc.name}' produced no output`
     const metadata = result !== undefined ? result.metadata : null
-    await Parts.insert(deps.db, messageId, 'tool_result', seq++, {
+    await Parts.insert(deps.db, tenant, messageId, 'tool_result', seq++, {
       tool_use_id: tc.id,
       content,
       metadata,
     })
   }
-  await Sessions.setTip(deps.db, sid, messageId)
+  await Sessions.setTip(deps.db, tenant, sid, messageId)
   // Keep the per-session context id cache in step with the write.
-  fireAndForget(appendSessionId(deps.bus, sid, messageId), 'appendSessionIds')
+  fireAndForget(appendSessionId(deps.bus, tenant, sid, messageId), 'appendSessionIds')
   // Mirror the newest-message fact to the bus KV for DB-less consumers.
   projectMessageFact(
     deps.bus,
+    tenant,
     sid,
     factFromPersist(nowStr(), 'assistant', text !== '' ? text : reasoning),
   )
 }
 
 /** Fold a mailbox event into the chain as an `event` message. */
-async function persistEvent(deps: AgentDeps, sid: string, payload: string) {
+async function persistEvent(
+  deps: AgentDeps,
+  tenant: string,
+  sid: string,
+  payload: string,
+) {
   const parsed = parse(ContentPayloadSchema, payload)
   const text =
     parsed.isOk() && parsed.value.content !== undefined
       ? parsed.value.content
       : payload
-  const tip = await Sessions.tip(deps.db, sid)
+  const tip = await Sessions.tip(deps.db, tenant, sid)
   const tipId = tip.isErr() ? null : tip.value
-  const insert = await Messages.insert(deps.db, 'event', tipId)
+  const insert = await Messages.insert(deps.db, tenant, 'event', tipId)
   if (insert.isOk()) {
-    await Parts.insert(deps.db, insert.value, 'text', 0, { text })
-    await Sessions.setTip(deps.db, sid, insert.value)
+    await Parts.insert(deps.db, tenant, insert.value, 'text', 0, { text })
+    await Sessions.setTip(deps.db, tenant, sid, insert.value)
     fireAndForget(
-      appendSessionId(deps.bus, sid, insert.value),
+      appendSessionId(deps.bus, tenant, sid, insert.value),
       'appendSessionIds',
     )
-    projectMessageFact(deps.bus, sid, factFromPersist(nowStr(), 'event', text))
+    projectMessageFact(
+      deps.bus,
+      tenant,
+      sid,
+      factFromPersist(nowStr(), 'event', text),
+    )
   }
 }
 
@@ -801,12 +828,13 @@ async function persistEvent(deps: AgentDeps, sid: string, payload: string) {
  */
 async function drainAndInject(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
   ctrl: AbortController,
 ): Promise<string[]> {
   const injected: string[] = []
   for (;;) {
-    const item = await drainOne(deps, sid)
+    const item = await drainOne(deps, tenant, sid)
     if (item === null) break
     if (item.msg_type === 'interrupt') {
       ctrl.abort()
@@ -817,11 +845,11 @@ async function drainAndInject(
       const text = payload.isOk()
         ? (payload.value.text ?? payload.value.prompt ?? item.payload)
         : item.payload
-      await persistUserPrompt(deps, sid, text)
+      await persistUserPrompt(deps, tenant, sid, text)
       injected.push(text)
       continue
     }
-    await persistEvent(deps, sid, item.payload)
+    await persistEvent(deps, tenant, sid, item.payload)
   }
   return injected
 }
@@ -829,20 +857,26 @@ async function drainAndInject(
 /** Persist an injected user prompt as a chained `role=user` message. */
 async function persistUserPrompt(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
   text: string,
 ): Promise<void> {
-  const tip = await Sessions.tip(deps.db, sid)
+  const tip = await Sessions.tip(deps.db, tenant, sid)
   const tipId = tip.isErr() ? null : tip.value
-  const insert = await Messages.insert(deps.db, 'user', tipId)
+  const insert = await Messages.insert(deps.db, tenant, 'user', tipId)
   if (insert.isOk()) {
-    await Parts.insert(deps.db, insert.value, 'text', 0, { text })
-    await Sessions.setTip(deps.db, sid, insert.value)
+    await Parts.insert(deps.db, tenant, insert.value, 'text', 0, { text })
+    await Sessions.setTip(deps.db, tenant, sid, insert.value)
     fireAndForget(
-      appendSessionId(deps.bus, sid, insert.value),
+      appendSessionId(deps.bus, tenant, sid, insert.value),
       'appendSessionIds',
     )
-    projectMessageFact(deps.bus, sid, factFromPersist(nowStr(), 'user', text))
+    projectMessageFact(
+      deps.bus,
+      tenant,
+      sid,
+      factFromPersist(nowStr(), 'user', text),
+    )
   }
 }
 
@@ -889,31 +923,32 @@ function appendStep(
 
 async function loadHistory(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
 ): Promise<ModelMessage[]> {
-  const tipRes = await Sessions.tip(deps.db, sid)
+  const tipRes = await Sessions.tip(deps.db, tenant, sid)
   const tipId = tipRes.isErr() ? null : tipRes.value
   if (tipId === null) return []
 
   // Cache hit: use the cached id list to fetch rows + parts directly.
-  const cached = await getSessionIds(deps.bus, sid)
+  const cached = await getSessionIds(deps.bus, tenant, sid)
   if (cached !== null) {
-    const rows = await Messages.byIds(deps.db, cached)
-    const parts = await Parts.listByMessages(deps.db, cached)
+    const rows = await Messages.byIds(deps.db, tenant, cached)
+    const parts = await Parts.listByMessages(deps.db, tenant, cached)
     if (rows.isOk() && parts.isOk()) {
       return spliceContext(rows.value, parts.value)
     }
   }
 
   // Cache miss: bounded scan from tip, then backfill.
-  const chain = await Messages.chain(deps.db, tipId, 100_000, null)
+  const chain = await Messages.chain(deps.db, tenant, tipId, 100_000, null)
   if (chain.isErr()) return []
   const ids = chain.value.map(m => m.id)
-  const parts = await Parts.listByMessages(deps.db, ids)
+  const parts = await Parts.listByMessages(deps.db, tenant, ids)
   if (parts.isErr()) return []
 
   // Backfill the cache with the full bounded id list.
-  fireAndForget(putSessionIds(deps.bus, sid, ids), 'putSessionIds')
+  fireAndForget(putSessionIds(deps.bus, tenant, sid, ids), 'putSessionIds')
 
   return spliceContext(chain.value, parts.value)
 }
@@ -986,24 +1021,25 @@ export function spliceContext(
  */
 export async function compactSession(
   deps: AgentDeps,
+  tenant: string,
   sid: string,
   reason: 'manual' | 'overflow' = 'manual',
 ): Promise<Result<boolean, string>> {
-  const tipRes = await Sessions.tip(deps.db, sid)
+  const tipRes = await Sessions.tip(deps.db, tenant, sid)
   if (tipRes.isErr()) return err(tipRes.error)
   const tipId = tipRes.value
   if (tipId === null) return ok(false)
 
-  const sessionRes = await Sessions.get(deps.db, sid)
+  const sessionRes = await Sessions.get(deps.db, tenant, sid)
   if (sessionRes.isErr()) return err(sessionRes.error)
   const session = sessionRes.value
   const modelId = session === null ? '' : session.model
 
-  const chain = await Messages.chain(deps.db, tipId, 100_000, null)
+  const chain = await Messages.chain(deps.db, tenant, tipId, 100_000, null)
   if (chain.isErr()) return err(chain.error)
 
   const ids = chain.value.map(m => m.id)
-  const partsRes = await Parts.listByMessages(deps.db, ids)
+  const partsRes = await Parts.listByMessages(deps.db, tenant, ids)
   if (partsRes.isErr()) return err(partsRes.error)
   const parts = partsRes.value
 
@@ -1036,7 +1072,7 @@ export async function compactSession(
     toolCalls: toolCountByMsg.get(m.id) ?? 0,
   }))
 
-  const limit = await contextLimit(deps, modelId)
+  const limit = await contextLimit(deps, tenant, modelId)
   // No configured context window for this provider/model ⇒ cannot compute
   // budgets ⇒ skip compaction (never guess a window).
   if (limit <= 0) return ok(false)
@@ -1050,24 +1086,26 @@ export async function compactSession(
   // after this checkpoint.
   const tailFromId = tail[0]?.id ?? null
 
-  const insert = await Messages.insert(deps.db, COMPACTION_ROLE, tipId)
+  const insert = await Messages.insert(deps.db, tenant, COMPACTION_ROLE, tipId)
   if (insert.isErr()) return err(insert.error)
   const cmId = insert.value
-  const part = await Parts.insertSummary(deps.db, cmId, summary, tailFromId)
+  const part = await Parts.insertSummary(deps.db, tenant, cmId, summary, tailFromId)
   if (part.isErr()) return err(part.error)
-  await Sessions.setTip(deps.db, sid, cmId)
+  await Sessions.setTip(deps.db, tenant, sid, cmId)
   projectMessageFact(
     deps.bus,
+    tenant,
     sid,
     factFromPersist(nowStr(), COMPACTION_ROLE, summary),
   )
 
   // Rewrite the cache to the new bounded context id list (with the cm).
-  const chainAfter = await Messages.chain(deps.db, cmId, 100_000, null)
+  const chainAfter = await Messages.chain(deps.db, tenant, cmId, 100_000, null)
   if (chainAfter.isOk()) {
     fireAndForget(
       putSessionIds(
         deps.bus,
+        tenant,
         sid,
         chainAfter.value.map(m => m.id),
       ),
@@ -1075,12 +1113,13 @@ export async function compactSession(
     )
   }
 
-  pushEvent(deps.bus, sid, 'compacted', { reason })
+  pushEvent(deps.bus, tenant, sid, 'compacted', { reason })
   return ok(true)
 }
 
 async function contextLimit(
   deps: AgentDeps,
+  tenant: string,
   modelRef: string,
 ): Promise<number> {
   // The context window is USER-CONFIGURED per provider model (required at
@@ -1088,7 +1127,7 @@ async function contextLimit(
   // yields 0, which disables compaction for that session.
   const parsed = parseProviderModelRef(modelRef)
   if (parsed === null) return 0
-  const rows = await Providers.list(deps.db)
+  const rows = await Providers.list(deps.db, tenant)
   if (rows.isErr()) return 0
   const provider = rows.value.find(r => r.provider_id === parsed.providerId)
   if (provider === undefined) return 0

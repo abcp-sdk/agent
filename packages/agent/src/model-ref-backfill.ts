@@ -23,48 +23,56 @@ const StringArraySchema = z.array(z.string())
  *
  * Safe to run on every boot (no-op once all refs are canonical).
  */
-export async function backfillModelRefs(db: Db): Promise<void> {
-  const rows = await Sessions.list(db)
-  if (rows.isErr()) {
-    logger.warn({ err: rows.error }, 'model-ref backfill: list sessions failed')
-    return
-  }
-  const legacy = rows.value.filter(
-    s => s.model !== '' && !s.model.includes('/'),
-  )
-  if (legacy.length === 0) return
-
-  const providersRes = await Providers.list(db)
-  if (providersRes.isErr()) {
-    logger.warn(
-      { err: providersRes.error },
-      'model-ref backfill: list providers failed',
-    )
-    return
-  }
-  const providers = providersRes.value
-
-  let migrated = 0
-  let ambiguous = 0
-  for (const s of legacy) {
-    const owners = providers.filter(p => {
-      const models = parse(StringArraySchema, p.models)
-      return models.isOk() && models.value.includes(s.model)
-    })
-    if (owners.length !== 1) {
-      ambiguous++
+export async function backfillModelRefs(
+  db: Db,
+  tenants: readonly string[],
+): Promise<void> {
+  for (const tenant of tenants) {
+    const rows = await Sessions.list(db, tenant)
+    if (rows.isErr()) {
       logger.warn(
-        { name: s.name, model: s.model, owners: owners.map(o => o.provider_id) },
-        'model-ref backfill: cannot disambiguate; leaving bare model',
+        { tenant, err: rows.error },
+        'model-ref backfill: list sessions failed',
       )
       continue
     }
-    const ref = modelRef(owners[0]!.provider_id, s.model)
-    await Sessions.setModel(db, s.name, ref)
-    migrated++
+    const legacy = rows.value.filter(
+      s => s.model !== '' && !s.model.includes('/'),
+    )
+    if (legacy.length === 0) continue
+
+    const providersRes = await Providers.list(db, tenant)
+    if (providersRes.isErr()) {
+      logger.warn(
+        { tenant, err: providersRes.error },
+        'model-ref backfill: list providers failed',
+      )
+      continue
+    }
+    const providers = providersRes.value
+
+    let migrated = 0
+    let ambiguous = 0
+    for (const s of legacy) {
+      const owners = providers.filter(p => {
+        const models = parse(StringArraySchema, p.models)
+        return models.isOk() && models.value.includes(s.model)
+      })
+      if (owners.length !== 1) {
+        ambiguous++
+        logger.warn(
+          { tenant, name: s.name, model: s.model, owners: owners.map(o => o.provider_id) },
+          'model-ref backfill: cannot disambiguate; leaving bare model',
+        )
+        continue
+      }
+      const ref = modelRef(owners[0]!.provider_id, s.model)
+      await Sessions.setModel(db, tenant, s.name, ref)
+      migrated++
+    }
+    logger.info(
+      { tenant, scanned: legacy.length, migrated, ambiguous },
+      'model-ref backfill complete',
+    )
   }
-  logger.info(
-    { scanned: legacy.length, migrated, ambiguous },
-    'model-ref backfill complete',
-  )
 }

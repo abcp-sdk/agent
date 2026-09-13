@@ -35,11 +35,18 @@ import { type Client, createClient } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-node'
 import {
   AgentService,
+  AdminService,
+  CreateTenantRequestSchema,
+  IssueTenantTokenRequestSchema,
+  ListTenantsRequestSchema,
+  ListTenantTokensRequestSchema,
+  RevokeTenantTokenRequestSchema,
   CompactRequestSchema,
   CreateSessionRequestSchema,
   DeletePresetRequestSchema,
   DeleteProviderRequestSchema,
   DeleteSessionRequestSchema,
+  DiscoverGatewayModelsRequestSchema,
   FileRefSchema,
   ForkRequestSchema,
   GetConfigRequestSchema,
@@ -75,6 +82,20 @@ import {
   WatchSessionRequestSchema,
   WatchSessionsRequestSchema,
 } from '@easylab-agent/schema'
+
+// ---- multi-tenant identity for the e2e run ----
+const E2E_ADMIN_TOKEN = 'e2e-admin-token'
+const E2E_TENANT = 'e2e'
+const E2E_TENANT_TOKEN = 'e2e-tenant-token'
+
+/** Attach a bearer token to every Connect client call (unary + stream). */
+function bearerInterceptor(token: string = E2E_TENANT_TOKEN) {
+  return (next: (req: { header: { set(k: string, v: string): void } }) => unknown) =>
+    (req: { header: { set(k: string, v: string): void } }) => {
+      req.header.set('authorization', `Bearer ${token}`)
+      return next(req) as never
+    }
+}
 
 // ---------------------------------------------------------------------------
 // tiny test harness
@@ -144,6 +165,8 @@ function mockResponse(body: Record<string, unknown>): {
   toolCall: boolean
   /** Which tool to call when toolCall is true. */
   toolName: string
+  /** Explicit tool arguments (otherwise a per-tool default is used). */
+  args?: Record<string, unknown>
   slowMs: number
 } {
   const model = String(body['model'] ?? '')
@@ -154,6 +177,22 @@ function mockResponse(body: Record<string, unknown>): {
     : false
   if (model === 'mock-slow')
     return { reasoning: '', text: 'SLOW-OK', toolCall: false, toolName: '', slowMs: 8000 }
+  if (model === 'mock-vlm' && !hasTool) {
+    // The user text is the uploaded image code; echo it into the image-read
+    // call so the VLM tool resolves a real blob.
+    const blob = JSON.stringify(body['messages'] ?? [])
+    const m = blob.match(/[0-9a-f]{16}/)
+    return {
+      reasoning: '',
+      text: '',
+      toolCall: true,
+      toolName: 'image-read',
+      args: { code: m?.[0] ?? '', prompt: 'what is this?' },
+      slowMs: 0,
+    }
+  }
+  if (model === 'mock-vlm')
+    return { reasoning: '', text: 'VLM-OK', toolCall: false, toolName: '', slowMs: 0 }
   if (model === 'mock-tool' && !hasTool) {
     return {
       reasoning: 'let me think',
@@ -190,12 +229,132 @@ function mockResponse(body: Record<string, unknown>): {
 
 async function startMockLlm(
   state: MockState,
-): Promise<{ url: string; stop: () => Promise<void> }> {
+): Promise<{ url: string; gatewayUrl: string; stop: () => Promise<void> }> {
   const port = await freePort()
   // A 1x1 transparent PNG — enough for the image toolchain round-trip.
   const pngB64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
   const server = createServer((req, res) => {
+    const url = req.url ?? ''
+    // ---- Vercel-AI-SDK-compatible gateway (v4 wire) ----
+    if (url.startsWith('/v4/ai/')) {
+      const chunks: Buffer[] = []
+      req.on('data', c => chunks.push(c as Buffer))
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8')
+        const body = raw === '' ? {} : (JSON.parse(raw) as Record<string, unknown>)
+        const sendJson = (obj: unknown) => {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify(obj))
+        }
+        if (url.endsWith('/image-model')) {
+          state.imageRequests++
+          sendJson({ images: [pngB64] })
+          return
+        }
+        if (url.endsWith('/speech-model')) {
+          state.speechRequests++
+          sendJson({ audio: Buffer.from('RIFF....WAVE').toString('base64') })
+          return
+        }
+        if (url.endsWith('/transcription-model')) {
+          state.transcriptionRequests++
+          sendJson({ text: 'e2e transcript' })
+          return
+        }
+        if (url.endsWith('/video-model/start')) {
+          sendJson({ operation: { id: 'op-1' } })
+          return
+        }
+        if (url.endsWith('/video-model/status')) {
+          sendJson({
+            status: 'completed',
+            videos: [
+              { type: 'base64', data: pngB64, mediaType: 'video/mp4' },
+            ],
+          })
+          return
+        }
+        if (url.endsWith('/language-model')) {
+          const model = String(
+            (req.headers['ai-language-model-id'] as string) ?? '',
+          )
+          const text = model === 'gw-mock-text' ? 'GW-HELLO' : 'GW-OK'
+          sendJson({
+            content: [{ type: 'text', text }],
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 3, noCache: 3, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 2, text: 2, reasoning: 0 },
+            },
+            warnings: [],
+          })
+          return
+        }
+        if (url.endsWith('/config')) {
+          // Model discovery: the gateway advertises each model's kind.
+          sendJson({
+            models: [
+              {
+                id: 'gw-mock-text',
+                name: 'GW Mock Text',
+                specification: {
+                  specificationVersion: 'v4',
+                  provider: 'mock',
+                  modelId: 'gw-mock-text',
+                },
+                modelType: 'language',
+              },
+              {
+                id: 'gw-image',
+                name: 'GW Image',
+                specification: {
+                  specificationVersion: 'v4',
+                  provider: 'mock',
+                  modelId: 'gw-image',
+                },
+                modelType: 'image',
+              },
+              {
+                id: 'gw-video',
+                name: 'GW Video',
+                specification: {
+                  specificationVersion: 'v4',
+                  provider: 'mock',
+                  modelId: 'gw-video',
+                },
+                modelType: 'video',
+              },
+              {
+                id: 'gw-tts',
+                name: 'GW TTS',
+                specification: {
+                  specificationVersion: 'v4',
+                  provider: 'mock',
+                  modelId: 'gw-tts',
+                },
+                modelType: 'speech',
+              },
+              {
+                id: 'gw-asr',
+                name: 'GW ASR',
+                specification: {
+                  specificationVersion: 'v4',
+                  provider: 'mock',
+                  modelId: 'gw-asr',
+                },
+                modelType: 'transcription',
+              },
+            ],
+          })
+          return
+        }
+        res.writeHead(404, { 'content-type': 'application/json' })
+        res.end('{"error":"unknown gateway path"}')
+      })
+      return
+    }
+    // ---- OpenAI-compatible text/image/speech/transcription ----
     // Image generation endpoint (openai-compatible imageModel path).
     if (req.method === 'POST' && req.url?.endsWith('/images/generations')) {
       const chunks: Buffer[] = []
@@ -273,13 +432,14 @@ async function startMockLlm(
       // chat completion JSON. Only stream when the request asked for it.
       if (body['stream'] !== true) {
         const toolArgs =
-          plan.toolName === 'image-generate'
+          plan.args ??
+          (plan.toolName === 'image-generate'
             ? { prompt: 'a cat' }
             : {
                 todos: [
                   { content: 'e2e todo', status: 'pending', priority: 'high' },
                 ],
-              }
+              })
         const message = plan.toolCall
           ? {
               role: 'assistant',
@@ -344,7 +504,8 @@ async function startMockLlm(
         }
         if (plan.toolCall) {
           const streamedArgs =
-            plan.toolName === 'image-generate'
+            plan.args ??
+            (plan.toolName === 'image-generate'
               ? { prompt: 'a cat' }
               : {
                   todos: [
@@ -354,7 +515,7 @@ async function startMockLlm(
                       priority: 'high',
                     },
                   ],
-                }
+                })
           send({
             tool_calls: [
               {
@@ -400,6 +561,7 @@ async function startMockLlm(
   await new Promise<void>(r => server.listen(port, '127.0.0.1', () => r()))
   return {
     url: `http://127.0.0.1:${port}/v1`,
+    gatewayUrl: `http://127.0.0.1:${port}/v4/ai`,
     stop: () =>
       new Promise<void>(r => {
         server.close(() => r())
@@ -512,6 +674,11 @@ async function main(): Promise<void> {
         DATABASE_URL: `sqlite://${dbFile}`,
         NATS_URL: natsUrl,
         LOG_LEVEL: process.env['E2E_DEBUG'] === '1' ? 'debug' : 'warn',
+        // First-boot identity: an admin token + one tenant/token pair.
+        AGENT_AUTH_MODE: 'required',
+        AGENT_ADMIN_TOKEN: E2E_ADMIN_TOKEN,
+        AGENT_BOOTSTRAP_TENANT: E2E_TENANT,
+        AGENT_BOOTSTRAP_TOKEN: E2E_TENANT_TOKEN,
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     })
@@ -529,11 +696,25 @@ async function main(): Promise<void> {
   startAgentProcess()
 
   const baseUrl = `http://127.0.0.1:${httpPort}`
-  const transport = createConnectTransport({ baseUrl, httpVersion: '1.1' })
+  const transport = createConnectTransport({
+    baseUrl,
+    httpVersion: '1.1',
+    interceptors: [bearerInterceptor()],
+  })
   const client: Client<typeof AgentService> = createClient(
     AgentService,
     transport,
   )
+  const adminTransport = createConnectTransport({
+    baseUrl,
+    httpVersion: '1.1',
+    interceptors: [bearerInterceptor(E2E_ADMIN_TOKEN)],
+  })
+  const admin: Client<typeof AdminService> = createClient(
+    AdminService,
+    adminTransport,
+  )
+  void admin
 
   // Wait for health.
   let healthy = false
@@ -555,6 +736,37 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  // ---- CORS (browser / Flutter Web clients) ----
+  {
+    const pre = await fetch(`${baseUrl}/agent.v1.AgentService/Health`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://agent-web.example',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    })
+    check('CORS preflight returns 204', pre.status === 204, pre.status)
+    check(
+      'CORS preflight allows origin',
+      pre.headers.get('access-control-allow-origin') !== null,
+      pre.headers.get('access-control-allow-origin'),
+    )
+    const post = await fetch(`${baseUrl}/agent.v1.AgentService/Health`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'https://agent-web.example',
+      },
+      body: '{}',
+    })
+    check(
+      'CORS headers on actual response',
+      post.headers.get('access-control-allow-origin') !== null,
+      post.headers.get('access-control-allow-origin'),
+    )
+  }
+
   // Wait until the bundled extension has registered its tools.
   for (let i = 0; i < 60; i++) {
     const r = await client.listTools({})
@@ -563,7 +775,7 @@ async function main(): Promise<void> {
   }
 
   try {
-    await run(client, state, mock.url)
+    await run(client, admin, state, mock.url, mock.gatewayUrl)
   } catch (err) {
     bad('suite ran to completion', err)
     console.error(String(err))
@@ -597,8 +809,10 @@ async function main(): Promise<void> {
 
 async function run(
   client: Client<typeof AgentService>,
+  admin: Client<typeof AdminService>,
   state: MockState,
   mockUrl: string,
+  gatewayUrl: string,
 ): Promise<void> {
   const uniq = Date.now()
 
@@ -636,34 +850,107 @@ async function run(
             name: 'Mock Slow',
             contextLimit: 100000n,
           }),
-          // Generation models: no context_limit, capability-tagged.
+          // A text model whose mock response triggers the image-generate tool
+          // call (the tool itself resolves via the gateway `image_model` knob).
           create(ProviderModelSchema, {
             id: 'mock-image',
-            name: 'Mock Image',
-            capability: 'image',
+            name: 'Mock Image Turn',
+            contextLimit: 100000n,
           }),
+          // A text model that calls image-read (VLM) against an uploaded blob.
           create(ProviderModelSchema, {
-            id: 'mock-video',
-            name: 'Mock Video',
-            capability: 'video',
-          }),
-          create(ProviderModelSchema, {
-            id: 'mock-tts',
-            name: 'Mock TTS',
-            capability: 'speech',
-          }),
-          create(ProviderModelSchema, {
-            id: 'mock-asr',
-            name: 'Mock ASR',
-            capability: 'transcription',
+            id: 'mock-vlm',
+            name: 'Mock VLM Turn',
+            contextLimit: 100000n,
           }),
         ],
       }),
     }),
   )
-  check('registerProvider', reg.ok)
+  check('registerProvider (text)', reg.ok)
 
-  // context_limit is required > 0.
+  // The Vercel-compatible gateway is the SINGLETON that carries multimodal
+  // models (context_limit 0) alongside text models (context_limit > 0).
+  const regGw = await client.registerProvider(
+    create(RegisterProviderRequestSchema, {
+      provider: create(ProviderSchema, {
+        providerId: 'gateway',
+        apiType: 'vercel-compatible-gateway',
+        baseUrl: gatewayUrl,
+        apiKey: 'EMPTY',
+        models: [
+          create(ProviderModelSchema, {
+            id: 'gw-mock-text',
+            name: 'GW Mock Text',
+            contextLimit: 100000n,
+          }),
+          create(ProviderModelSchema, { id: 'gw-image', name: 'GW Image', modelType: 'image' }),
+          create(ProviderModelSchema, { id: 'gw-video', name: 'GW Video', modelType: 'video' }),
+          create(ProviderModelSchema, { id: 'gw-tts', name: 'GW TTS', modelType: 'speech' }),
+          create(ProviderModelSchema, { id: 'gw-asr', name: 'GW ASR', modelType: 'transcription' }),
+        ],
+      }),
+    }),
+  )
+  check('registerProvider (gateway)', regGw.ok)
+
+  // The gateway id is fixed: registering another one is rejected.
+  let gatewayIdRejected = false
+  try {
+    await client.registerProvider(
+      create(RegisterProviderRequestSchema, {
+        provider: create(ProviderSchema, {
+          providerId: 'gw2',
+          apiType: 'vercel-compatible-gateway',
+          baseUrl: gatewayUrl,
+          models: [],
+        }),
+      }),
+    )
+  } catch {
+    gatewayIdRejected = true
+  }
+  check('gateway id must be "gateway"', gatewayIdRejected)
+
+  // Model discovery: ask the gateway /config and classify by modelType.
+  const disco = await client.discoverGatewayModels(
+    create(DiscoverGatewayModelsRequestSchema, {
+      providerId: 'gateway',
+      apiType: 'vercel-compatible-gateway',
+      baseUrl: gatewayUrl,
+      apiKey: 'EMPTY',
+    }),
+  )
+  check('discoverGatewayModels ok', disco.ok, disco.error)
+  check('discoverGatewayModels found 5', disco.models.length === 5)
+  const discoText = disco.models.find(m => m.id === 'gw-mock-text')
+  const discoImage = disco.models.find(m => m.id === 'gw-image')
+  check(
+    'discovered language model gets a context limit',
+    (discoText?.contextLimit ?? 0n) > 0n,
+  )
+  check(
+    'discovered multimodal model has context 0',
+    (discoImage?.contextLimit ?? 1n) === 0n,
+  )
+  check(
+    'discovered language model carries model_type "text"',
+    discoText?.modelType === 'text',
+    discoText?.modelType,
+  )
+  check(
+    'discovered image model carries model_type "image"',
+    discoImage?.modelType === 'image',
+    discoImage?.modelType,
+  )
+  const discoVideo = disco.models.find(m => m.id === 'gw-video')
+  check(
+    'discovered video model carries model_type "video"',
+    discoVideo?.modelType === 'video',
+    discoVideo?.modelType,
+  )
+
+  // context_limit is required > 0 for a text provider.
   let rejectedBadLimit = false
   try {
     await client.registerProvider(
@@ -679,13 +966,28 @@ async function run(
   } catch {
     rejectedBadLimit = true
   }
-  check('registerProvider rejects context_limit=0', rejectedBadLimit)
+  check('text provider rejects context_limit=0', rejectedBadLimit)
 
   const providers = await client.listProviders({})
   check(
     'listProviders includes our provider',
     providers.providers.some(p => p.providerId === 'openai'),
     providers.providers.map(p => p.providerId),
+  )
+  // The gateway's stored models carry their kind (model_type) so the UI can
+  // label image/video/speech/transcription instead of a generic "multimodal".
+  const gwRow = providers.providers.find(p => p.providerId === 'gateway')
+  const gwVideo = gwRow?.models.find(m => m.id === 'gw-video')
+  check(
+    'listProviders echoes gateway model_type',
+    gwVideo?.modelType === 'video',
+    gwVideo?.modelType,
+  )
+  const gwImage = gwRow?.models.find(m => m.id === 'gw-image')
+  check(
+    'listProviders echoes gateway image kind',
+    gwImage?.modelType === 'image',
+    gwImage?.modelType,
   )
 
   const models = await client.listModels(
@@ -717,56 +1019,14 @@ async function run(
   }
   check('listModels rejects empty provider_id', listModelsRejectsEmpty)
 
-  // Generation models must NOT surface as session models (text-only list).
+  // A text provider carries only text models (all context_limit > 0), so its
+  // list equals the registered models.
   check(
-    'listModels hides generation models',
-    !models.models.some(m => ['mock-image', 'mock-video', 'mock-tts'].includes(m.id)),
+    'listModels lists the text provider models',
+    models.models.map(m => m.id).sort().join(',') ===
+      'gpt-5.4,mock-image,mock-slow,mock-text,mock-tool,mock-vlm',
     models.models.map(m => m.id),
   )
-  // And a generation model may register with context_limit = 0.
-  let genZeroCtxOk = false
-  try {
-    await client.registerProvider(
-      create(RegisterProviderRequestSchema, {
-        provider: create(ProviderSchema, {
-          providerId: 'genzero',
-          apiType: 'openai-compatible',
-          baseUrl: mockUrl,
-          models: [
-            create(ProviderModelSchema, {
-              id: 'img-x',
-              capability: 'image',
-            }),
-          ],
-        }),
-      }),
-    )
-    genZeroCtxOk = true
-  } catch {
-    genZeroCtxOk = false
-  }
-  check('generation model with context_limit=0 accepted', genZeroCtxOk)
-  let badCapability = false
-  try {
-    await client.registerProvider(
-      create(RegisterProviderRequestSchema, {
-        provider: create(ProviderSchema, {
-          providerId: 'badcap',
-          apiType: 'openai-compatible',
-          baseUrl: mockUrl,
-          models: [
-            create(ProviderModelSchema, {
-              id: 'x',
-              capability: 'hologram',
-            }),
-          ],
-        }),
-      }),
-    )
-  } catch {
-    badCapability = true
-  }
-  check('unknown capability rejected', badCapability)
 
   const test = await client.testProvider(
     create(TestProviderRequestSchema, {
@@ -778,15 +1038,53 @@ async function run(
       variant: 'high',
     }),
   )
-  check('testProvider ok', test.ok, test.result)
+  check('testProvider text ok', test.ok, test.result)
   check(
     'testProvider applied variant reasoning_effort',
     state.lastReasoningEffort === 'high',
     state.lastReasoningEffort,
   )
 
-  // Per-capability test probes (real smallest-possible generations).
-  const tImage = await client.testProvider(
+  // Per-capability test probes through the GATEWAY (real smallest-possible
+  // generations).
+  const gwTest = (model: string, capability: string) =>
+    client.testProvider(
+      create(TestProviderRequestSchema, {
+        providerId: 'gateway',
+        apiType: 'vercel-compatible-gateway',
+        baseUrl: gatewayUrl,
+        apiKey: 'EMPTY',
+        model: `gateway/${model}`,
+        capability,
+      }),
+    )
+  const tText = await gwTest('gw-mock-text', 'text')
+  check('testProvider gateway text ok', tText.ok, tText.result)
+  const tImage = await gwTest('gw-image', 'image')
+  check('testProvider gateway image ok', tImage.ok && tImage.result.includes('image ok'), tImage.result)
+  const tSpeech = await gwTest('gw-tts', 'speech')
+  check('testProvider gateway speech ok', tSpeech.ok && tSpeech.result.includes('speech ok'), tSpeech.result)
+  const tAsr = await gwTest('gw-asr', 'transcription')
+  check(
+    'testProvider gateway transcription ok',
+    tAsr.ok && tAsr.result.includes('transcription ok'),
+    tAsr.result,
+  )
+  const tVideo = await gwTest('gw-video', 'video')
+  check(
+    'testProvider gateway video ok',
+    tVideo.ok && tVideo.result.includes('video ok'),
+    tVideo.result,
+  )
+  check(
+    'gateway image/speech/transcription endpoints hit',
+    state.imageRequests >= 1 &&
+      state.speechRequests >= 1 &&
+      state.transcriptionRequests >= 1,
+    `${state.imageRequests}/${state.speechRequests}/${state.transcriptionRequests}`,
+  )
+  // A non-gateway provider cannot serve a multimodal model.
+  const tBadMultimodal = await client.testProvider(
     create(TestProviderRequestSchema, {
       providerId: 'openai',
       apiType: 'openai-compatible',
@@ -796,54 +1094,11 @@ async function run(
       capability: 'image',
     }),
   )
-  check('testProvider image ok', tImage.ok && tImage.result.includes('image ok'), tImage.result)
-  const tSpeech = await client.testProvider(
-    create(TestProviderRequestSchema, {
-      providerId: 'openai',
-      apiType: 'openai-compatible',
-      baseUrl: mockUrl,
-      apiKey: 'test-key',
-      model: 'openai/mock-tts',
-      capability: 'speech',
-    }),
-  )
-  check('testProvider speech ok', tSpeech.ok && tSpeech.result.includes('speech ok'), tSpeech.result)
-  const tAsr = await client.testProvider(
-    create(TestProviderRequestSchema, {
-      providerId: 'openai',
-      apiType: 'openai-compatible',
-      baseUrl: mockUrl,
-      apiKey: 'test-key',
-      model: 'openai/mock-asr',
-      capability: 'transcription',
-    }),
-  )
   check(
-    'testProvider transcription ok',
-    tAsr.ok && tAsr.result.includes('transcription ok'),
-    tAsr.result,
-  )
-  check(
-    'mock speech/transcription endpoints hit',
-    state.speechRequests >= 1 && state.transcriptionRequests >= 1,
-    `${state.speechRequests}/${state.transcriptionRequests}`,
-  )
-  // Video: an openai-compatible provider has no AI-SDK video model, so the
-  // test fails honestly (google/Veo only).
-  const tVideo = await client.testProvider(
-    create(TestProviderRequestSchema, {
-      providerId: 'openai',
-      apiType: 'openai-compatible',
-      baseUrl: mockUrl,
-      apiKey: 'test-key',
-      model: 'openai/mock-video',
-      capability: 'video',
-    }),
-  )
-  check(
-    'testProvider video rejected for openai-compatible',
-    tVideo.ok === false,
-    tVideo.result,
+    'testProvider rejects multimodal on a text provider',
+    tBadMultimodal.ok === false &&
+      tBadMultimodal.result.includes('vercel-compatible-gateway'),
+    tBadMultimodal.result,
   )
 
   // -------------------------------------------------------------------------
@@ -978,7 +1233,20 @@ async function run(
       extId: 'bundled',
       name: 'image_model',
       value: create(ValueSchema, {
-        kind: { case: 'stringValue', value: 'openai/mock-image' },
+        kind: { case: 'stringValue', value: 'gateway/gw-image' },
+      }),
+    }),
+  )
+  // `image-read` (VLM) resolves its vision model via resolveModel — this
+  // reproduces the `Cannot read properties of null (reading 'select')` crash
+  // when the resolver received the extension's null db. Configure a vision
+  // model and run the tool end-to-end.
+  await client.setExtensionConfig(
+    create(SetExtensionConfigRequestSchema, {
+      extId: 'bundled',
+      name: 'vlm_model',
+      value: create(ValueSchema, {
+        kind: { case: 'stringValue', value: 'openai/mock-text' },
       }),
     }),
   )
@@ -1040,7 +1308,7 @@ async function run(
     imgCode,
   )
   check(
-    'mock /images/generations was hit',
+    'gateway /image-model was hit',
     state.imageRequests >= 1,
     state.imageRequests,
   )
@@ -1279,6 +1547,9 @@ async function run(
     create(ListMessagesRequestSchema, { id: toolSid, limit: 50 }),
   )
   const beforeCount = beforeUndo.messages.length
+  // First materialize the context-id cache (a prompt does loadHistory →
+  // putSessionIds). Then undo must AWAIT deleteSessionIds; otherwise the cache
+  // still holds the withdrawn messages and the next prompt would re-read them.
   const undo = await client.undo(create(UndoRequestSchema, { id: toolSid }))
   check('undo ok', undo.session !== undefined)
   const afterUndo = await client.listMessages(
@@ -1289,6 +1560,105 @@ async function run(
     afterUndo.messages.length < beforeCount,
     `${beforeCount} -> ${afterUndo.messages.length}`,
   )
+  // The undo must have refreshed the session-list projection immediately. The
+  // new tip is the assistant TOOL-CALL step (no text part), so the preview is
+  // empty — but it must no longer be the withdrawn 'TOOL-OK' text, and the
+  // timestamp must still be present.
+  const undoneRow = (await client.listSessions({})).sessions.find(
+    s => s.name === toolSid,
+  )
+  check(
+    'undo refreshes the message fact (time present, preview no longer withdrawn)',
+    undoneRow !== undefined &&
+      undoneRow.lastMessageAt !== '' &&
+      undoneRow.lastMessagePreview !== 'TOOL-OK',
+    `${undoneRow?.lastMessageAt} | ${JSON.stringify(undoneRow?.lastMessagePreview)}`,
+  )
+  const seqBefore = undoneRow?.messageSeq ?? 0
+  // A follow-up prompt right after the undo must NOT resurrect the withdrawn
+  // messages: the model only ever sees the new user text (+ earlier chain).
+  const afterUndoPrompt = client.prompt(
+    create(PromptRequestSchema, { id: toolSid, prompt: 'after undo' }),
+  )
+  for await (const e of afterUndoPrompt) {
+    if (e.event === 'accepted') break
+  }
+  await sleep(500)
+  const seqAfter = (
+    await client.getSession(create(GetSessionRequestSchema, { id: toolSid }))
+  ).session?.messageSeq
+  check(
+    'undo preserves message_seq (withdraw is not a new message)',
+    seqAfter !== undefined && seqAfter >= seqBefore,
+    `${seqBefore} -> ${seqAfter}`,
+  )
+
+  // ---- pin-based incremental listing (ListMessages.after/resync) ----------
+  // A fresh session with a couple of turns: baseline, then an incremental read
+  // from an anchor, then a resync after the anchor is withdrawn.
+  const incSid = `e2e-inc-${uniq}`
+  await client.createSession(
+    create(CreateSessionRequestSchema, {
+      name: incSid,
+      model: 'openai/mock-text',
+      preset: 'default',
+    }),
+  )
+  const incPrompt = async (text: string) => {
+    const s = client.prompt(create(PromptRequestSchema, { id: incSid, prompt: text }))
+    for await (const e of s) {
+      if (e.event === 'accepted') break
+    }
+    await sleep(400)
+  }
+  await incPrompt('first')
+  const base = await client.listMessages(
+    create(ListMessagesRequestSchema, { id: incSid, limit: 50 }),
+  )
+  const anchor = base.messages[base.messages.length - 1]?.id ?? ''
+  check('incremental: baseline has tip id', base.tipId !== '' && anchor !== '')
+
+  // No new messages → delta is empty, anchor reached, no resync.
+  const emptyDelta = await client.listMessages(
+    create(ListMessagesRequestSchema, { id: incSid, after: anchor, limit: 50 }),
+  )
+  check(
+    'incremental: same anchor yields empty delta, no resync',
+    emptyDelta.resync === false && emptyDelta.messages.length === 0,
+    `${emptyDelta.resync} ${emptyDelta.messages.length}`,
+  )
+
+  // A new turn → delta contains only the appended messages.
+  await incPrompt('second')
+  const delta = await client.listMessages(
+    create(ListMessagesRequestSchema, { id: incSid, after: anchor, limit: 50 }),
+  )
+  check(
+    'incremental: delta returns appended messages',
+    delta.resync === false && delta.messages.length > 0,
+    `${delta.messages.length}`,
+  )
+  check(
+    'incremental: delta excludes the anchor message',
+    delta.messages.every(m => m.id !== anchor),
+  )
+  check(
+    'incremental: echo tip id advances',
+    delta.tipId !== '' && delta.tipId !== base.tipId,
+    `${base.tipId} -> ${delta.tipId}`,
+  )
+
+  // Withdraw past the anchor → the anchor is no longer on the chain ⇒ resync.
+  await client.undo(create(UndoRequestSchema, { id: incSid, messageId: anchor }))
+  const afterUndoDelta = await client.listMessages(
+    create(ListMessagesRequestSchema, { id: incSid, after: anchor, limit: 50 }),
+  )
+  check(
+    'incremental: withdrawn anchor signals resync',
+    afterUndoDelta.resync === true,
+    afterUndoDelta.resync,
+  )
+  await client.deleteSession(create(DeleteSessionRequestSchema, { id: incSid }))
 
   const forkName = `e2e-fork-${uniq}`
   try {
@@ -1488,6 +1858,103 @@ async function run(
     Buffer.from(ingested.data).toString('utf8') === 'ingested body',
   )
 
+  // A prompt carrying attachment refs must persist a `file` part per code
+  // (this is the path the Flutter client uses for picked images/files/audio).
+  const attSid = `e2e-att-${uniq}`
+  await client.createSession(
+    create(CreateSessionRequestSchema, {
+      name: attSid,
+      model: 'openai/mock-text',
+      preset: 'default',
+    }),
+  )
+  const attStream = client.prompt(
+    create(PromptRequestSchema, {
+      id: attSid,
+      prompt: '',
+      attachments: [create(FileRefSchema, { code: ingest.code })],
+    }),
+  )
+  for await (const e of attStream) {
+    if (e.event === 'accepted') break
+  }
+  const attMsgs = await client.listMessages(
+    create(ListMessagesRequestSchema, { id: attSid, limit: 20 }),
+  )
+  const attPart = attMsgs.messages
+    .flatMap(m => m.parts)
+    .find(p => p.type === 'file')
+  check(
+    'prompt attachment persists a file part',
+    attPart !== undefined && attPart.data.includes(ingest.code),
+    attPart?.data,
+  )
+  // The persisted file part must carry real metadata resolved from the stored
+  // blob (name/mime/size), otherwise history renders no thumbnail. The client
+  // sends only the code, so this proves the server filled the rest in.
+  const attData = attPart === undefined
+    ? {}
+    : (JSON.parse(attPart.data) as Record<string, unknown>)
+  check(
+    'prompt attachment persists resolved name/mime/size',
+    attData['name'] === 'ingested.txt' &&
+      attData['mime'] === 'text/plain' &&
+      Number(attData['size']) > 0,
+    attPart?.data,
+  )
+  await client.deleteSession(create(DeleteSessionRequestSchema, { id: attSid }))
+
+  // ---- image-read (VLM): resolveModel with the extension's null db --------
+  // Reproduces the `Cannot read properties of null (reading 'select')` crash:
+  // the extension passes null as its structural `db`, but the resolver must
+  // use the server's real handle.
+  const vlmSid = `e2e-vlm-${uniq}`
+  await client.createSession(
+    create(CreateSessionRequestSchema, {
+      name: vlmSid,
+      model: 'openai/mock-vlm',
+      preset: 'default',
+    }),
+  )
+  const vlmEvents: WatchEv[] = []
+  const vac = new AbortController()
+  const vlmWatcher = (async () => {
+    try {
+      const stream = client.watchSession(
+        create(WatchSessionRequestSchema, { id: vlmSid }),
+        { signal: vac.signal },
+      )
+      for await (const ev of stream) {
+        vlmEvents.push({
+          event: ev.event,
+          params: (ev.params ?? {}) as Record<string, unknown>,
+        })
+      }
+    } catch {
+      /* aborted */
+    }
+  })()
+  const vc = collectSession(vlmEvents)
+  await sleep(300)
+  const vlmPrompt = client.prompt(
+    create(PromptRequestSchema, { id: vlmSid, prompt: ingest.code }),
+  )
+  for await (const e of vlmPrompt) {
+    if (e.event === 'accepted') break
+  }
+  const vlmDone = await vc.waitFor(e => e.event === 'turn-complete', 30000)
+  check('image-read turn complete', vlmDone !== null)
+  const vlmResult = vlmEvents.find(e => e.event === 'tool-result')
+  check(
+    'image-read tool ran (resolveModel did not crash)',
+    vlmResult !== undefined &&
+      String(vlmResult.params['toolName'] ?? '').includes('image-read'),
+    vlmResult?.params,
+  )
+  vac.abort()
+  await vlmWatcher.catch(() => {})
+  await client.deleteSession(create(DeleteSessionRequestSchema, { id: vlmSid }))
+
   // -------------------------------------------------------------------------
   section('interrupt / compact')
   const slowSid = `e2e-slow-${uniq}`
@@ -1574,6 +2041,107 @@ async function run(
     'provider removed',
     !providers2.providers.some(p => p.providerId === 'openai'),
   )
+
+  // -------------------------------------------------------------------------
+  section('admin: tenants + tokens')
+  const t0 = await admin.listTenants(create(ListTenantsRequestSchema, {}))
+  check(
+    'bootstrap tenant present',
+    t0.tenants.some(t => t.id === E2E_TENANT),
+    t0.tenants.map(t => t.id).join(','),
+  )
+  const createdT = await admin.createTenant(
+    create(CreateTenantRequestSchema, { id: 'acme', name: 'Acme' }),
+  )
+  check('createTenant returns tenant', createdT.tenant?.id === 'acme')
+  check(
+    'createTenant mints a bootstrap token',
+    (createdT.token ?? '').length > 0,
+  )
+  // The freshly minted token authenticates as its own tenant, isolated from e2e.
+  const acmeClient: Client<typeof AgentService> = createClient(
+    AgentService,
+    createConnectTransport({
+      baseUrl,
+      httpVersion: '1.1',
+      interceptors: [bearerInterceptor(createdT.token ?? '')],
+    }),
+  )
+  const acmeSessions = await acmeClient.listSessions(
+    create(ListSessionsRequestSchema, {}),
+  )
+  check(
+    'tenant token is isolated (no e2e sessions)',
+    acmeSessions.sessions.length === 0,
+    String(acmeSessions.sessions.length),
+  )
+  const acmeCreate = await acmeClient.createSession(
+    create(CreateSessionRequestSchema, {
+      name: 'acme-only',
+      model: 'openai/gpt-5.4',
+      preset: 'default',
+    }),
+  )
+  check('tenant token can create its own session', acmeCreate.ok)
+
+  // Issue + revoke a token: the issued one works, then fails after revocation.
+  const issued = await admin.issueTenantToken(
+    create(IssueTenantTokenRequestSchema, { tenantId: 'acme', label: 'extra' }),
+  )
+  check('issueTenantToken returns plaintext', (issued.plaintext ?? '').length > 0)
+  const before = await admin.listTenantTokens(
+    create(ListTenantTokensRequestSchema, { tenantId: 'acme' }),
+  )
+  check(
+    'acme has 2 active tokens',
+    before.tokens.filter(t => !t.revoked).length === 2,
+    String(before.tokens.length),
+  )
+  await admin.revokeTenantToken(
+    create(RevokeTenantTokenRequestSchema, { tokenId: issued.token!.tokenId }),
+  )
+  const revokedClient: Client<typeof AgentService> = createClient(
+    AgentService,
+    createConnectTransport({
+      baseUrl,
+      httpVersion: '1.1',
+      interceptors: [bearerInterceptor(issued.plaintext ?? '')],
+    }),
+  )
+  let revokedRejected = false
+  try {
+    await revokedClient.listSessions(create(ListSessionsRequestSchema, {}))
+  } catch (e) {
+    revokedRejected = String(e).includes('unauthenticated') ||
+      String(e).includes('invalid or revoked')
+  }
+  check('revoked token is rejected', revokedRejected)
+
+  // Disable the tenant (soft): its live token stops working.
+  await admin.deleteTenant(create(DeleteTenantRequestSchema, { id: 'acme' }))
+  let disabledRejected = false
+  try {
+    await acmeClient.listSessions(create(ListSessionsRequestSchema, {}))
+  } catch (e) {
+    disabledRejected = String(e).includes('unauthenticated') ||
+      String(e).includes('invalid or revoked')
+  }
+  check('disabled tenant token is rejected', disabledRejected)
+  const t1 = await admin.listTenants(create(ListTenantsRequestSchema, {}))
+  check(
+    'tenant is disabled not deleted (data kept)',
+    t1.tenants.find(t => t.id === 'acme')?.disabled === true,
+  )
+
+  // A tenant token can never reach the admin surface.
+  let tenantBlocked = false
+  try {
+    await client.listTenants(create(ListTenantsRequestSchema, {}))
+  } catch (e) {
+    tenantBlocked = String(e).includes('permission_denied') ||
+      String(e).includes('admin token')
+  }
+  check('tenant token cannot call admin RPCs', tenantBlocked)
 }
 
 void main()

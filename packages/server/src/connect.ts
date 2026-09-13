@@ -3,9 +3,12 @@ import {
   appendSessionId,
   BUCKET_SESSION_STATE,
   catalogModel,
-  MODEL_CAPABILITIES,
-  type ModelCapability,
+  GATEWAY_API_TYPE,
+  GATEWAY_PROVIDER_ID,
+  isGatewayApiType,
   parseCapability,
+  validateApiType,
+  discoverGatewayModels,
   Config,
   compactSession,
   deleteSessionIds,
@@ -30,6 +33,9 @@ import {
   publishSessionChanged,
   factFromPersist,
   projectMessageFact,
+  writeMessageFact,
+  parse,
+  TextPartDataSchema,
   readActiveRun,
   readMessageFacts,
   renderTemplate,
@@ -39,12 +45,20 @@ import {
   toolConfigMap,
   variantsForApiType,
   DEFAULT_PRESET,
+  type ChainMessage,
 } from '@easylab-agent/agent'
 import { type AgentDeps } from '@easylab-agent/agent'
 
 import { EidDedup } from './context.js'
+import { tenantOf } from './tenant.js'
 import { runProviderTest } from './provider-test.js'
-import { type ConnectRouter, type ServiceImpl, ConnectError, Code } from '@connectrpc/connect'
+import {
+  type ConnectRouter,
+  type HandlerContext,
+  type ServiceImpl,
+  ConnectError,
+  Code,
+} from '@connectrpc/connect'
 import { create, fromJson, toJson } from '@bufbuild/protobuf'
 import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
 import { StructSchema, ValueSchema, type Value } from '@bufbuild/protobuf/wkt'
@@ -199,15 +213,16 @@ function sessionToMsg(
 
 /**
  * Parse the stored provider `models` JSON (an array of
- * `{ id, name?, context_limit }`) into the proto ProviderModel shape. A bare
- * string entry is also tolerated (name=id, context_limit=0) so a malformed
- * row never breaks listing.
+ * `{ id, name?, context_limit, model_type? }`) into the proto ProviderModel
+ * shape. A bare string entry is also tolerated (name=id, context_limit=0) so a
+ * malformed row never breaks listing. `model_type` is display-only kind
+ * metadata from the gateway `/config` (empty when unknown / a text provider).
  */
 function parseProviderModels(raw: string | null | undefined): {
   id: string
   name: string
   contextLimit: bigint
-  capability: string
+  modelType: string
 }[] {
   let arr: unknown = []
   try {
@@ -216,34 +231,23 @@ function parseProviderModels(raw: string | null | undefined): {
     return []
   }
   if (!Array.isArray(arr)) return []
-  const out: {
-    id: string
-    name: string
-    contextLimit: bigint
-    capability: string
-  }[] = []
+  const out: { id: string; name: string; contextLimit: bigint; modelType: string }[] =
+    []
   for (const item of arr) {
     if (typeof item === 'string') {
       if (item !== '')
-        out.push({ id: item, name: item, contextLimit: 0n, capability: 'text' })
+        out.push({ id: item, name: item, contextLimit: 0n, modelType: '' })
       continue
     }
     if (item === null || typeof item !== 'object') continue
     const v = item as Record<string, unknown>
     const id = String(v['id'] ?? '')
     if (id === '') continue
-    const capRaw = String(v['capability'] ?? '').trim().toLowerCase()
-    // Legacy rows (and bare strings) carry no capability: text.
-    const capability = MODEL_CAPABILITIES.includes(
-      capRaw as ModelCapability,
-    )
-      ? capRaw
-      : 'text'
     out.push({
       id,
       name: String(v['name'] ?? id),
       contextLimit: BigInt(Math.trunc(Number(v['context_limit'] ?? 0)) || 0),
-      capability,
+      modelType: String(v['model_type'] ?? ''),
     })
   }
   return out
@@ -307,116 +311,169 @@ export function buildConnectRoutes(
 ): (router: ConnectRouter) => void {
   return router => {
     const impl: ServiceImpl<typeof AgentService> = {
-      async health() {
+      async health(_req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         return { ok: true, name: 'easylab-agent' }
       },
-      async listSessions() {
-        const r = await Sessions.list(deps.db)
+      async listSessions(_req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        const r = await Sessions.list(deps.db, tenant)
         if (r.isErr()) throw new Error(r.error)
         const facts = await readMessageFacts(
           deps.bus,
+          tenant,
           r.value.map(s => s.name),
         )
         return { sessions: r.value.map(s => sessionToMsg(s, facts.get(s.name))) }
       },
-      async createSession(req) {
+      async createSession(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const body = req
-        const exists = await Sessions.exists(deps.db, body.name)
+        const exists = await Sessions.exists(deps.db, tenant, body.name)
         if (exists.isErr()) throw new Error(exists.error)
         if (exists.value) throw new Error('Session already exists')
-        const name = await Sessions.create(deps.db, {
+        const name = await Sessions.create(deps.db, tenant, {
           name: body.name,
           model: body.model,
           variant: body.variant,
           preset: body.preset,
         })
         if (name.isErr()) throw new Error(name.error)
-        publishLifecycle(deps.bus, 'created', { session_name: body.name })
+        publishLifecycle(deps.bus, tenant, 'created', { session_name: body.name })
         return { ok: true, sessionName: name.value }
       },
-      async getSession(req) {
-        const r = await Sessions.get(deps.db, req.id)
+      async getSession(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        const r = await Sessions.get(deps.db, tenant, req.id)
         if (r.isErr()) throw new Error(r.error)
         if (r.value === null) throw new Error('session not found')
-        const facts = await readMessageFacts(deps.bus, [req.id])
+        const facts = await readMessageFacts(deps.bus, tenant, [req.id])
         return { session: sessionToMsg(r.value, facts.get(req.id)) }
       },
-      async deleteSession(req) {
+      async deleteSession(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const id = req.id
         interruptRun(id)
-        const r = await Sessions.delete(deps.db, id)
+        const r = await Sessions.delete(deps.db, tenant, id)
         if (r.isErr()) throw new Error(r.error)
-        publishLifecycle(deps.bus, 'deleted', { session_name: id })
+        publishLifecycle(deps.bus, tenant, 'deleted', { session_name: id })
         return { ok: true }
       },
-      async listMessages(req) {
-        const { id, limit: l, before } = req
+      async listMessages(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        const { id, limit: l, before, after } = req
         const limit = l && l > 0 ? l : 50
-        const tipRes = await Sessions.tip(deps.db, id)
+        const tipRes = await Sessions.tip(deps.db, tenant, id)
         const tipId = tipRes.isErr() ? null : tipRes.value
+        const tip = tipId ?? ''
         // proto3 string defaults to "" (not null): treat empty as "no cursor"
         // so the chain walks from the tip instead of looking up prev_id of "".
         const beforeId = before !== undefined && before !== '' ? before : null
-        const r = await Messages.chain(deps.db, tipId, limit, beforeId)
-        if (r.isErr()) throw new Error(r.error)
-        const msgIds = r.value.map(m => m.id)
-        const partsRes = await Parts.listByMessages(deps.db, msgIds)
-        const partsByMsg = new Map<
-          string,
-          Array<{
-            id: string
-            message_id: string
-            type: string
-            seq: number
-            data: string
-          }>
-        >()
-        if (partsRes.isOk()) {
-          for (const p of partsRes.value) {
-            const list = partsByMsg.get(p.message_id) ?? []
-            list.push(p)
-            partsByMsg.set(p.message_id, list)
+        const afterId = after !== undefined && after !== '' ? after : null
+
+        // Hydrate a list of chain messages into the proto shape.
+        const toMsgs = async (chain: ChainMessage[]) => {
+          const msgIds = chain.map(m => m.id)
+          const partsRes = await Parts.listByMessages(deps.db, tenant, msgIds)
+          const partsByMsg = new Map<
+            string,
+            Array<{
+              id: string
+              message_id: string
+              type: string
+              seq: number
+              data: string
+            }>
+          >()
+          if (partsRes.isOk()) {
+            for (const p of partsRes.value) {
+              const list = partsByMsg.get(p.message_id) ?? []
+              list.push(p)
+              partsByMsg.set(p.message_id, list)
+            }
           }
+          return chain.map(m => ({
+            id: m.id,
+            role: m.role,
+            prevId: m.prev_id ?? '',
+            createdAt: m.created_at ?? '',
+            parts: (partsByMsg.get(m.id) ?? []).map(p => ({
+              id: p.id,
+              messageId: p.message_id,
+              type: p.type,
+              seq: p.seq,
+              data: p.data,
+            })),
+          }))
         }
-        const messages = r.value.map(m => ({
-          id: m.id,
-          role: m.role,
-          prevId: m.prev_id ?? '',
-          createdAt: m.created_at ?? '',
-          parts: (partsByMsg.get(m.id) ?? []).map(p => ({
-            id: p.id,
-            messageId: p.message_id,
-            type: p.type,
-            seq: p.seq,
-            data: p.data,
-          })),
-        }))
-        return { ok: true, messages }
+
+        // Incremental mode: anchored on a client-known pin. The delta is the
+        // segment appended since that anchor; if the anchor is gone (undo /
+        // re-pointed chain) we return `resync` so the client drops its cache.
+        if (afterId !== null) {
+          const r = await Messages.deltaSince(deps.db, tenant, tipId, afterId, limit)
+          if (r.isErr()) throw new Error(r.error)
+          const resync = !r.value.anchorReached && r.value.reachedRoot
+          let messages: Awaited<ReturnType<typeof toMsgs>> = []
+          if (!resync) messages = await toMsgs(r.value.messages)
+          return { ok: true, messages, resync, tipId: tip }
+        }
+
+        const r = await Messages.chain(deps.db, tenant, tipId, limit, beforeId)
+        if (r.isErr()) throw new Error(r.error)
+        const messages = await toMsgs(r.value)
+        return { ok: true, messages, resync: false, tipId: tip }
       },
-      async *prompt(req) {
+      async *prompt(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { id, prompt, attachments } = req
-        const session = await Sessions.get(deps.db, id)
+        const session = await Sessions.get(deps.db, tenant, id)
         if (session.isErr()) throw new Error(session.error)
         if (session.value === null) throw new Error('session not found')
 
-        const tipRes = await Sessions.tip(deps.db, id)
+        const tipRes = await Sessions.tip(deps.db, tenant, id)
         const tipId = tipRes.isErr() ? null : tipRes.value
-        const insert = await Messages.insert(deps.db, 'user', tipId)
+        const insert = await Messages.insert(deps.db, tenant, 'user', tipId)
         if (insert.isErr()) throw new Error(insert.error)
         let seq = 0
         for (const att of attachments ?? []) {
+          if (att.code === '') {
+            throw new ConnectError(
+              'attachment code is required',
+              Code.InvalidArgument,
+            )
+          }
+          // The client sends ONLY the code; name/mime/size are resolved from
+          // the stored blob. proto3 gives ''/0 (not undefined) for omitted
+          // fields, so treat empty as missing. There is NO silent fallback: a
+          // file part must carry a real name, mime and size, otherwise the
+          // prompt is refused (a blank metadata file part can't be rendered).
           let name = att.name
           let mime = att.mime
           let size = att.size
-          if (name === undefined && mime === undefined && size === undefined) {
-            const rec = await fileByCode(deps.bus, att.code)
-            if (rec.isOk() && rec.value !== null) {
-              name ??= rec.value.name
-              mime ??= rec.value.mime
-              size ??= rec.value.size
+          const missing =
+            (name ?? '') === '' || (mime ?? '') === '' || (size ?? 0) <= 0
+          if (missing) {
+            const rec = await fileByCode(deps.bus, tenant, att.code)
+            if (rec.isErr()) throw new Error(rec.error)
+            if (rec.value === null) {
+              throw new ConnectError(
+                `attachment not found: file:${att.code}`,
+                Code.InvalidArgument,
+              )
             }
+            name = rec.value.name
+            mime = rec.value.mime
+            size = rec.value.size
           }
-          await Parts.insert(deps.db, insert.value, 'file', seq++, {
+          if ((name ?? '') === '' || (mime ?? '') === '' || (size ?? 0) <= 0) {
+            throw new ConnectError(
+              `attachment file:${att.code} has incomplete metadata ` +
+                `(name=${JSON.stringify(name)} mime=${JSON.stringify(mime)} size=${size})`,
+              Code.FailedPrecondition,
+            )
+          }
+          await Parts.insert(deps.db, tenant, insert.value, 'file', seq++, {
             code: att.code,
             name,
             mime,
@@ -424,13 +481,13 @@ export function buildConnectRoutes(
           })
         }
         if (prompt !== '') {
-          await Parts.insert(deps.db, insert.value, 'text', seq++, {
+          await Parts.insert(deps.db, tenant, insert.value, 'text', seq++, {
             text: prompt,
           })
         }
-        await Sessions.setTip(deps.db, id, insert.value)
+        await Sessions.setTip(deps.db, tenant, id, insert.value)
         fireAndForget(
-          appendSessionId(deps.bus, id, insert.value),
+          appendSessionId(deps.bus, tenant, id, insert.value),
           'appendSessionIds',
         )
         // Mirror the newest-message fact immediately so the chat-list preview
@@ -444,10 +501,11 @@ export function buildConnectRoutes(
               : ''
         projectMessageFact(
           deps.bus,
+          tenant,
           id,
           factFromPersist(new Date().toISOString(), 'user', previewText),
         )
-        await new AbcAgent(deps.bus).publishMailbox(id, 'user_prompt', {
+        await new AbcAgent(deps.bus).publishMailbox(tenant, id, 'user_prompt', {
           text: prompt,
           attachments: attachments ?? [],
         })
@@ -457,17 +515,36 @@ export function buildConnectRoutes(
           eid: '',
         }
       },
-      async *watchSession(req) {
-        const { id } = req
+      async *watchSession(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        const { id, since } = req
         const agent = new AbcAgent(deps.bus)
         // Single ordered subscription: retained history from the live turn's
         // start (or live-from-now when idle), then live events — no separate
         // replay + subscribe handover, no polling.
-        const activeRun = await readActiveRun(deps.bus, id)
+        const activeRun = await readActiveRun(deps.bus, tenant, id)
+        // Incremental replay anchor: `since` is a message id the client already
+        // has. Replay from that message's timestamp so turns that completed
+        // while the client was offline are delivered. If the anchor is missing
+        // (withdrawn) fall back to live-from-now — the client's ListMessages
+        // resync handles the chain.
+        let startTimeMs: number | undefined =
+          activeRun !== null ? activeRun.startedAtMs : undefined
+        if (since !== undefined && since !== '') {
+          const anchor = await Messages.get(deps.db, tenant, since)
+          if (anchor.isOk() && anchor.value !== null) {
+            const t = Date.parse(anchor.value.created_at ?? '')
+            if (!Number.isNaN(t)) {
+              startTimeMs =
+                startTimeMs === undefined ? t : Math.min(startTimeMs, t)
+            }
+          }
+        }
         const dedup = new EidDedup()
         for await (const raw of agent.streamEvents(
+          tenant,
           id,
-          activeRun !== null ? { startTimeMs: activeRun.startedAtMs } : undefined,
+          startTimeMs !== undefined ? { startTimeMs } : undefined,
         )) {
           // Only the live run's events (a prior turn's terminal marker may fall
           // inside the same time window); never resurface finished/revoked runs.
@@ -492,12 +569,13 @@ export function buildConnectRoutes(
        * nudged and refetch the affected session from the DB + KV, so a missed
        * nudge only delays that session's row until the next event.
        */
-      async *watchSessions() {
+      async *watchSessions(_req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         // Build one Session snapshot (facts + row) for a name; null if gone.
         const snapshotOf = async (name: string) => {
-          const r = await Sessions.get(deps.db, name)
+          const r = await Sessions.get(deps.db, tenant, name)
           if (r.isErr() || r.value === null) return null
-          const facts = await readMessageFacts(deps.bus, [name])
+          const facts = await readMessageFacts(deps.bus, tenant, [name])
           return sessionToMsg(r.value, facts.get(name))
         }
 
@@ -521,7 +599,7 @@ export function buildConnectRoutes(
         // observe is queued and flushed after the snapshot.
         // 1) fact changes (message landed / preview advanced).
         const factWatch = await deps.bus
-          .kvWatch(BUCKET_SESSION_STATE, '>')
+          .kvWatch(BUCKET_SESSION_STATE, `t.${tenant}.>`)
           .catch(() => null)
         const factTask = (async () => {
           if (factWatch === null) return
@@ -542,7 +620,7 @@ export function buildConnectRoutes(
 
         // 2) structural lifecycle changes.
         const lcSub = await deps.bus
-          .subscribe('abc.session.lifecycle.>')
+          .subscribe(`abc.${tenant}.session.lifecycle.>`)
           .catch(() => null)
         const lcTask = (async () => {
           if (lcSub === null) return
@@ -570,7 +648,7 @@ export function buildConnectRoutes(
 
         // 3) settings-change nudges (setModel / updateSettings).
         const chSub = await deps.bus
-          .subscribe('abc.session.changed')
+          .subscribe(`abc.${tenant}.session.changed`)
           .catch(() => null)
         const chTask = (async () => {
           if (chSub === null) return
@@ -584,10 +662,11 @@ export function buildConnectRoutes(
 
         try {
           // Initial full snapshot (the client replaces its whole list).
-          const all = await Sessions.list(deps.db)
+          const all = await Sessions.list(deps.db, tenant)
           if (all.isErr()) throw new Error(all.error)
           const facts = await readMessageFacts(
             deps.bus,
+            tenant,
             all.value.map(s => s.name),
           )
           yield create(WatchSessionsResponseSchema, {
@@ -614,23 +693,25 @@ export function buildConnectRoutes(
         }
       },
 
-      async fork(req) {
+      async fork(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { id, name, messageId, preset } = req
-        const parent = await Sessions.get(deps.db, id)
+        const parent = await Sessions.get(deps.db, tenant, id)
         if (parent.isErr()) throw new Error(parent.error)
         if (parent.value === null) throw new Error('session not found')
         const p = parent.value
-        const exists = await Sessions.exists(deps.db, name)
+        const exists = await Sessions.exists(deps.db, tenant, name)
         if (exists.isErr()) throw new Error(exists.error)
         if (exists.value) throw new Error('Session already exists')
         let forkTip: string | null = p.tip_id
         if (messageId !== undefined && messageId !== '') {
-          const target = await Messages.get(deps.db, messageId)
+          const target = await Messages.get(deps.db, tenant, messageId)
           if (target.isErr()) throw new Error(target.error)
           if (target.value === null) throw new Error('fork message not found')
           if (p.tip_id !== null && p.tip_id !== '') {
             const inChain = await Messages.isInChain(
               deps.db,
+              tenant,
               p.tip_id,
               messageId,
             )
@@ -640,7 +721,7 @@ export function buildConnectRoutes(
           }
           forkTip = messageId
         }
-        const created = await Sessions.create(deps.db, {
+        const created = await Sessions.create(deps.db, tenant, {
           name,
           model: p.model,
           preset: preset ?? (p.preset !== '' ? p.preset : DEFAULT_PRESET),
@@ -650,20 +731,24 @@ export function buildConnectRoutes(
           tipId: forkTip,
         })
         if (created.isErr()) throw new Error(created.error)
-        publishLifecycle(deps.bus, 'forked', { session_name: name, parent: id })
+        publishLifecycle(deps.bus, tenant, 'forked', {
+          session_name: name,
+          parent: id,
+        })
         return { session: sessionToMsg({ ...p, name }) }
       },
-      async rename(req) {
+      async rename(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { id, name } = req
         if (name === id) return { session: sessionToMsg({ name }) }
-        const parent = await Sessions.get(deps.db, id)
+        const parent = await Sessions.get(deps.db, tenant, id)
         if (parent.isErr()) throw new Error(parent.error)
         if (parent.value === null) throw new Error('session not found')
-        const exists = await Sessions.exists(deps.db, name)
+        const exists = await Sessions.exists(deps.db, tenant, name)
         if (exists.isErr()) throw new Error(exists.error)
         if (exists.value) throw new Error('Session already exists')
         const p = parent.value
-        const created = await Sessions.create(deps.db, {
+        const created = await Sessions.create(deps.db, tenant, {
           name,
           model: p.model,
           preset: p.preset !== '' ? p.preset : DEFAULT_PRESET,
@@ -673,20 +758,21 @@ export function buildConnectRoutes(
           tipId: p.tip_id,
         })
         if (created.isErr()) throw new Error(created.error)
-        const removed = await Sessions.delete(deps.db, id)
+        const removed = await Sessions.delete(deps.db, tenant, id)
         if (removed.isErr()) {
-          void Sessions.delete(deps.db, name)
+          void Sessions.delete(deps.db, tenant, name)
           throw new Error(removed.error)
         }
-        publishLifecycle(deps.bus, 'renamed', { from: id, to: name })
+        publishLifecycle(deps.bus, tenant, 'renamed', { from: id, to: name })
         return { session: sessionToMsg({ ...p, name }) }
       },
-      async setModel(req) {
+      async setModel(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { id, model, variant } = req
-        const r = await Sessions.setModel(deps.db, id, model, variant)
+        const r = await Sessions.setModel(deps.db, tenant, id, model, variant)
         if (r.isErr()) throw new Error(r.error)
-        publishSessionChanged(deps.bus, id)
-        const s = await Sessions.get(deps.db, id)
+        publishSessionChanged(deps.bus, tenant, id)
+        const s = await Sessions.get(deps.db, tenant, id)
         return {
           session:
             s.isOk() && s.value
@@ -694,9 +780,10 @@ export function buildConnectRoutes(
               : sessionToMsg({ name: id }),
         }
       },
-      async undo(req) {
+      async undo(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { id, messageId } = req
-        const session = await Sessions.get(deps.db, id)
+        const session = await Sessions.get(deps.db, tenant, id)
         if (session.isErr()) throw new Error(session.error)
         const s = session.value
         if (s === null) throw new Error('session not found')
@@ -704,29 +791,40 @@ export function buildConnectRoutes(
         if (tip === null || tip === '')
           return { session: s ? sessionToMsg(s) : sessionToMsg({ name: id }) }
         const targetId = messageId !== '' ? messageId : tip
-        const target = await Messages.get(deps.db, targetId)
+        const target = await Messages.get(deps.db, tenant, targetId)
         if (target.isErr()) throw new Error(target.error)
         if (target.value === null) return { session: sessionToMsg(s) }
-        const inChain = await Messages.isInChain(deps.db, tip, targetId)
+        const inChain = await Messages.isInChain(deps.db, tenant, tip, targetId)
         if (inChain.isErr()) throw new Error(inChain.error)
         if (!inChain.value) return { session: sessionToMsg(s) }
         // Abort any in-flight turn and invalidate its active-run marker BEFORE
         // moving the tip: a running turn must not keep emitting deltas (or a
         // late turn-complete) for content we are withdrawing.
         interruptRun(id)
-        clearActiveRun(deps.bus, id)
-        await Sessions.setTip(deps.db, id, target.value.prev_id)
-        fireAndForget(deleteSessionIds(deps.bus, id), 'deleteSessionIds')
+        clearActiveRun(deps.bus, tenant, id)
+        await Sessions.setTip(deps.db, tenant, id, target.value.prev_id)
+        // AWAIT the context-cache invalidation: it must be complete before this
+        // RPC returns, otherwise a prompt issued right after (retry/edit →
+        // withdraw + resend) could re-read the STALE id list and feed the
+        // withdrawn messages back to the model.
+        await deleteSessionIds(deps.bus, tenant, id)
+        // Repair the session-list projection immediately so the preview/time
+        // reflect the new tip (not the withdrawn message). Also awaited for the
+        // same ordering guarantee. `message_seq` is preserved (a withdraw is not
+        // a new message).
+        await refreshMessageFactFromTip(deps, tenant, id)
         return { session: sessionToMsg(s) }
       },
-      async state(req) {
+      async state(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const id = req.id
-        const running = await isSessionRunning(deps.bus, id)
+        const running = await isSessionRunning(deps.bus, tenant, id)
         return { state: { status: running ? 'busy' : 'idle' } }
       },
-      async mailbox(req) {
+      async mailbox(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const id = req.id
-        const r = await Mailbox.list(deps.db, id)
+        const r = await Mailbox.list(deps.db, tenant, id)
         if (r.isErr()) throw new Error(r.error)
         return {
           ok: true,
@@ -743,7 +841,8 @@ export function buildConnectRoutes(
           })),
         }
       },
-      async updateSettings(req) {
+      async updateSettings(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { id, ...patch } = req
         // max_turns is optional: omitted = inherit (preset/default); an
         // explicit value must be > 0.
@@ -753,10 +852,10 @@ export function buildConnectRoutes(
             Code.InvalidArgument,
           )
         }
-        const r = await Sessions.updateSettings(deps.db, id, patch)
+        const r = await Sessions.updateSettings(deps.db, tenant, id, patch)
         if (r.isErr()) throw new Error(r.error)
-        publishSessionChanged(deps.bus, id)
-        const s = await Sessions.get(deps.db, id)
+        publishSessionChanged(deps.bus, tenant, id)
+        const s = await Sessions.get(deps.db, tenant, id)
         return {
           session:
             s.isOk() && s.value
@@ -764,48 +863,85 @@ export function buildConnectRoutes(
               : sessionToMsg({ name: id }),
         }
       },
-      async interrupt(req) {
+      async interrupt(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const id = req.id
         interruptRun(id)
         void deps.bus
-          .publish(mailboxSubject(id), { type: 'interrupt', session_name: id })
+          .publish(mailboxSubject(tenant, id), { type: 'interrupt', session_name: id })
           .catch(() => undefined)
         return { ok: true, interrupted: true }
       },
-      async compact(req) {
+      async compact(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const id = req.id
-        const r = await compactSession(deps, id)
+        const r = await compactSession(deps, tenant, id)
         if (r.isErr()) throw new Error(r.error)
         return { ok: r.value }
       },
-      async listProviders() {
-        const r = await Providers.list(deps.db)
+      async listProviders(_req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        const r = await Providers.list(deps.db, tenant)
         if (r.isErr()) throw new Error(r.error)
         return { providers: r.value.map(providerToMsg) }
       },
-      async listProvidersCatalog() {
+      async listProvidersCatalog(_req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         return { providers: {} }
       },
-      async registerProvider(req) {
+      async registerProvider(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const p = req.provider
         if (!p) throw new Error('provider required')
-        // context_limit is REQUIRED for text models (drives compaction
-        // budgets); it is never inferred from an external catalog. Generation
-        // models (image/video/speech) have no context window and omit it.
-        // capability defaults to 'text'; unknown values are rejected.
-        const models = []
+        const apiType = p.apiType
+        const gateway = isGatewayApiType(apiType)
+        const validType = validateApiType(apiType)
+        if (validType.isErr()) {
+          throw new ConnectError(validType.error, Code.InvalidArgument)
+        }
+        // The gateway is a SUPERSET (text + multimodal) and is registered AT
+        // MOST ONCE. Text providers carry only text models. A model's
+        // capability is implied by the tool config knob that references it,
+        // not stored here.
+        if (gateway) {
+          // The gateway is a SINGLETON with the fixed id `gateway`, so every
+          // multimodal model ref is uniformly `gateway/<model-id>`.
+          if (p.providerId !== GATEWAY_PROVIDER_ID) {
+            throw new ConnectError(
+              `the '${GATEWAY_API_TYPE}' provider id must be '${GATEWAY_PROVIDER_ID}'`,
+              Code.InvalidArgument,
+            )
+          }
+          const existing = await Providers.list(deps.db, tenant)
+          if (existing.isErr()) throw new Error(existing.error)
+          const other = existing.value.find(
+            r =>
+              isGatewayApiType(r.api_type) &&
+              r.provider_id !== p.providerId,
+          )
+          if (other !== undefined) {
+            throw new ConnectError(
+              `a '${GATEWAY_API_TYPE}' gateway is already registered ('${other.provider_id}')`,
+              Code.AlreadyExists,
+            )
+          }
+        }
+        const models: {
+          id: string
+          name: string
+          context_limit: number
+          model_type: string
+        }[] = []
         for (const m of p.models ?? []) {
           if (m.id === '') {
             throw new ConnectError('model id is required', Code.InvalidArgument)
           }
-          const cap = parseCapability(m.capability)
-          if (cap.isErr()) {
-            throw new ConnectError(cap.error, Code.InvalidArgument)
-          }
-          const capability = cap.value
-          if (capability === 'text' && m.contextLimit <= 0n) {
+          // A text provider's models are all text ⇒ context_limit required. The
+          // gateway is a superset: context_limit > 0 marks its text models,
+          // 0 marks its multimodal models (used by tools).
+          if (!gateway && m.contextLimit <= 0n) {
             throw new ConnectError(
-              `model '${m.id}': context_limit is required and must be > 0 for text models`,
+              `model '${m.id}': context_limit is required and must be > 0`,
               Code.InvalidArgument,
             )
           }
@@ -813,12 +949,14 @@ export function buildConnectRoutes(
             id: m.id,
             name: m.name !== '' ? m.name : m.id,
             context_limit: Number(m.contextLimit),
-            capability,
+            // Display-only kind (text|image|video|speech|transcription|…);
+            // empty for a plain text provider.
+            model_type: m.modelType ?? '',
           })
         }
-        const r = await Providers.upsert(deps.db, {
+        const r = await Providers.upsert(deps.db, tenant, {
           providerId: p.providerId,
-          apiType: p.apiType,
+          apiType,
           baseUrl: p.baseUrl,
           apiKey: p.apiKey ?? '',
           headers: p.headers ?? {},
@@ -827,13 +965,40 @@ export function buildConnectRoutes(
         if (r.isErr()) throw new Error(r.error)
         return { ok: true }
       },
-      async deleteProvider(req) {
+      async discoverGatewayModels(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        // Ask the gateway's /config for its models and classify by modelType.
+        // The gateway is the only multimodal provider, so a non-gateway type
+        // is rejected here.
+        const creds = {
+          providerId: req.providerId !== '' ? req.providerId : GATEWAY_PROVIDER_ID,
+          apiType: req.apiType,
+          baseUrl: req.baseUrl,
+          apiKey: req.apiKey ?? '',
+          headers: req.headers ?? {},
+        }
+        const r = await discoverGatewayModels(creds)
+        if (r.isErr()) return { ok: false, error: r.error, models: [] }
+        return {
+          ok: true,
+          error: '',
+          models: r.value.map(m => ({
+            id: m.id,
+            name: m.name,
+            contextLimit: BigInt(m.contextLimit),
+            modelType: m.modelType,
+          })),
+        }
+      },
+      async deleteProvider(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const id = req.providerId
-        const r = await Providers.delete(deps.db, id)
+        const r = await Providers.delete(deps.db, tenant, id)
         if (r.isErr()) throw new Error(r.error)
         return { ok: true }
       },
-      async testProvider(req) {
+      async testProvider(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const r = req
         // ONLY a real (smallest-possible) generation proves a model is usable.
         // No /models fallback. An empty model is an error (nothing to test).
@@ -884,7 +1049,8 @@ export function buildConnectRoutes(
           return { ok: false, result: `provider test failed: ${String(e)}` }
         }
       },
-      async listModels(req) {
+      async listModels(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const pid = req.providerId
         // provider_id is REQUIRED: a global (all-providers) model list is
         // rejected outright — it invites duplicate model ids across providers.
@@ -894,19 +1060,17 @@ export function buildConnectRoutes(
             Code.InvalidArgument,
           )
         }
-        const r = await Providers.list(deps.db)
+        const r = await Providers.list(deps.db, tenant)
         if (r.isErr()) throw new Error(r.error)
         const catalog = await getModelsDev(deps.bus)
         const provider = r.value.find(p => p?.provider_id === pid)
         const apiType = provider?.api_type ?? ''
         const parsed = provider === undefined ? [] : parseProviderModels(provider.models)
-        // Session model listing surfaces TEXT models only: generation models
-        // (image/video/speech) are picked by tools from the provider registry,
-        // never attached to a session. Variants are resolved STRICTLY by
-        // provider_id/model_id against the models.dev catalog; models absent
-        // from the catalog have no variants.
+        // Session model listing surfaces TEXT models only. For a text provider
+        // every model is text; for the gateway (superset) only models with a
+        // positive context_limit are text (context_limit 0 = multimodal).
         const models = parsed
-          .filter(m => m.capability === 'text')
+          .filter(m => m.contextLimit > 0n)
           .map(m => {
             const meta = catalogModel(catalog, pid, m.id)
             const variants =
@@ -922,11 +1086,12 @@ export function buildConnectRoutes(
           })
         return { models }
       },
-      async listPresets(req) {
-        const r = await Presets.list(deps.bus)
+      async listPresets(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        const r = await Presets.list(deps.bus, tenant)
         if (r.isErr()) throw new Error(r.error)
         // Locale chain: request → config KV → "en".
-        const configLocale = (await Config.get(deps.bus, 'locale')).unwrapOr(
+        const configLocale = (await Config.get(deps.bus, tenant, 'locale')).unwrapOr(
           null,
         )
         const locale = resolveLocale(
@@ -936,10 +1101,11 @@ export function buildConnectRoutes(
         )
         return { presets: r.value.map(p => presetToMsg(p, locale)) }
       },
-      async upsertPreset(req) {
+      async upsertPreset(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const p = req.preset
         if (!p) throw new Error('preset required')
-        const r = await Presets.upsert(deps.bus, {
+        const r = await Presets.upsert(deps.bus, tenant, {
           id: p.id,
           systemPrompt: p.systemPrompt ?? '',
           systemPromptI18n: p.systemPromptI18n ?? '{}',
@@ -949,15 +1115,17 @@ export function buildConnectRoutes(
         if (r.isErr()) throw new Error(r.error)
         return { ok: true }
       },
-      async deletePreset(req) {
+      async deletePreset(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const id = req.id
-        const r = await Presets.delete(deps.bus, id)
+        const r = await Presets.delete(deps.bus, tenant, id)
         if (r.isErr()) throw new Error(r.error)
         return { ok: true }
       },
-      async previewPreset(req) {
+      async previewPreset(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const id = req.id
-        const r = await Presets.get(deps.bus, id)
+        const r = await Presets.get(deps.bus, tenant, id)
         if (r.isErr()) throw new Error(r.error)
         if (r.value === null) throw new Error('preset not found')
         const i18n = r.value.system_prompt_i18n
@@ -965,23 +1133,26 @@ export function buildConnectRoutes(
           i18n !== undefined && i18n !== '' && i18n !== '{}'
             ? i18n
             : r.value.system_prompt
-        const rendered = await renderTemplate(template, deps.bus)
+        const rendered = await renderTemplate(template, deps.bus, tenant)
         return { template, rendered }
       },
-      async getConfig(req) {
+      async getConfig(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const key = req.key
-        const r = await Config.get(deps.bus, key)
+        const r = await Config.get(deps.bus, tenant, key)
         return { key, value: r.isOk() && r.value ? r.value : '' }
       },
-      async setConfig(req) {
+      async setConfig(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { key, value } = req
-        const r = await Config.set(deps.bus, key, value)
+        const r = await Config.set(deps.bus, tenant, key, value)
         if (r.isErr()) throw new Error(r.error)
         return { ok: true }
       },
-      async listTools(req) {
+      async listTools(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const tools = await discoverTools(deps.bus)
-        const configLocale = (await Config.get(deps.bus, 'locale')).unwrapOr(
+        const configLocale = (await Config.get(deps.bus, tenant, 'locale')).unwrapOr(
           null,
         )
         const locale = resolveLocale(
@@ -1012,8 +1183,9 @@ export function buildConnectRoutes(
           })),
         })
       },
-      async getToolConfig() {
-        const value = await toolConfigMap(deps.bus)
+      async getToolConfig(_req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        const value = await toolConfigMap(deps.bus, tenant)
         // Response.config is a ToolConfig whose `values` is a
         // map<string, google.protobuf.Value>: each tool maps to a single
         // Value that is a Struct of its declared knobs. Wrap the whole per-tool
@@ -1024,28 +1196,32 @@ export function buildConnectRoutes(
         }
         return { config: { values } }
       },
-      async setToolConfig(req) {
+      async setToolConfig(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         // Request.config is a google.protobuf.Struct — already a plain JSON
         // object on the wire, so serialize it directly.
         const r = await Config.set(
           deps.bus,
+          tenant,
           'tool_config',
           JSON.stringify(req.config ?? {}),
         )
         if (r.isErr()) throw new Error(r.error)
         return { ok: true }
       },
-      async setExtensionConfig(req) {
+      async setExtensionConfig(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { extId, name, value } = req
         const agent = new AbcAgent(deps.bus)
         await agent.discover(500)
         // Request.value is a google.protobuf.Value message; unwrap it with the
         // canonical toJson() mapping into the raw value the config store needs.
         const v = valueToRaw(value)
-        await agent.setConfig(extId, name, v)
+        await agent.setConfig(tenant, extId, name, v)
         return { ok: true }
       },
-      async uploadFile(req) {
+      async uploadFile(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const file = req.file
         const data = req.data
         if (data === undefined) throw new Error('data required')
@@ -1055,6 +1231,7 @@ export function buildConnectRoutes(
         const bytes = new Uint8Array(Buffer.from(data, 'base64'))
         const record = await storeBytes(
           deps,
+          tenant,
           bytes,
           file?.name ?? 'artifact',
           file?.mime ?? 'application/octet-stream',
@@ -1062,34 +1239,57 @@ export function buildConnectRoutes(
         )
         return { ok: true, code: record.code }
       },
-      async ingestFile(req) {
+      async ingestFile(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const { data: raw, name, mime } = req
         if (raw === undefined) throw new Error('data required')
         const bytes = new Uint8Array(raw)
+        if (bytes.length === 0) {
+          throw new ConnectError('file data is empty', Code.InvalidArgument)
+        }
+        // A stored blob MUST carry a usable name + a non-empty mime so history
+        // can render it (image thumbnail / audio player). A concrete
+        // `application/octet-stream` is allowed (unknown extension); an EMPTY
+        // name/mime is not — reject the upload rather than store an
+        // unrenderable record.
+        const cleanName = (name ?? '').trim()
+        const cleanMime = (mime ?? '').trim()
+        if (cleanName === '') {
+          throw new ConnectError('file name is required', Code.InvalidArgument)
+        }
+        if (cleanMime === '') {
+          throw new ConnectError(
+            'file mime is required',
+            Code.InvalidArgument,
+          )
+        }
         const record = await storeBytes(
           deps,
+          tenant,
           bytes,
-          name ?? 'artifact',
-          mime ?? 'application/octet-stream',
+          cleanName,
+          cleanMime,
           '',
         )
         return create(IngestFileResponseSchema, { ok: true, code: record.code })
       },
-      async getFile(req) {
+      async getFile(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const code = req.code
-        const row = await fileByCode(deps.bus, code)
+        const row = await fileByCode(deps.bus, tenant, code)
         if (row.isErr()) throw new Error(row.error)
         if (row.value === null) throw new Error('file not found')
-        const got = await deps.files.get(code)
+        const got = await deps.files.get(tenant, code)
         return create(GetFileResponseSchema, {
           data: new Uint8Array(got.data),
           name: row.value.name ?? '',
           mime: row.value.mime ?? 'application/octet-stream',
         })
       },
-      async getFileMeta(req) {
+      async getFileMeta(req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
         const code = req.code
-        const row = await fileByCode(deps.bus, code)
+        const row = await fileByCode(deps.bus, tenant, code)
         if (row.isErr()) throw new Error(row.error)
         if (row.value === null) throw new Error('file not found')
         return {
@@ -1098,8 +1298,9 @@ export function buildConnectRoutes(
           size: row.value.size ?? 0,
         }
       },
-      async getAgentConfig() {
-        const r = await Providers.list(deps.db)
+      async getAgentConfig(_req, ctx: HandlerContext) {
+        const tenant = tenantOf(ctx)
+        const r = await Providers.list(deps.db, tenant)
         if (r.isErr()) throw new Error(r.error)
         const providers: Record<string, string> = {}
         for (const p of r.value) {
@@ -1119,6 +1320,57 @@ export function buildConnectRoutes(
   }
 }
 
+/**
+ * Rewrite the session-list message-fact (preview/time/role) from the CURRENT
+ * tip, preserving `message_seq`. Called after an undo moves the tip backwards,
+ * so the list reflects the withdrawn chain immediately. `last_message_*` are
+ * cleared when the session has no tip left.
+ */
+async function refreshMessageFactFromTip(
+  deps: AgentDeps,
+  tenant: string,
+  sid: string,
+): Promise<void> {
+  const tipRes = await Sessions.tip(deps.db, tenant, sid)
+  const tipId = tipRes.isErr() ? null : tipRes.value
+  if (tipId === null || tipId === '') {
+    await writeMessageFact(
+      deps.bus,
+      tenant,
+      sid,
+      factFromPersist('', '', ''),
+    )
+    return
+  }
+  const target = await Messages.get(deps.db, tenant, tipId)
+  if (target.isErr() || target.value === null) {
+    await writeMessageFact(deps.bus, tenant, sid, factFromPersist('', '', ''))
+    return
+  }
+  const partsRes = await Parts.listByMessages(deps.db, tenant, [tipId])
+  let text = ''
+  if (partsRes.isOk()) {
+    for (const p of partsRes.value) {
+      if (p.type !== 'text') continue
+      const d = parse(TextPartDataSchema, p.data)
+      if (d.isOk()) {
+        text += d.value.text
+        break
+      }
+    }
+  }
+  await writeMessageFact(
+    deps.bus,
+    tenant,
+    sid,
+    factFromPersist(
+      target.value.created_at ?? '',
+      target.value.role ?? '',
+      text,
+    ),
+  )
+}
+
 import {
   upsertFile,
   fileBySha,
@@ -1134,13 +1386,14 @@ function getSha(data: Uint8Array): string {
 /** Dedup + store a single file. Shared by ingest/upload in the Connect surface. */
 async function storeBytes(
   deps: AgentDeps,
+  tenant: string,
   data: Uint8Array,
   name: string,
   mime: string,
   uploader: string,
 ): Promise<FileRecord> {
   const sha = getSha(data)
-  const existing = await fileBySha(deps.bus, sha)
+  const existing = await fileBySha(deps.bus, tenant, sha)
   if (existing.isOk() && existing.value !== null) {
     return existing.value
   }
@@ -1154,8 +1407,8 @@ async function storeBytes(
     uploader_session: uploader,
     created_at: new Date().toISOString(),
   }
-  await deps.files.put(code, record, data)
-  await upsertFile(deps.bus, record)
+  await deps.files.put(tenant, code, record, data)
+  await upsertFile(deps.bus, tenant, record)
   return record
 }
 

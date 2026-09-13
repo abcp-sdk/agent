@@ -1,5 +1,5 @@
 import type { SessionRow } from '@easylab-agent/schema'
-import { sql as dsql, eq } from 'drizzle-orm'
+import { and, eq, sql as dsql } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import { DEFAULT_PRESET } from './config.js'
 import type { Db } from './db-client.js'
@@ -41,25 +41,30 @@ export interface SessionPatch {
 }
 
 export const Sessions = {
-  list(db: Db): ResultAsync<SessionRow[], string> {
+  list(db: Db, tenant: string): ResultAsync<SessionRow[], string> {
     return q(
       () =>
         db
           .select()
           .from(sessions)
+          .where(eq(sessions.tenant, tenant))
           .orderBy(dsql`${sessions.updatedAt} DESC`)
           .then(rows => rows.map(toRow)),
       'list sessions',
     )
   },
 
-  get(db: Db, name: string): ResultAsync<SessionRow | null, string> {
+  get(
+    db: Db,
+    tenant: string,
+    name: string,
+  ): ResultAsync<SessionRow | null, string> {
     return q(
       () =>
         db
           .select()
           .from(sessions)
-          .where(eq(sessions.name, name))
+          .where(and(eq(sessions.tenant, tenant), eq(sessions.name, name)))
           .limit(1)
           .then(rows => {
             const r = rows[0]
@@ -71,7 +76,9 @@ export const Sessions = {
 
   create(
     db: Db,
-    input: Pick<SessionRow, 'name'> & {
+    tenant: string,
+    input: {
+      name: string
       // `| undefined`: explicit-undefined keys from zod-inferred bodies are
       // accepted and fall through to the defaults below.
       model?: string | undefined
@@ -86,6 +93,7 @@ export const Sessions = {
     return q(
       () =>
         db.insert(sessions).values({
+          tenant,
           name: input.name,
           model: input.model ?? '',
           variant: input.variant ?? '',
@@ -101,18 +109,25 @@ export const Sessions = {
     ).map(() => input.name)
   },
 
-  delete(db: Db, name: string): ResultAsync<void, string> {
+  delete(db: Db, tenant: string, name: string): ResultAsync<void, string> {
     return q(async () => {
       // COW-safe delete. Messages are append-only and session-agnostic; a
       // session only points at its chain head via `tip_id`. Delete removes the
       // private mailbox queue and the session row, never message history.
-      await db.delete(mailbox).where(eq(mailbox.sessionName, name))
-      await db.delete(sessions).where(eq(sessions.name, name))
+      await db
+        .delete(mailbox)
+        .where(
+          and(eq(mailbox.tenant, tenant), eq(mailbox.sessionName, name)),
+        )
+      await db
+        .delete(sessions)
+        .where(and(eq(sessions.tenant, tenant), eq(sessions.name, name)))
     }, 'delete session')
   },
 
   setModel(
     db: Db,
+    tenant: string,
     name: string,
     model: string,
     variant?: string | undefined,
@@ -126,13 +141,14 @@ export const Sessions = {
               ? { model, updatedAt: nowStr() }
               : { model, variant, updatedAt: nowStr() },
           )
-          .where(eq(sessions.name, name)),
+          .where(and(eq(sessions.tenant, tenant), eq(sessions.name, name))),
       'set session model',
     ).map(() => undefined)
   },
 
   updateSettings(
     db: Db,
+    tenant: string,
     name: string,
     patch: SessionPatch,
   ): ResultAsync<void, string> {
@@ -141,18 +157,22 @@ export const Sessions = {
         db
           .update(sessions)
           .set(patchToDrizzle(patch, nowStr()))
-          .where(eq(sessions.name, name)),
+          .where(and(eq(sessions.tenant, tenant), eq(sessions.name, name))),
       'update session settings',
     ).map(() => undefined)
   },
 
-  tip(db: Db, name: string): ResultAsync<string | null, string> {
+  tip(
+    db: Db,
+    tenant: string,
+    name: string,
+  ): ResultAsync<string | null, string> {
     return q(
       () =>
         db
           .select({ tipId: sessions.tipId })
           .from(sessions)
-          .where(eq(sessions.name, name))
+          .where(and(eq(sessions.tenant, tenant), eq(sessions.name, name)))
           .limit(1)
           .then(rows => rows[0]?.tipId ?? null),
       'get session tip',
@@ -161,6 +181,7 @@ export const Sessions = {
 
   setTip(
     db: Db,
+    tenant: string,
     name: string,
     tipId: string | null,
   ): ResultAsync<void, string> {
@@ -169,13 +190,14 @@ export const Sessions = {
         db
           .update(sessions)
           .set({ tipId, updatedAt: nowStr() })
-          .where(eq(sessions.name, name)),
+          .where(and(eq(sessions.tenant, tenant), eq(sessions.name, name))),
       'set session tip',
     ).map(() => undefined)
   },
 
   addUsage(
     db: Db,
+    tenant: string,
     name: string,
     input: number,
     output: number,
@@ -189,7 +211,7 @@ export const Sessions = {
            last_input_tokens = $1,
            last_output_tokens = $2,
            last_used_at = $4
-         WHERE name = $5`
+         WHERE tenant = $5 AND name = $6`
         : `UPDATE sessions SET
            input_tokens = input_tokens + ?,
            output_tokens = output_tokens + ?,
@@ -197,8 +219,15 @@ export const Sessions = {
            last_input_tokens = ?,
            last_output_tokens = ?,
            last_used_at = ?
-         WHERE name = ?`
-    const pgParams: unknown[] = [input, output, input + output, nowStr(), name]
+         WHERE tenant = ? AND name = ?`
+    const pgParams: unknown[] = [
+      input,
+      output,
+      input + output,
+      nowStr(),
+      tenant,
+      name,
+    ]
     const sqliteParams: unknown[] = [
       input,
       output,
@@ -206,6 +235,7 @@ export const Sessions = {
       input,
       output,
       nowStr(),
+      tenant,
       name,
     ]
     return q(
@@ -214,18 +244,48 @@ export const Sessions = {
     ).map(() => undefined)
   },
 
-  exists(db: Db, name: string): ResultAsync<boolean, string> {
+  exists(
+    db: Db,
+    tenant: string,
+    name: string,
+  ): ResultAsync<boolean, string> {
     return q(
       () =>
         db
           .select({ name: sessions.name })
           .from(sessions)
-          .where(eq(sessions.name, name))
+          .where(and(eq(sessions.tenant, tenant), eq(sessions.name, name)))
           .limit(1)
           .then(rows => rows.length > 0),
       'session exists',
     )
   },
+}
+
+/**
+ * Every tenant id present in the database (sessions ∪ providers). Used at boot
+ * to run per-tenant migrations/seeding without an external tenant registry.
+ * Always includes `fallbackTenant` so a fresh install still seeds.
+ */
+export function knownTenants(
+  db: Db,
+  fallbackTenant: string,
+): ResultAsync<string[], string> {
+  return q(
+    () =>
+      rawAll(
+        db,
+        `SELECT tenant FROM sessions UNION SELECT tenant FROM providers`,
+      ).then(rows => {
+        const set = new Set<string>([fallbackTenant])
+        for (const r of rows) {
+          const t = String(r.tenant ?? '')
+          if (t !== '') set.add(t)
+        }
+        return [...set].sort()
+      }),
+    'list tenants',
+  )
 }
 
 function patchToDrizzle(

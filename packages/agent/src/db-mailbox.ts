@@ -1,5 +1,5 @@
 import type { MailboxRow } from '@easylab-agent/schema'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import { z } from 'zod'
 import type { Db } from './db-client.js'
@@ -8,6 +8,7 @@ import { mailbox } from './db-schema.js'
 
 const DrainedMailboxRowSchema = z.object({
   id: z.string(),
+  tenant: z.string().optional(),
   session_name: z.string(),
   msg_type: z.string(),
   payload: z.string(),
@@ -30,9 +31,15 @@ const toRow = (r: typeof mailbox.$inferSelect): MailboxRow => ({
   seq: r.seq,
 })
 
+/** A drained mailbox row with the tenant it belongs to (for turn routing). */
+export interface DrainedMailbox extends MailboxRow {
+  tenant: string
+}
+
 export const Mailbox = {
   enqueue(
     db: Db,
+    tenant: string,
     sessionName: string,
     msgType: string,
     payload: unknown,
@@ -42,6 +49,7 @@ export const Mailbox = {
       () =>
         db.insert(mailbox).values({
           id,
+          tenant,
           sessionName,
           msgType,
           payload: JSON.stringify(payload ?? {}),
@@ -60,6 +68,7 @@ export const Mailbox = {
    */
   enqueueIdempotent(
     db: Db,
+    tenant: string,
     id: string,
     sessionName: string,
     msgType: string,
@@ -71,6 +80,7 @@ export const Mailbox = {
           .insert(mailbox)
           .values({
             id,
+            tenant,
             sessionName,
             msgType,
             payload: JSON.stringify(payload ?? {}),
@@ -82,65 +92,83 @@ export const Mailbox = {
     ).map(() => id)
   },
 
-  list(db: Db, sessionName: string): ResultAsync<MailboxRow[], string> {
+  list(
+    db: Db,
+    tenant: string,
+    sessionName: string,
+  ): ResultAsync<MailboxRow[], string> {
     return q(
       () =>
         db
           .select()
           .from(mailbox)
-          .where(eq(mailbox.sessionName, sessionName))
+          .where(
+            and(
+              eq(mailbox.tenant, tenant),
+              eq(mailbox.sessionName, sessionName),
+            ),
+          )
           .then(rows => rows.map(toRow)),
       'list mailbox',
     )
   },
 
-  /** Sessions that still have pending mailbox items (startup recovery). */
-  pendingSessions(db: Db): ResultAsync<string[], string> {
+  /** Sessions (with their tenant) that still have pending mailbox items
+   *  (startup recovery). */
+  pendingSessions(
+    db: Db,
+  ): ResultAsync<{ tenant: string; session_name: string }[], string> {
     return q(
       () =>
         rawAll(
           db,
-          `SELECT DISTINCT session_name FROM mailbox WHERE status = 'pending'`,
-        ).then(rows => rows.map(r => String(r.session_name))),
+          `SELECT DISTINCT tenant, session_name FROM mailbox WHERE status = 'pending'`,
+        ).then(rows =>
+          rows.map(r => ({
+            tenant: String(r.tenant ?? 'default'),
+            session_name: String(r.session_name),
+          })),
+        ),
       'pending sessions',
     )
   },
 
   /**
-   * Atomically pop the next pending item (ordered). The UPDATE-with-subquery
-   * keeps concurrent replicas from consuming the same row. On Postgres the
-   * subquery takes `FOR UPDATE SKIP LOCKED` so replicas never fight; SQLite is
-   * single-writer (WAL), so the UPDATE itself serializes the pop — SKIP LOCKED
-   * is a no-op there and is omitted.
+   * Atomically pop the next pending item (ordered) for one tenant+session.
+   * The UPDATE-with-subquery keeps concurrent replicas from consuming the
+   * same row. On Postgres the subquery takes `FOR UPDATE SKIP LOCKED` so
+   * replicas never fight; SQLite is single-writer (WAL), so the UPDATE itself
+   * serializes the pop — SKIP LOCKED is a no-op there and is omitted.
    */
   drainOne(
     db: Db,
+    tenant: string,
     sessionName: string,
-  ): ResultAsync<MailboxRow | null, string> {
+  ): ResultAsync<DrainedMailbox | null, string> {
     const now = nowStr()
-    const pgSQL = `UPDATE mailbox SET status = 'consumed', consumed_at = $2
+    const pgSQL = `UPDATE mailbox SET status = 'consumed', consumed_at = $3
        WHERE id = (
          SELECT id FROM mailbox
-         WHERE session_name = $1 AND status = 'pending'
+         WHERE tenant = $1 AND session_name = $2 AND status = 'pending'
          ORDER BY COALESCE(effective_at, created_at) ASC, COALESCE(seq, 0) ASC, created_at ASC
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
-       RETURNING id, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`
+       RETURNING id, tenant, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`
     const sqliteSQL = `UPDATE mailbox SET status = 'consumed', consumed_at = ?
        WHERE id = (
          SELECT id FROM mailbox
-         WHERE session_name = ? AND status = 'pending'
+         WHERE tenant = ? AND session_name = ? AND status = 'pending'
          ORDER BY COALESCE(effective_at, created_at) ASC, COALESCE(seq, 0) ASC, created_at ASC
          LIMIT 1
        )
-       RETURNING id, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`
+       RETURNING id, tenant, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`
     const isPg = dbBackend(db) === 'pg'
     return q(
       () =>
         (isPg
-          ? rawAll(db, pgSQL, [sessionName, now])
-          : rawAll(db, sqliteSQL, [now, sessionName])
+          ? rawAll(db, pgSQL, [tenant, sessionName, now])
+          : rawAll(db, sqliteSQL, [now, tenant, sessionName])
         ).then(res => {
           const r = res[0]
           if (r === undefined) return null
@@ -149,6 +177,7 @@ export const Mailbox = {
           const d = parsed.data
           return {
             id: d.id,
+            tenant: d.tenant ?? tenant,
             session_name: d.session_name,
             msg_type: d.msg_type,
             payload: d.payload,
@@ -157,7 +186,7 @@ export const Mailbox = {
             created_at: d.created_at,
             consumed_at: d.consumed_at ?? null,
             seq: d.seq ?? null,
-          } satisfies MailboxRow
+          } satisfies DrainedMailbox
         }),
       'drain mailbox one',
     )
@@ -165,22 +194,23 @@ export const Mailbox = {
 
   hasPendingInterrupt(
     db: Db,
+    tenant: string,
     sessionName: string,
   ): ResultAsync<boolean, string> {
     const pgSQL = `SELECT EXISTS(
          SELECT 1 FROM mailbox
-         WHERE session_name = $1 AND msg_type = 'interrupt' AND status = 'pending'
+         WHERE tenant = $1 AND session_name = $2 AND msg_type = 'interrupt' AND status = 'pending'
        ) AS ok`
     const sqliteSQL = `SELECT EXISTS(
          SELECT 1 FROM mailbox
-         WHERE session_name = ? AND msg_type = 'interrupt' AND status = 'pending'
+         WHERE tenant = ? AND session_name = ? AND msg_type = 'interrupt' AND status = 'pending'
        ) AS ok`
     const isPg = dbBackend(db) === 'pg'
     return q(
       () =>
         (isPg
-          ? rawAll(db, pgSQL, [sessionName])
-          : rawAll(db, sqliteSQL, [sessionName])
+          ? rawAll(db, pgSQL, [tenant, sessionName])
+          : rawAll(db, sqliteSQL, [tenant, sessionName])
         ).then(res => {
           const ok = res[0]?.ok
           // pg returns boolean; sqlite returns 1/0
