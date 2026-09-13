@@ -39,6 +39,15 @@ export type DbBackend = 'pg' | 'sqlite'
  */
 export const DEFAULT_PRESET = 'default'
 
+/**
+ * Tenant-scoped Config KV keys holding the DEFAULTS applied when a request
+ * omits or blanks a session's model / preset. Both are per tenant; an unset
+ * key falls back to the built-in `default` preset (and, for model, to no
+ * model at all — a session may exist without one until a turn needs it).
+ */
+export const CONFIG_DEFAULT_MODEL = 'default_model'
+export const CONFIG_DEFAULT_PRESET = 'default_preset'
+
 /** Fallback max turns when neither the session nor its preset sets a value. */
 const DEFAULT_MAX_TURNS = 25
 
@@ -94,7 +103,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     toolTimeoutMs: TOOL_TIMEOUT_MS,
     defaultMaxTurns: DEFAULT_MAX_TURNS,
     corsOrigin: or('AGENT_CORS_ORIGIN', '*'),
-    authMode: or('AGENT_AUTH_MODE', 'required') === 'none' ? 'none' : 'required',
+    authMode:
+      or('AGENT_AUTH_MODE', 'required') === 'none' ? 'none' : 'required',
     adminToken: or('AGENT_ADMIN_TOKEN', ''),
     defaultTenant: or('AGENT_DEFAULT_TENANT', 'default'),
     bootstrapTenant: or('AGENT_BOOTSTRAP_TENANT', ''),

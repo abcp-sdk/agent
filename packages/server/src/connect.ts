@@ -14,6 +14,8 @@ import {
   appendSessionId,
   BUCKET_SESSION_STATE,
   type ChainMessage,
+  CONFIG_DEFAULT_MODEL,
+  CONFIG_DEFAULT_PRESET,
   Config,
   catalogModel,
   clearActiveRun,
@@ -304,6 +306,62 @@ function presetPromptFor(p: PresetRowView, locale: string): string {
 }
 
 /**
+ * Resolve a session's effective (preset, model), applying tenant defaults and
+ * VALIDATING both. One gate for BOTH create and update so an API client can
+ * neither blank a working setting nor write an unregistered one.
+ *
+ *  - preset: requested → (update: keep current) → tenant `default_preset` →
+ *    built-in `default`. MUST exist for the tenant, else InvalidArgument.
+ *  - model: requested → (update: keep current) → tenant `default_model` → ''.
+ *    A non-empty model MUST be a resolvable `provider_id/model_id` (provider
+ *    registered, model buildable), else InvalidArgument. Empty is allowed on
+ *    create (a session may exist without a model until the first turn).
+ */
+export async function resolveSessionDefaults(
+  deps: AgentDeps,
+  tenant: string,
+  requestedPreset: string | undefined,
+  requestedModel: string | undefined,
+  current?: { preset?: string; model?: string },
+): Promise<{ preset: string; model: string }> {
+  // ---- preset ----
+  let preset = (requestedPreset ?? '').trim()
+  if (preset === '' && current?.preset !== undefined && current.preset !== '') {
+    preset = current.preset // update with no preset change: keep the current
+  }
+  if (preset === '') {
+    const cfg = await Config.get(deps.bus, tenant, CONFIG_DEFAULT_PRESET)
+    preset = (cfg.isOk() && cfg.value ? cfg.value : '').trim()
+  }
+  if (preset === '') preset = DEFAULT_PRESET
+  const presetRow = await Presets.get(deps.bus, tenant, preset)
+  if (presetRow.isErr()) throw new Error(presetRow.error)
+  if (presetRow.value === null) {
+    throw new ConnectError(`unknown preset: ${preset}`, Code.InvalidArgument)
+  }
+
+  // ---- model ----
+  let model = (requestedModel ?? '').trim()
+  if (model === '' && current?.model !== undefined && current.model !== '') {
+    model = current.model // update with no model change: keep the current
+  }
+  if (model === '') {
+    const cfg = await Config.get(deps.bus, tenant, CONFIG_DEFAULT_MODEL)
+    model = (cfg.isOk() && cfg.value ? cfg.value : '').trim()
+  }
+  if (model !== '') {
+    const resolved = await deps.llm.resolve(deps.db, tenant, model)
+    if (resolved.isErr()) {
+      throw new ConnectError(
+        `unknown or unusable model: ${model} (${resolved.error})`,
+        Code.InvalidArgument,
+      )
+    }
+  }
+  return { preset, model }
+}
+
+/**
  * Build the Connect v2 AgentService routes for the fetch handler. The RPC
  * surface (procedure paths /agent.v1.AgentService/*, all three protocols)
  * is served by @connectrpc/connect via a Web Request=>Response fetch handler
@@ -336,11 +394,17 @@ export function buildConnectRoutes(
         const exists = await Sessions.exists(deps.db, tenant, body.name)
         if (exists.isErr()) throw new Error(exists.error)
         if (exists.value) throw new Error('Session already exists')
+        const { preset, model } = await resolveSessionDefaults(
+          deps,
+          tenant,
+          body.preset,
+          body.model,
+        )
         const name = await Sessions.create(deps.db, tenant, {
           name: body.name,
-          model: body.model,
+          model,
           variant: body.variant,
-          preset: body.preset,
+          preset,
         })
         if (name.isErr()) throw new Error(name.error)
         publishLifecycle(deps.bus, tenant, 'created', {
@@ -781,6 +845,20 @@ export function buildConnectRoutes(
       async setModel(req, ctx: HandlerContext) {
         const tenant = tenantOf(ctx)
         const { id, model, variant } = req
+        if (model.trim() === '') {
+          throw new ConnectError(
+            'model is required (cannot be cleared)',
+            Code.InvalidArgument,
+          )
+        }
+        // A set model MUST be registered/resolvable.
+        const resolved = await deps.llm.resolve(deps.db, tenant, model)
+        if (resolved.isErr()) {
+          throw new ConnectError(
+            `unknown or unusable model: ${model} (${resolved.error})`,
+            Code.InvalidArgument,
+          )
+        }
         const r = await Sessions.setModel(deps.db, tenant, id, model, variant)
         if (r.isErr()) throw new Error(r.error)
         publishSessionChanged(deps.bus, tenant, id)
@@ -864,7 +942,44 @@ export function buildConnectRoutes(
             Code.InvalidArgument,
           )
         }
-        const r = await Sessions.updateSettings(deps.db, tenant, id, patch)
+        // Validate the settings an API client may not forge/blank. Empty
+        // model/preset are ignored (the update simply does not change them);
+        // non-empty values MUST be registered/resolvable.
+        const cleanPatch: {
+          model?: string
+          preset?: string
+          variant?: string
+          systemPrompt?: string
+          locale?: string
+          maxTurns?: number
+        } = {}
+        if (patch.preset !== undefined && patch.preset !== '') {
+          const p = await Presets.get(deps.bus, tenant, patch.preset)
+          if (p.isErr()) throw new Error(p.error)
+          if (p.value === null) {
+            throw new ConnectError(
+              `unknown preset: ${patch.preset}`,
+              Code.InvalidArgument,
+            )
+          }
+          cleanPatch.preset = patch.preset
+        }
+        if (patch.model !== undefined && patch.model !== '') {
+          const resolved = await deps.llm.resolve(deps.db, tenant, patch.model)
+          if (resolved.isErr()) {
+            throw new ConnectError(
+              `unknown or unusable model: ${patch.model} (${resolved.error})`,
+              Code.InvalidArgument,
+            )
+          }
+          cleanPatch.model = patch.model
+        }
+        if (patch.variant !== undefined) cleanPatch.variant = patch.variant
+        if (patch.systemPrompt !== undefined)
+          cleanPatch.systemPrompt = patch.systemPrompt
+        if (patch.locale !== undefined) cleanPatch.locale = patch.locale
+        if (patch.maxTurns !== undefined) cleanPatch.maxTurns = patch.maxTurns
+        const r = await Sessions.updateSettings(deps.db, tenant, id, cleanPatch)
         if (r.isErr()) throw new Error(r.error)
         publishSessionChanged(deps.bus, tenant, id)
         const s = await Sessions.get(deps.db, tenant, id)
