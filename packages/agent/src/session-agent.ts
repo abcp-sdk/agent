@@ -257,7 +257,10 @@ async function handleItem(
     const text = payload.isOk()
       ? (payload.value.text ?? payload.value.prompt ?? item.payload)
       : item.payload
-    if (text !== '') await persistUserPrompt(deps, tenant, sid, text)
+    const messageId = payload.isOk() ? (payload.value.message_id ?? '') : ''
+    if (text !== '') {
+      await persistUserPrompt(deps, tenant, sid, text, messageId)
+    }
     const r = await runTurnOnce(deps, tenant, sid)
     if (r !== null) {
       pushEvent(deps.bus, tenant, sid, 'error', { message: r })
@@ -937,7 +940,11 @@ async function drainAndInject(
       const text = payload.isOk()
         ? (payload.value.text ?? payload.value.prompt ?? item.payload)
         : item.payload
-      await persistUserPrompt(deps, tenant, sid, text)
+      const messageId = payload.isOk() ? (payload.value.message_id ?? '') : ''
+      // Idempotent by id: a message the HTTP Prompt route already stored is a
+      // no-op here (no duplicate row). A brand-new message is stored AND
+      // injected so the running turn can pivot to it.
+      await persistUserPrompt(deps, tenant, sid, text, messageId)
       injected.push(text)
       continue
     }
@@ -952,24 +959,29 @@ async function persistUserPrompt(
   tenant: string,
   sid: string,
   text: string,
+  messageId?: string,
 ): Promise<void> {
+  const id = messageId !== undefined && messageId !== '' ? messageId : randomUUID()
   const tip = await Sessions.tip(deps.db, tenant, sid)
   const tipId = tip.isErr() ? null : tip.value
-  const insert = await Messages.insert(deps.db, tenant, 'user', tipId)
-  if (insert.isOk()) {
-    await Parts.insert(deps.db, tenant, insert.value, 'text', 0, { text })
-    await Sessions.setTip(deps.db, tenant, sid, insert.value)
-    fireAndForget(
-      appendSessionId(deps.bus, tenant, sid, insert.value),
-      'appendSessionIds',
-    )
-    projectMessageFact(
-      deps.bus,
-      tenant,
-      sid,
-      factFromPersist(nowStr(), 'user', text),
-    )
-  }
+  // Idempotent by id: a producer that already wrote this message (HTTP Prompt
+  // route) makes this a no-op, so the same logical user message is never
+  // inserted twice even though BOTH the route and the mailbox handlers write.
+  const created = await Messages.insertWithId(deps.db, tenant, id, 'user', tipId)
+  if (created.isErr()) return
+  if (!created.value) return // already persisted by the producer
+  await Parts.insert(deps.db, tenant, id, 'text', 0, { text })
+  await Sessions.setTip(deps.db, tenant, sid, id)
+  fireAndForget(
+    appendSessionId(deps.bus, tenant, sid, id),
+    'appendSessionIds',
+  )
+  projectMessageFact(
+    deps.bus,
+    tenant,
+    sid,
+    factFromPersist(nowStr(), 'user', text),
+  )
 }
 
 /** Append a completed step to the in-memory message list for the next step. */

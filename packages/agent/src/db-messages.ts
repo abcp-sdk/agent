@@ -49,17 +49,40 @@ export const Messages = {
     prevId: string | null,
   ): ResultAsync<string, string> {
     const id = uuid()
+    return this.insertWithId(db, tenant, id, role, prevId).map(() => id)
+  },
+
+  /**
+   * Insert a message with a CLIENT-SUPPLIED id, idempotently.
+   *
+   * The id is the single logical identity of a user message: a caller that has
+   * already persisted it (or verified it does not exist) can hand the same id
+   * to another code path and the second insert is a no-op. This closes the
+   * duplicate-write hole where the HTTP Prompt route AND the agent's mailbox
+   * handlers could each insert a `role=user` row for the same logical message.
+   *
+   * Returns true when a row was actually created, false when the id already
+   * existed (deduplicated).
+   */
+  insertWithId(
+    db: Db,
+    tenant: string,
+    id: string,
+    role: MessageRole,
+    prevId: string | null,
+  ): ResultAsync<boolean, string> {
     return q(
       () =>
-        db.insert(messages).values({
-          id,
-          tenant,
-          role,
-          prevId,
-          createdAt: nowStr(),
-        }),
-      'insert message',
-    ).map(() => id)
+        rawAll(
+          db,
+          `INSERT INTO messages (id, tenant, role, prev_id, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO NOTHING
+           RETURNING id`,
+          [id, tenant, role, prevId, nowStr()],
+        ).then(rows => rows.length > 0),
+      'insert message idempotent',
+    )
   },
 
   get(

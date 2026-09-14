@@ -585,7 +585,13 @@ export function buildConnectRoutes(
           id,
           factFromPersist(new Date().toISOString(), 'user', previewText),
         )
+        // The route owns the row for this logical message (id = insert.value):
+        // it writes the parts/tip/fact above for an immediate preview, then
+        // wakes the turn with the SAME id in the payload. The agent's mailbox
+        // handlers persist idempotently, so the message is never inserted
+        // twice even though both paths "persist".
         await new AbcAgent(deps.bus).publishMailbox(tenant, id, 'user_prompt', {
+          message_id: insert.value,
           text: prompt,
           attachments: attachments ?? [],
         })

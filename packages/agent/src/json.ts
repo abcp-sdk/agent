@@ -67,6 +67,14 @@ export const ContentPayloadSchema = z.object({
   content: z.string().optional(),
   text: z.string().optional(),
   prompt: z.string().optional(),
+  /**
+   * Logical message id already assigned by the producer. When present, the
+   * agent persists the user message with THIS id idempotently: the producer
+   * (HTTP Prompt route) has already written the row, so the agent's mailbox
+   * handlers must not insert a second copy. Absent (subsession-create,
+   * mail-send, extensions) => the agent owns both id and write.
+   */
+  message_id: z.string().optional(),
 })
 export type ContentPayload = z.infer<typeof ContentPayloadSchema>
 
