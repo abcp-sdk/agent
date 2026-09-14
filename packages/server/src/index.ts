@@ -21,6 +21,7 @@ import {
   logger,
   Mailbox,
   makeBlobStore,
+  natsToken,
   Presets,
   randomCode,
   rawAll,
@@ -193,6 +194,22 @@ async function main(): Promise<void> {
     // Config lives in the `cfg` KV bucket (source of truth for extensions).
     // Session-scoped overrides are applied by the Extension itself; here we
     // resolve the effective global value (envelope-aware {r,v} format).
+    // Session-scoped variables the agent projects (vars bucket, provider
+    // "agent"). Used by bundled tools that need the session's locale etc.
+    getSessionVariable: async (
+      tenant: string,
+      provider: string,
+      sessionName: string,
+      name: string,
+    ) => {
+      const raw = await bus
+        .kvGet(
+          'vars',
+          tenantKVKey(tenant, `${provider}.${natsToken(sessionName)}.${name}`),
+        )
+        .catch(() => null)
+      return raw ?? undefined
+    },
     resolveConfig: async (name, sessionName, tenant) => {
       const t = tenant ?? fallbackTenant
       // Extension config lives in the `cfg` KV bucket (the SDK's
