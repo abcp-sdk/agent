@@ -137,7 +137,7 @@ describe('filterDeniedTools', () => {
   it('removes only the named extension when a name collides (qualified entry)', () => {
     const out = filterDeniedTools(
       [bundledSub, repoSub, mailSend],
-      ['bundled.subsession-create', 'mail-send'],
+      ['bundled.subsession-create', 'bundled.mail-send'],
     )
     expect(out.map(t => `${t.extId}.${t.name}`)).toEqual(['repo.subsession-create'])
   })
@@ -149,9 +149,12 @@ describe('filterDeniedTools', () => {
     expect(toolQualifiedName(out, out[0])).toBe('subsession-create')
   })
 
-  it('a bare entry removes every tool with that name', () => {
+  it('a bare entry matches nothing (must be extension-qualified)', () => {
     const out = filterDeniedTools([bundledSub, repoSub], ['subsession-create'])
-    expect(out).toEqual([])
+    expect(out.map(t => `${t.extId}.${t.name}`)).toEqual([
+      'bundled.subsession-create',
+      'repo.subsession-create',
+    ])
   })
 
   it('is a no-op for an empty denylist', () => {

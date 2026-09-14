@@ -1,3 +1,5 @@
+import { logger } from './logger.js'
+
 export interface ServerConfig {
   port: number
   /** HTTP server transport: "auto" (h1 + h2c) | "h1" | "h2c". */
@@ -29,11 +31,12 @@ export interface ServerConfig {
   bootstrapTenant: string
   bootstrapToken: string
   /**
-   * Tool names the host hard-disables for EVERY session, regardless of the
-   * session's preset whitelist (empty or not). Matched against the qualified
-   * tool name (`toolQualifiedName`: the bare name, or `<extId>.<name>` when
-   * two extensions expose the same name). This is the enforcement backstop a
-   * host needs when it cannot rely on preset whitelists alone (a user may
+   * Tools the host hard-disables for EVERY session, regardless of the
+   * session's preset whitelist (empty or not). Every entry MUST be the
+   * extension-qualified name `<extId>.<name>` (e.g. `bundled.mail-send`), so a
+   * name collision across extensions is addressed unambiguously. Bare entries
+   * are dropped at parse time with a warning. This is the enforcement backstop
+   * a host needs when it cannot rely on preset whitelists alone (a user may
    * create/blank a preset). Set via env `DISABLED_TOOLS` (comma-separated).
    */
   disabledTools: string[]
@@ -118,9 +121,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     defaultTenant: or('AGENT_DEFAULT_TENANT', 'default'),
     bootstrapTenant: or('AGENT_BOOTSTRAP_TENANT', ''),
     bootstrapToken: or('AGENT_BOOTSTRAP_TOKEN', ''),
-    disabledTools: or('DISABLED_TOOLS', '')
-      .split(',')
-      .map(s => s.trim())
-      .filter(s => s !== ''),
+    disabledTools: parseDisabledTools(or('DISABLED_TOOLS', '')),
   }
+}
+
+/**
+ * Parse the `DISABLED_TOOLS` value into extension-qualified tool names. Every
+ * entry MUST be `<extId>.<name>` (e.g. `bundled.mail-send`); a bare name is
+ * ambiguous when two extensions expose the same tool, so it is DROPPED with a
+ * warning rather than silently disabling a whole class of tools.
+ */
+function parseDisabledTools(raw: string): string[] {
+  const out: string[] = []
+  for (const part of raw.split(',')) {
+    const entry = part.trim()
+    if (entry === '') continue
+    if (!entry.includes('.')) {
+      logger.warn(
+        { entry },
+        'DISABLED_TOOLS entry must be "<extId>.<name>" — dropped',
+      )
+      continue
+    }
+    out.push(entry)
+  }
+  return out
 }

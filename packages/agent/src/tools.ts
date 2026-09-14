@@ -146,11 +146,12 @@ export function toolQualifiedName(
 }
 
 /**
- * Drop tools the host denylisted (env `DISABLED_TOOLS`). A denylist entry is
- * matched against BOTH the bare tool name and the extension-qualified name
- * (`<extId>.<name>`), so a host can remove exactly one extension's tool when a
- * name collides (e.g. `bundled.subsession-create`) or the whole tool when it
- * does not (`mail-send`).
+ * Drop tools the host denylisted (env `DISABLED_TOOLS`). Every entry MUST be
+ * the extension-qualified name `<extId>.<name>` (e.g. `bundled.mail-send`):
+ * the host addresses exactly one extension's tool, so a name collision (two
+ * extensions exposing the same bare name) is unambiguous. Bare entries are
+ * rejected at parse time (see loadConfig). A tool whose owning extension is
+ * unknown simply never matches.
  *
  * This MUST run BEFORE any call that computes qualified names / whitelists
  * (`toolQualifiedName`, `buildAiTools`): removing the colliding tool first lets
@@ -163,9 +164,7 @@ export function filterDeniedTools(
 ): DiscoveredTool[] {
   if (denied.length === 0) return discovered
   const set = new Set(denied)
-  return discovered.filter(
-    t => !set.has(t.name) && !set.has(`${t.extId}.${t.name}`),
-  )
+  return discovered.filter(t => !set.has(`${t.extId}.${t.name}`))
 }
 
 /**
