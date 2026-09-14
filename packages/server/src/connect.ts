@@ -104,6 +104,7 @@ interface SessionRowView {
   unread_count?: number | null | undefined
   last_message_at?: string | null | undefined
   last_message_preview?: string | null | undefined
+  group?: string | null | undefined
 }
 
 interface ProviderRowView {
@@ -203,6 +204,7 @@ function sessionToMsg(
     updatedAt: s.updated_at ?? '',
     lastUsedAt: s.last_used_at ?? '',
     locale: s.locale ?? '',
+    group: s.group ?? '',
     org: s.org ?? '',
     repo: s.repo ?? '',
     branch: s.branch ?? '',
@@ -406,6 +408,7 @@ export function buildConnectRoutes(
           model,
           variant: body.variant,
           preset,
+          group: body.group,
         })
         if (name.isErr()) throw new Error(name.error)
         publishLifecycle(deps.bus, tenant, 'created', {
@@ -960,6 +963,7 @@ export function buildConnectRoutes(
           systemPrompt?: string
           locale?: string
           maxTurns?: number
+          group?: string
         } = {}
         if (patch.preset !== undefined && patch.preset !== '') {
           const p = await Presets.get(deps.bus, tenant, patch.preset)
@@ -987,6 +991,7 @@ export function buildConnectRoutes(
           cleanPatch.systemPrompt = patch.systemPrompt
         if (patch.locale !== undefined) cleanPatch.locale = patch.locale
         if (patch.maxTurns !== undefined) cleanPatch.maxTurns = patch.maxTurns
+        if (patch.group !== undefined) cleanPatch.group = patch.group
         const r = await Sessions.updateSettings(deps.db, tenant, id, cleanPatch)
         if (r.isErr()) throw new Error(r.error)
         publishSessionChanged(deps.bus, tenant, id)

@@ -1,6 +1,7 @@
 import { createServer as createHttpServer } from 'node:http'
 import * as http2Module from 'node:http2'
 import { serveBundled } from '@abc-protocol/bundled-extension'
+import { Agent as AbcAgent } from '@abc-protocol/sdk'
 import { createConnectRouter } from '@connectrpc/connect'
 import { createFetchHandler } from '@connectrpc/connect/protocol'
 import {
@@ -185,6 +186,10 @@ async function main(): Promise<void> {
     },
     rawAll: (sql, params) => rawAll(db, sql, params),
     rawRun: (sql, params) => rawRun(db, sql, params),
+    // Cross-session messaging (subsession handoff + direct session-send):
+    // the bundled tools deliver to any session's mailbox over the same bus.
+    publishMailbox: (tenant, sessionName, type, payload) =>
+      new AbcAgent(bus).publishMailbox(tenant, sessionName, type, payload),
     // Config lives in the `cfg` KV bucket (source of truth for extensions).
     // Session-scoped overrides are applied by the Extension itself; here we
     // resolve the effective global value (envelope-aware {r,v} format).

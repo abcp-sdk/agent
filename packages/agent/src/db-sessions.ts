@@ -28,9 +28,11 @@ const toRow = (r: Row): SessionRow => ({
   updated_at: r.updatedAt,
   last_used_at: r.lastUsedAt,
   locale: r.locale,
+  group: r.group,
 })
 
 export interface SessionPatch {
+  group?: string | undefined
   // `| undefined` on every optional: callers pass zod-inferred bodies whose
   // absent fields arrive as explicit `undefined` (exactOptionalPropertyTypes).
   model?: string | undefined
@@ -89,6 +91,7 @@ export const Sessions = {
       systemPrompt?: string | undefined
       maxTurns?: number | undefined
       locale?: string | undefined
+      group?: string | undefined
     },
   ): ResultAsync<string, string> {
     return q(
@@ -103,6 +106,7 @@ export const Sessions = {
           systemPrompt: input.systemPrompt ?? '',
           maxTurns: input.maxTurns ?? 0,
           locale: input.locale ?? '',
+          group: input.group ?? '',
           createdAt: nowStr(),
           updatedAt: nowStr(),
         }),
@@ -255,6 +259,24 @@ export const Sessions = {
       'session exists',
     )
   },
+
+  /** Sessions sharing a `group` value (e.g. a parent's subsessions). */
+  children(
+    db: Db,
+    tenant: string,
+    group: string,
+  ): ResultAsync<SessionRow[], string> {
+    return q(
+      () =>
+        db
+          .select()
+          .from(sessions)
+          .where(and(eq(sessions.tenant, tenant), eq(sessions.group, group)))
+          .orderBy(sessions.createdAt)
+          .then(rows => rows.map(toRow)),
+      'list child sessions',
+    )
+  },
 }
 
 /**
@@ -299,5 +321,6 @@ function patchToDrizzle(
   if (patch.maxTurns !== undefined) set.maxTurns = patch.maxTurns
   if (patch.systemPrompt !== undefined) set.systemPrompt = patch.systemPrompt
   if (patch.locale !== undefined) set.locale = patch.locale
+  if (patch.group !== undefined) set.group = patch.group
   return set
 }

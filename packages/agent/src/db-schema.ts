@@ -40,6 +40,10 @@ export const sessions = sqliteTable(
     updatedAt: text('updated_at').notNull(),
     lastUsedAt: text('last_used_at'),
     locale: text('locale').notNull().default(''),
+    // Generic grouping key (tenant-scoped, free-form). Empty = ungrouped. A
+    // subsession records its parent session's name here, but the field is
+    // generic: any client may group sessions arbitrarily.
+    group: text('group').notNull().default(''),
   },
   t => ({ pk: primaryKey({ columns: [t.tenant, t.name] }) }),
 )

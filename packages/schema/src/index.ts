@@ -48,6 +48,8 @@ export const SessionRowSchema = z.object({
   updated_at: z.string(),
   last_used_at: z.string().nullable(),
   locale: z.string().optional(),
+  /** Generic grouping key (empty = ungrouped). */
+  group: z.string().optional(),
 })
 export type SessionRow = z.infer<typeof SessionRowSchema>
 
@@ -368,4 +370,4 @@ export type ExtensionVariableValue = z.infer<
 // Agent.v1 RPC contract (locally generated from proto/agent/v1/agent.proto;
 // decoupled from @easylab/sdk). agent_pb.ts carries the message types + the
 // GenService descriptor (AgentService) the Connect router consumes.
-export * from "./gen/agent/v1/agent_pb.js";
+export * from './gen/agent/v1/agent_pb.js'
