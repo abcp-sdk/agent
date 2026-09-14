@@ -112,3 +112,17 @@ describe('buildAiTools session_name envelope', () => {
     expect(out).toEqual({ content: 'payload text', metadata: { rows: 3 } })
   })
 })
+
+describe('buildAiTools host denylist', () => {
+  it('drops a tool whose bare name is blocked', async () => {
+    const { bus } = fakeBus()
+    const tools = buildAiTools([tool], bus, 500, T, 's', undefined, undefined, new Set(['read']))
+    expect(tools.read).toBeUndefined()
+  })
+
+  it('keeps the tool when the denied name does not match', async () => {
+    const { bus } = fakeBus()
+    const tools = buildAiTools([tool], bus, 500, T, 's', undefined, undefined, new Set(['subsession-create']))
+    expect(tools.read).toBeDefined()
+  })
+})

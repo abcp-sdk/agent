@@ -291,9 +291,11 @@ export function buildAiTools(
     // AI-tool key by extension id while keeping the wire tool name intact.
     const aiName = toolQualifiedName(discovered, t)
     if (tools[aiName] !== undefined) continue
-    // Hard-disable tools whose required config is unset: the model must not be
-    // handed a tool it cannot run. Blocked names are qualified (aiName).
-    if (blocked?.has(aiName)) continue
+    // Hard-disable tools whose required config is unset, or that the host
+    // denylisted (env DISABLED_TOOLS). Both the qualified (aiName) and bare
+    // tool name are honored, so a bare denylist entry works regardless of
+    // whether the name collides across extensions.
+    if (blocked?.has(aiName) || blocked?.has(t.name)) continue
     const description = locale
       ? pickDescription(t.description, t.descriptions, locale)
       : t.description

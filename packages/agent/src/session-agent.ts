@@ -690,8 +690,7 @@ async function prepare(
   // it also catches a bare name that collides across extensions.
   for (const name of deps.config.disabledTools) {
     blocked.add(name)
-  }
-  if (blocked.size > 0) {
+  }  if (blocked.size > 0) {
     logger.info(
       { sid, blocked: [...blocked] },
       'tools blocked (required config unset / host denylist)',
