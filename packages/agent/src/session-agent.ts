@@ -46,7 +46,6 @@ import {
 } from './json.js'
 import { Config, Presets } from './kv-store.js'
 import { type LlmRegistry, parseProviderModelRef } from './llm.js'
-import { catalogModel, findVariant, type JsonObject } from './variants.js'
 import { logger } from './logger.js'
 import { factFromPersist, projectMessageFact } from './session-state.js'
 import {
@@ -61,6 +60,7 @@ import {
   toolQualifiedName,
   toolsBlockedByMissingRequired,
 } from './tools.js'
+import { catalogModel, findVariant, type JsonObject } from './variants.js'
 
 export interface AgentDeps {
   db: Db
@@ -247,6 +247,16 @@ async function handleItem(
   }
 
   if (item.msg_type === 'user_prompt') {
+    // Persist the prompt into the chain BEFORE running the turn. The HTTP
+    // Prompt route pre-persists its own user message, but a mailbox-delivered
+    // user_prompt (subsession-create's handoff, mail-send's result) arrives
+    // ONLY here — without this the text would be dropped and the turn would
+    // run against stale history.
+    const payload = parse(ContentPayloadSchema, item.payload)
+    const text = payload.isOk()
+      ? (payload.value.text ?? payload.value.prompt ?? item.payload)
+      : item.payload
+    if (text !== '') await persistUserPrompt(deps, tenant, sid, text)
     const r = await runTurnOnce(deps, tenant, sid)
     if (r !== null) {
       pushEvent(deps.bus, tenant, sid, 'error', { message: r })
@@ -277,7 +287,9 @@ interface TurnCtx {
   system: string
   maxTurns: number
   model: import('ai').LanguageModel
-  providerOptions: Record<string, import('./variants.js').JsonObject> | undefined
+  providerOptions:
+    | Record<string, import('./variants.js').JsonObject>
+    | undefined
   headers: Record<string, string> | undefined
 }
 
@@ -380,30 +392,65 @@ async function runTurnOnce(
               pushEvent(deps.bus, tenant, sid, 'step-start', {}, runId)
               break
             case 'text-start':
-              pushEvent(deps.bus, tenant, sid, 'text-start', { id: 't0' }, runId)
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'text-start',
+                { id: 't0' },
+                runId,
+              )
               break
             case 'text-delta':
               text += part.text
-              pushEvent(deps.bus, tenant, sid, 'text-delta', {
-                id: 't0',
-                text: part.text,
-              }, runId)
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'text-delta',
+                {
+                  id: 't0',
+                  text: part.text,
+                },
+                runId,
+              )
               break
             case 'text-end':
               pushEvent(deps.bus, tenant, sid, 'text-end', { id: 't0' }, runId)
               break
             case 'reasoning-start':
-              pushEvent(deps.bus, tenant, sid, 'reasoning-start', { id: 'r0' }, runId)
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'reasoning-start',
+                { id: 'r0' },
+                runId,
+              )
               break
             case 'reasoning-delta':
               reasoning += part.text
-              pushEvent(deps.bus, tenant, sid, 'reasoning-delta', {
-                id: 'r0',
-                text: part.text,
-              }, runId)
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'reasoning-delta',
+                {
+                  id: 'r0',
+                  text: part.text,
+                },
+                runId,
+              )
               break
             case 'reasoning-end':
-              pushEvent(deps.bus, tenant, sid, 'reasoning-end', { id: 'r0' }, runId)
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'reasoning-end',
+                { id: 'r0' },
+                runId,
+              )
               break
             case 'tool-call':
               toolCalls.push({
@@ -411,11 +458,18 @@ async function runTurnOnce(
                 name: part.toolName,
                 input: part.input,
               })
-              pushEvent(deps.bus, tenant, sid, 'tool-call', {
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                input: part.input,
-              }, runId)
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'tool-call',
+                {
+                  toolCallId: part.toolCallId,
+                  toolName: part.toolName,
+                  input: part.input,
+                },
+                runId,
+              )
               break
             case 'tool-result':
               toolResults.push({
@@ -423,19 +477,26 @@ async function runTurnOnce(
                 name: part.toolName,
                 result: part.output,
               })
-              pushEvent(deps.bus, tenant, sid, 'tool-result', {
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                formatted: part.output.content,
-                // Structured result data (opaque to the agent): media tools put
-                // their fixed fields (images/videos/audio file refs) here so a
-                // client can render them without re-deriving from the text.
-                data: part.output.metadata ?? null,
-                change_id:
-                  typeof part.output.metadata?.change_id === 'string'
-                    ? part.output.metadata.change_id
-                    : undefined,
-              }, runId)
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'tool-result',
+                {
+                  toolCallId: part.toolCallId,
+                  toolName: part.toolName,
+                  formatted: part.output.content,
+                  // Structured result data (opaque to the agent): media tools put
+                  // their fixed fields (images/videos/audio file refs) here so a
+                  // client can render them without re-deriving from the text.
+                  data: part.output.metadata ?? null,
+                  change_id:
+                    typeof part.output.metadata?.change_id === 'string'
+                      ? part.output.metadata.change_id
+                      : undefined,
+                },
+                runId,
+              )
               break
             case 'tool-error':
               // A tool that failed/aborted still pairs with its call id so the
@@ -445,10 +506,17 @@ async function runTurnOnce(
                 name: part.toolName,
                 result: { content: String(part.error), metadata: null },
               })
-              pushEvent(deps.bus, tenant, sid, 'tool-error', {
-                toolCallId: part.toolCallId,
-                error: String(part.error),
-              }, runId)
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'tool-error',
+                {
+                  toolCallId: part.toolCallId,
+                  error: String(part.error),
+                },
+                runId,
+              )
               break
             case 'tool-output-denied':
               toolResults.push({
@@ -471,7 +539,12 @@ async function runTurnOnce(
               if (isContextOverflowFailure(error)) {
                 // Context overflow: compact and retry once with the trimmed
                 // context — transparent to the caller.
-                const compacted = await compactSession(deps, tenant, sid, 'overflow')
+                const compacted = await compactSession(
+                  deps,
+                  tenant,
+                  sid,
+                  'overflow',
+                )
                 if (compacted.isOk() && compacted.value) {
                   stepMessages = await loadHistory(deps, tenant, sid)
                   return 'retry'
@@ -501,7 +574,15 @@ async function runTurnOnce(
       // Persist this step (reasoning + text + fully-paired tool calls/results)
       // and advance the chain tip before considering the next iteration.
       const { text, reasoning, toolCalls, toolResults, usage } = stepResult
-      await persistStep(deps, tenant, sid, reasoning, text, toolCalls, toolResults)
+      await persistStep(
+        deps,
+        tenant,
+        sid,
+        reasoning,
+        text,
+        toolCalls,
+        toolResults,
+      )
       if (usage !== null) {
         await Sessions.addUsage(
           deps.db,
@@ -583,12 +664,10 @@ async function prepare(
   // turn (no restart), while per-session `PATCH /sessions/{id}/settings`
   // {locale} still wins. Used to localize tool descriptions and the system
   // prompt, and projected as vars.agent.locale.
-  const configLocale = (await Config.get(deps.bus, tenant, 'locale')).unwrapOr(null)
-  const locale = resolveLocale(
-    session.locale,
-    configLocale,
-    'en',
+  const configLocale = (await Config.get(deps.bus, tenant, 'locale')).unwrapOr(
+    null,
   )
+  const locale = resolveLocale(session.locale, configLocale, 'en')
 
   const discovered = await discoverToolsCached(deps.bus)
   const active =
@@ -746,7 +825,9 @@ async function persistStep(
   // Reasoning (thinking) is persisted for display only; it is deliberately
   // EXCLUDED from the model's rebuilt context (see rebuildHistory/appendStep).
   if (reasoning !== '') {
-    await Parts.insert(deps.db, tenant, messageId, 'reasoning', seq++, { text: reasoning })
+    await Parts.insert(deps.db, tenant, messageId, 'reasoning', seq++, {
+      text: reasoning,
+    })
   }
   if (text !== '') {
     await Parts.insert(deps.db, tenant, messageId, 'text', seq++, { text })
@@ -774,7 +855,10 @@ async function persistStep(
   }
   await Sessions.setTip(deps.db, tenant, sid, messageId)
   // Keep the per-session context id cache in step with the write.
-  fireAndForget(appendSessionId(deps.bus, tenant, sid, messageId), 'appendSessionIds')
+  fireAndForget(
+    appendSessionId(deps.bus, tenant, sid, messageId),
+    'appendSessionIds',
+  )
   // Mirror the newest-message fact to the bus KV for DB-less consumers.
   projectMessageFact(
     deps.bus,
@@ -1089,7 +1173,13 @@ export async function compactSession(
   const insert = await Messages.insert(deps.db, tenant, COMPACTION_ROLE, tipId)
   if (insert.isErr()) return err(insert.error)
   const cmId = insert.value
-  const part = await Parts.insertSummary(deps.db, tenant, cmId, summary, tailFromId)
+  const part = await Parts.insertSummary(
+    deps.db,
+    tenant,
+    cmId,
+    summary,
+    tailFromId,
+  )
   if (part.isErr()) return err(part.error)
   await Sessions.setTip(deps.db, tenant, sid, cmId)
   projectMessageFact(
@@ -1161,7 +1251,8 @@ async function resolveVariantOptions(
   providerOptions: Record<string, JsonObject> | undefined
   headers: Record<string, string> | undefined
 }> {
-  if (variantId === '') return { providerOptions: undefined, headers: undefined }
+  if (variantId === '')
+    return { providerOptions: undefined, headers: undefined }
   const catalog = await getModelsDev(deps.bus)
   const model = catalogModel(catalog, providerId, modelId)
   if (model === null) {

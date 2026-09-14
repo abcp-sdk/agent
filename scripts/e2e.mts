@@ -194,6 +194,43 @@ function mockResponse(body: Record<string, unknown>): {
   }
   if (model === 'mock-vlm')
     return { reasoning: '', text: 'VLM-OK', toolCall: false, toolName: '', slowMs: 0 }
+  if (model === 'mock-sub') {
+    // Drives the subsession flow. The two roles are distinguished by markers
+    // that only ONE side ever sees:
+    //   - MAIL_SEND_RESULT  => the CHILD (the handoff prompt carries it)
+    //   - SUBSESSION_SPAWN  => the PARENT (the user prompt carries it)
+    // `hasTool` ends each role's tool loop with a plain text reply.
+    const blob = JSON.stringify(body['messages'] ?? [])
+    if (blob.includes('MAIL_SEND_RESULT')) {
+      if (hasTool)
+        return { reasoning: '', text: 'CHILD-DONE', toolCall: false, toolName: '', slowMs: 0 }
+      return {
+        reasoning: '',
+        text: '',
+        toolCall: true,
+        toolName: 'mail-send',
+        args: { to: 'mailsend-parent', text: 'CHILD-RESULT-42' },
+        slowMs: 0,
+      }
+    }
+    if (blob.includes('SUBSESSION_SPAWN')) {
+      if (hasTool)
+        return { reasoning: '', text: 'PARENT-DONE', toolCall: false, toolName: '', slowMs: 0 }
+      return {
+        reasoning: '',
+        text: '',
+        toolCall: true,
+        toolName: 'subsession-create',
+        args: {
+          name: 'mailsend-child',
+          prompt:
+            'Do the child task. MAIL_SEND_RESULT to mailsend-parent when done.',
+        },
+        slowMs: 0,
+      }
+    }
+    return { reasoning: '', text: 'SUB-OK', toolCall: false, toolName: '', slowMs: 0 }
+  }
   if (model === 'mock-tool' && !hasTool) {
     return {
       reasoning: 'let me think',
@@ -852,6 +889,12 @@ async function run(
             name: 'Mock Tool',
             contextLimit: 100000n,
           }),
+          // A model that drives the subsession / mail-send flow.
+          create(ProviderModelSchema, {
+            id: 'mock-sub',
+            name: 'Mock Subsession',
+            contextLimit: 100000n,
+          }),
           create(ProviderModelSchema, {
             id: 'mock-slow',
             name: 'Mock Slow',
@@ -1031,7 +1074,7 @@ async function run(
   check(
     'listModels lists the text provider models',
     models.models.map(m => m.id).sort().join(',') ===
-      'gpt-5.4,mock-image,mock-slow,mock-text,mock-tool,mock-vlm',
+      'gpt-5.4,mock-image,mock-slow,mock-sub,mock-text,mock-tool,mock-vlm',
     models.models.map(m => m.id),
   )
 
@@ -2149,6 +2192,141 @@ async function run(
       String(e).includes('admin token')
   }
   check('tenant token cannot call admin RPCs', tenantBlocked)
+
+  // -------------------------------------------------------------------------
+  // subsession: parent spawns a child (O(1) fork), the child does its work and
+  // mails the result BACK to the parent, which is then resumed. Exercises BOTH
+  // new tools (subsession-create, mail-send) end-to-end through the turn loop.
+  // -------------------------------------------------------------------------
+  section('subsession + mail-send')
+  const subParent = `sub-parent-${uniq}`
+  const subChild = 'mailsend-child'
+  const subParentCreate = await client.createSession(
+    create(CreateSessionRequestSchema, {
+      name: subParent,
+      model: 'openai/mock-sub',
+      preset: 'default',
+    }),
+  )
+  check('subsession: parent session created', subParentCreate.ok)
+
+  // Watch BOTH sessions so we can observe the spawn and the child's reply.
+  const subEvents: WatchEv[] = []
+  const subAc = new AbortController()
+  const watchOne = async (sid: string) => {
+    try {
+      const stream = client.watchSession(
+        create(WatchSessionRequestSchema, { id: sid }),
+        { signal: subAc.signal },
+      )
+      for await (const ev of stream) {
+        subEvents.push({
+          event: `${sid}:${ev.event}`,
+          params: (ev.params ?? {}) as Record<string, unknown>,
+        })
+      }
+    } catch {
+      /* aborted */
+    }
+  }
+  const subWatchParent = watchOne(subParent)
+  const subWatcherChild = watchOne(subChild).catch(() => {})
+  void subWatcherChild
+  await sleep(300)
+
+  // 1. Parent prompts with the SPAWN marker → the mock model calls
+  //    subsession-create, which forks a child and wakes it.
+  const spawnStream = client.prompt(
+    create(PromptRequestSchema, {
+      id: subParent,
+      prompt: 'Go: SUBSESSION_SPAWN a child to do the work.',
+    }),
+  )
+  for await (const e of spawnStream) {
+    if (e.event === 'accepted') break
+  }
+
+  // 2. Wait for the child session to appear on the server (the fork committed).
+  let childExists = false
+  for (let i = 0; i < 60; i++) {
+    try {
+      const g = await client.getSession(
+        create(GetSessionRequestSchema, { id: subChild }),
+      )
+      if (g.session !== undefined) {
+        childExists = true
+        // The child is a fork of the parent: it must carry group = parent and
+        // inherit the parent's model (same preset → prompt-cache reuse).
+        check(
+          'subsession: child.group == parent name',
+          g.session.group === subParent,
+          g.session.group,
+        )
+        check(
+          'subsession: child inherits parent model',
+          g.session.model === 'openai/mock-sub',
+          g.session.model,
+        )
+        break
+      }
+    } catch {
+      /* not yet */
+    }
+    await sleep(200)
+  }
+  check('subsession: child session created', childExists)
+
+  // 3. Wait for the CHILD to finish (its turn ends with a text reply after it
+  //    mails the parent) — observable as a turn-complete on the child stream.
+  let childDone = false
+  for (let i = 0; i < 150; i++) {
+    if (subEvents.some(e => e.event === `${subChild}:turn-complete`)) {
+      childDone = true
+      break
+    }
+    await sleep(200)
+  }
+  check('subsession: child ran a turn', childDone)
+
+  // 4. The child mailed the result to the parent; the parent was resumed and
+  //    now holds CHILD-RESULT-42 in its history.
+  let parentSawResult = false
+  for (let i = 0; i < 150; i++) {
+    const msgs = await client.listMessages(
+      create(ListMessagesRequestSchema, { id: subParent, limit: 50 }),
+    )
+    const body = JSON.stringify(msgs.messages)
+    if (body.includes('CHILD-RESULT-42')) {
+      parentSawResult = true
+      break
+    }
+    await sleep(200)
+  }
+  check('subsession: parent received child result via mail-send', parentSawResult)
+
+  // 5. Re-spawning the SAME child name is refused (the tool reports it and no
+  //    duplicate session appears). The child itself also cannot nest: its
+  //    group is non-empty (checked above), which is the nesting guard.
+  const respawn = client.prompt(
+    create(PromptRequestSchema, {
+      id: subParent,
+      prompt: 'Again: SUBSESSION_SPAWN the same child name.',
+    }),
+  )
+  for await (const e of respawn) {
+    if (e.event === 'accepted') break
+  }
+  await sleep(1500)
+  const subSessions = await client.listSessions(create(ListSessionsRequestSchema, {}))
+  const childCopies = subSessions.sessions.filter(s => s.name === subChild)
+  check(
+    'subsession: duplicate child name not created',
+    childCopies.length === 1,
+    String(childCopies.length),
+  )
+
+  subAc.abort()
+  await subWatchParent.catch(() => {})
 }
 
 void main()
