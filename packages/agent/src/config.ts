@@ -28,6 +28,15 @@ export interface ServerConfig {
    *  for) when the tenant table is empty. Both must be set to take effect. */
   bootstrapTenant: string
   bootstrapToken: string
+  /**
+   * Tool names the host hard-disables for EVERY session, regardless of the
+   * session's preset whitelist (empty or not). Matched against the qualified
+   * tool name (`toolQualifiedName`: the bare name, or `<extId>.<name>` when
+   * two extensions expose the same name). This is the enforcement backstop a
+   * host needs when it cannot rely on preset whitelists alone (a user may
+   * create/blank a preset). Set via env `DISABLED_TOOLS` (comma-separated).
+   */
+  disabledTools: string[]
 }
 
 export type DbBackend = 'pg' | 'sqlite'
@@ -109,5 +118,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     defaultTenant: or('AGENT_DEFAULT_TENANT', 'default'),
     bootstrapTenant: or('AGENT_BOOTSTRAP_TENANT', ''),
     bootstrapToken: or('AGENT_BOOTSTRAP_TOKEN', ''),
+    disabledTools: or('DISABLED_TOOLS', '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => s !== ''),
   }
 }

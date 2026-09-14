@@ -685,10 +685,16 @@ async function prepare(
   // Hard-disable tools whose required config is unset: the model must not call
   // a tool it cannot run. Reads the `cfg` bucket per turn (cheap, few knobs).
   const blocked = await toolsBlockedByMissingRequired(deps.bus, tenant, active)
+  // Host hard-denylist (env DISABLED_TOOLS): enforced for EVERY session
+  // regardless of its preset whitelist. Matched against the qualified name, so
+  // it also catches a bare name that collides across extensions.
+  for (const name of deps.config.disabledTools) {
+    blocked.add(name)
+  }
   if (blocked.size > 0) {
     logger.info(
       { sid, blocked: [...blocked] },
-      'tools blocked (required config unset)',
+      'tools blocked (required config unset / host denylist)',
     )
   }
   const tools = buildAiTools(
