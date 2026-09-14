@@ -146,6 +146,29 @@ export function toolQualifiedName(
 }
 
 /**
+ * Drop tools the host denylisted (env `DISABLED_TOOLS`). A denylist entry is
+ * matched against BOTH the bare tool name and the extension-qualified name
+ * (`<extId>.<name>`), so a host can remove exactly one extension's tool when a
+ * name collides (e.g. `bundled.subsession-create`) or the whole tool when it
+ * does not (`mail-send`).
+ *
+ * This MUST run BEFORE any call that computes qualified names / whitelists
+ * (`toolQualifiedName`, `buildAiTools`): removing the colliding tool first lets
+ * the remaining one fall back to its bare name, which is what preset whitelists
+ * reference.
+ */
+export function filterDeniedTools(
+  discovered: DiscoveredTool[],
+  denied: readonly string[],
+): DiscoveredTool[] {
+  if (denied.length === 0) return discovered
+  const set = new Set(denied)
+  return discovered.filter(
+    t => !set.has(t.name) && !set.has(`${t.extId}.${t.name}`),
+  )
+}
+
+/**
  * Discover tools from all extensions via a NATS broadcast. Every extension
  * that declares `tools` capability contributes its tool manifests; a reply
  * that fails validation is skipped.
@@ -291,11 +314,9 @@ export function buildAiTools(
     // AI-tool key by extension id while keeping the wire tool name intact.
     const aiName = toolQualifiedName(discovered, t)
     if (tools[aiName] !== undefined) continue
-    // Hard-disable tools whose required config is unset, or that the host
-    // denylisted (env DISABLED_TOOLS). Both the qualified (aiName) and bare
-    // tool name are honored, so a bare denylist entry works regardless of
-    // whether the name collides across extensions.
-    if (blocked?.has(aiName) || blocked?.has(t.name)) continue
+    // Hard-disable tools whose required config is unset. Blocked names are
+    // qualified (aiName), matching how presets and the denylist address tools.
+    if (blocked?.has(aiName)) continue
     const description = locale
       ? pickDescription(t.description, t.descriptions, locale)
       : t.description

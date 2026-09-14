@@ -4,6 +4,7 @@ import {
   buildAiTools,
   type DiscoveredTool,
   discoverToolsCached,
+  filterDeniedTools,
   invalidateDiscoveryCache,
   toolQualifiedName,
 } from '../src/tools.js'
@@ -113,16 +114,48 @@ describe('buildAiTools session_name envelope', () => {
   })
 })
 
-describe('buildAiTools host denylist', () => {
-  it('drops a tool whose bare name is blocked', async () => {
-    const { bus } = fakeBus()
-    const tools = buildAiTools([tool], bus, 500, T, 's', undefined, undefined, new Set(['read']))
-    expect(tools.read).toBeUndefined()
+describe('filterDeniedTools', () => {
+  const bundledSub: DiscoveredTool = {
+    extId: 'bundled',
+    name: 'subsession-create',
+    description: 'bundled subsession',
+    inputSchema: { type: 'object' },
+  }
+  const repoSub: DiscoveredTool = {
+    extId: 'repo',
+    name: 'subsession-create',
+    description: 'repo subsession',
+    inputSchema: { type: 'object' },
+  }
+  const mailSend: DiscoveredTool = {
+    extId: 'bundled',
+    name: 'mail-send',
+    description: 'mail',
+    inputSchema: { type: 'object' },
+  }
+
+  it('removes only the named extension when a name collides (qualified entry)', () => {
+    const out = filterDeniedTools(
+      [bundledSub, repoSub, mailSend],
+      ['bundled.subsession-create', 'mail-send'],
+    )
+    expect(out.map(t => `${t.extId}.${t.name}`)).toEqual(['repo.subsession-create'])
   })
 
-  it('keeps the tool when the denied name does not match', async () => {
-    const { bus } = fakeBus()
-    const tools = buildAiTools([tool], bus, 500, T, 's', undefined, undefined, new Set(['subsession-create']))
-    expect(tools.read).toBeDefined()
+  it('after removal the surviving same-named tool qualifies as its bare name', () => {
+    const out = filterDeniedTools([bundledSub, repoSub], ['bundled.subsession-create'])
+    // Only repo's subsession-create is left, so the qualified name collapses to
+    // the bare name a preset whitelist references.
+    expect(toolQualifiedName(out, out[0])).toBe('subsession-create')
+  })
+
+  it('a bare entry removes every tool with that name', () => {
+    const out = filterDeniedTools([bundledSub, repoSub], ['subsession-create'])
+    expect(out).toEqual([])
+  })
+
+  it('is a no-op for an empty denylist', () => {
+    const tools = [bundledSub, repoSub]
+    expect(filterDeniedTools(tools, [])).toBe(tools)
   })
 })

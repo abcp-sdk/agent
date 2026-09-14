@@ -57,6 +57,7 @@ import {
 import {
   buildAiTools,
   discoverToolsCached,
+  filterDeniedTools,
   toolQualifiedName,
   toolsBlockedByMissingRequired,
 } from './tools.js'
@@ -669,7 +670,14 @@ async function prepare(
   )
   const locale = resolveLocale(session.locale, configLocale, 'en')
 
-  const discovered = await discoverToolsCached(deps.bus)
+  // Host hard-denylist (env DISABLED_TOOLS) runs FIRST: removing a colliding
+  // tool before qualified names are computed lets the surviving same-named tool
+  // fall back to its bare name, which is what preset whitelists reference. A
+  // denylist entry may be a bare name or `<extId>.<name>`.
+  const discovered = filterDeniedTools(
+    await discoverToolsCached(deps.bus),
+    deps.config.disabledTools,
+  )
   const active =
     whitelist === null
       ? discovered
@@ -685,15 +693,10 @@ async function prepare(
   // Hard-disable tools whose required config is unset: the model must not call
   // a tool it cannot run. Reads the `cfg` bucket per turn (cheap, few knobs).
   const blocked = await toolsBlockedByMissingRequired(deps.bus, tenant, active)
-  // Host hard-denylist (env DISABLED_TOOLS): enforced for EVERY session
-  // regardless of its preset whitelist. Matched against the qualified name, so
-  // it also catches a bare name that collides across extensions.
-  for (const name of deps.config.disabledTools) {
-    blocked.add(name)
-  }  if (blocked.size > 0) {
+  if (blocked.size > 0) {
     logger.info(
       { sid, blocked: [...blocked] },
-      'tools blocked (required config unset / host denylist)',
+      'tools blocked (required config unset)',
     )
   }
   const tools = buildAiTools(
