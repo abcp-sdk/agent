@@ -1,5 +1,5 @@
-import type { PresetRow } from '@easylab-agent/schema'
 import { readFileSync } from 'node:fs'
+import type { PresetRow } from '@easylab-agent/schema'
 import { ResultAsync } from 'neverthrow'
 import type { Bus } from './bus.js'
 import { BUCKET_CONFIG, BUCKET_PRESETS, tenantKVKey } from './bus.js'
@@ -226,22 +226,26 @@ export const Presets = {
         if (isSystemPreset(row.id)) {
           throw new Error(`system preset '${row.id}' is immutable`)
         }
-        const existing = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, row.id))
+        const existing = await bus.kvGet(
+          BUCKET_PRESETS,
+          presetKey(tenant, row.id),
+        )
         if (existing !== null && jsonToRow(existing)?.isSystem === true) {
           throw new Error(`system preset '${row.id}' is immutable`)
         }
-        await bus.kvPut(BUCKET_PRESETS, presetKey(tenant, row.id), rowToJson(row), NO_TTL)
+        await bus.kvPut(
+          BUCKET_PRESETS,
+          presetKey(tenant, row.id),
+          rowToJson(row),
+          NO_TTL,
+        )
         await addToPresetIndex(bus, tenant, row.id)
       })(),
       'upsert preset',
     )
   },
 
-  delete(
-    bus: Bus,
-    tenant: string,
-    id: string,
-  ): ResultAsync<void, string> {
+  delete(bus: Bus, tenant: string, id: string): ResultAsync<void, string> {
     return ra(
       (async () => {
         if (isSystemPreset(id)) {
@@ -275,17 +279,30 @@ export const Presets = {
         )
         for (const d of [...SYSTEM_PRESETS, ...injected]) {
           const want = rowToJson({ ...d, isSystem: true })
-          const existing = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, d.id))
+          const existing = await bus.kvGet(
+            BUCKET_PRESETS,
+            presetKey(tenant, d.id),
+          )
           const created =
             existing === null
-              ? await bus.kvCreate(BUCKET_PRESETS, presetKey(tenant, d.id), want, NO_TTL)
+              ? await bus.kvCreate(
+                  BUCKET_PRESETS,
+                  presetKey(tenant, d.id),
+                  want,
+                  NO_TTL,
+                )
               : null
           if (created !== null) {
             await addToPresetIndex(bus, tenant, d.id)
           } else if (existing !== want) {
             // Drifted system preset (renamed/fixed tool names, kebab-case):
             // refresh in place so the bucket mirrors the shipped preset.
-            await bus.kvPut(BUCKET_PRESETS, presetKey(tenant, d.id), want, NO_TTL)
+            await bus.kvPut(
+              BUCKET_PRESETS,
+              presetKey(tenant, d.id),
+              want,
+              NO_TTL,
+            )
           }
         }
         // Clean retired system-preset ids that are no longer seeded. Never
@@ -310,10 +327,7 @@ export const Config = {
     tenant: string,
     key: string,
   ): ResultAsync<string | null, string> {
-    return ra(
-      bus.kvGet(BUCKET_CONFIG, tenantKVKey(tenant, key)),
-      'get config',
-    )
+    return ra(bus.kvGet(BUCKET_CONFIG, tenantKVKey(tenant, key)), 'get config')
   },
 
   set(

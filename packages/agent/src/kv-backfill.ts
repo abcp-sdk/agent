@@ -70,7 +70,12 @@ async function backfillConfig(db: Db, bus: Bus): Promise<void> {
   for (const r of rows) {
     const key = String(r.key ?? '')
     if (key === '') continue
-    const res = await Config.set(bus, LEGACY_TENANT, key, String(r.value ?? '{}'))
+    const res = await Config.set(
+      bus,
+      LEGACY_TENANT,
+      key,
+      String(r.value ?? '{}'),
+    )
     if (res.isOk()) n++
   }
   await setMarker(bus, 'config')

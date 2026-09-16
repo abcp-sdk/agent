@@ -22,7 +22,10 @@ const catalog = {
           modes: {
             fast: {
               cost: { input: 10, output: 50 },
-              provider: { body: { speed: 'fast' }, headers: { 'anthropic-beta': 'fast' } },
+              provider: {
+                body: { speed: 'fast' },
+                headers: { 'anthropic-beta': 'fast' },
+              },
             },
           },
         },
@@ -33,7 +36,12 @@ const catalog = {
     models: {
       'gpt-5.4': {
         reasoning: true,
-        reasoning_options: [{ type: 'effort', values: ['none', 'low', 'medium', 'high', 'xhigh'] }],
+        reasoning_options: [
+          {
+            type: 'effort',
+            values: ['none', 'low', 'medium', 'high', 'xhigh'],
+          },
+        ],
         limit: { context: 400000 },
       },
     },
@@ -42,7 +50,9 @@ const catalog = {
     models: {
       'gemini-3-pro': {
         reasoning: true,
-        reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }],
+        reasoning_options: [
+          { type: 'effort', values: ['low', 'medium', 'high'] },
+        ],
         limit: { context: 1000000 },
       },
     },
@@ -60,7 +70,9 @@ const catalog = {
 
 describe('catalogModel (strict provider/model lookup)', () => {
   it('resolves under the given provider only', () => {
-    expect(catalogModel(catalog, 'anthropic', 'claude-opus-4-6')?.contextLimit).toBe(200000)
+    expect(
+      catalogModel(catalog, 'anthropic', 'claude-opus-4-6')?.contextLimit,
+    ).toBe(200000)
     // Same model id under a different provider must not leak through.
     expect(catalogModel(catalog, 'openai', 'claude-opus-4-6')).toBeNull()
   })
@@ -88,15 +100,21 @@ describe('variantsForApiType', () => {
   it('maps effort to openai reasoningEffort (incl. none)', () => {
     const m = catalogModel(catalog, 'openai', 'gpt-5.4')!
     const vs = variantsForApiType(m, 'openai')
-    expect(vs.find(v => v.id === 'none')!.providerOptions).toEqual({ openai: { reasoningEffort: 'none' } })
-    expect(vs.find(v => v.id === 'xhigh')!.providerOptions).toEqual({ openai: { reasoningEffort: 'xhigh' } })
+    expect(vs.find(v => v.id === 'none')!.providerOptions).toEqual({
+      openai: { reasoningEffort: 'none' },
+    })
+    expect(vs.find(v => v.id === 'xhigh')!.providerOptions).toEqual({
+      openai: { reasoningEffort: 'xhigh' },
+    })
   })
 
   it('clamps google thinkingLevel and sets includeThoughts', () => {
     const m = catalogModel(catalog, 'google', 'gemini-3-pro')!
     const vs = variantsForApiType(m, 'gemini')
     expect(vs.find(v => v.id === 'high')!.providerOptions).toEqual({
-      google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } },
+      google: {
+        thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' },
+      },
     })
   })
 
@@ -124,7 +142,9 @@ describe('variantsForApiType', () => {
     const vs = variantsForApiType(m, 'openai')
     expect(vs).toHaveLength(1)
     expect(vs[0]!.id).toBe('on')
-    expect(vs[0]!.providerOptions).toEqual({ openai: { reasoningEffort: 'medium' } })
+    expect(vs[0]!.providerOptions).toEqual({
+      openai: { reasoningEffort: 'medium' },
+    })
   })
 
   it('emits budget high/max variants when toggle + budget_tokens', () => {

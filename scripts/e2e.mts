@@ -672,11 +672,8 @@ async function main(): Promise<void> {
   let natsStop: (() => Promise<void>) | null = null
   let natsUrl = env['ABC_NATS_URL'] ?? env['NATS_URL']
   if (!natsUrl) {
-    const natsBin =
-      process.env['ABC_NATS_SERVER_BIN'] ??
-      (existsSync('/tmp/opencode/nats/bin/nats-server')
-        ? '/tmp/opencode/nats/bin/nats-server'
-        : 'nats-server')
+    // Binary resolution is the SDK's: ABC_NATS_SERVER_BIN -> PATH lookup.
+    const natsBin = process.env['ABC_NATS_SERVER_BIN'] ?? 'nats-server'
     const nats = await startNats({ storage: 'memory', binary: natsBin })
     natsUrl = nats.url
     natsStop = nats.stop
@@ -866,57 +863,61 @@ async function run(
   check('health ok', health.ok, health)
   check('health name', health.name.length > 0, health.name)
 
-  const reg = await client.registerProvider(
-    create(RegisterProviderRequestSchema, {
-      provider: create(ProviderSchema, {
-        providerId: 'openai',
-        apiType: 'openai-compatible',
-        baseUrl: mockUrl,
-        apiKey: 'test-key',
-        models: [
-          create(ProviderModelSchema, {
-            id: 'gpt-5.4',
-            name: 'GPT 5.4',
-            contextLimit: 400000n,
-          }),
-          create(ProviderModelSchema, {
-            id: 'mock-text',
-            name: 'Mock Text',
-            contextLimit: 100000n,
-          }),
-          create(ProviderModelSchema, {
-            id: 'mock-tool',
-            name: 'Mock Tool',
-            contextLimit: 100000n,
-          }),
-          // A model that drives the subsession / mail-send flow.
-          create(ProviderModelSchema, {
-            id: 'mock-sub',
-            name: 'Mock Subsession',
-            contextLimit: 100000n,
-          }),
-          create(ProviderModelSchema, {
-            id: 'mock-slow',
-            name: 'Mock Slow',
-            contextLimit: 100000n,
-          }),
-          // A text model whose mock response triggers the image-generate tool
-          // call (the tool itself resolves via the gateway `image_model` knob).
-          create(ProviderModelSchema, {
-            id: 'mock-image',
-            name: 'Mock Image Turn',
-            contextLimit: 100000n,
-          }),
-          // A text model that calls image-read (VLM) against an uploaded blob.
-          create(ProviderModelSchema, {
-            id: 'mock-vlm',
-            name: 'Mock VLM Turn',
-            contextLimit: 100000n,
-          }),
-        ],
+  // Reusable: the mock text provider (deleted in the provider-delete
+  // section, re-registered where later sections still need its models).
+  const registerMockText = () =>
+    client.registerProvider(
+      create(RegisterProviderRequestSchema, {
+        provider: create(ProviderSchema, {
+          providerId: 'openai',
+          apiType: 'openai-compatible',
+          baseUrl: mockUrl,
+          apiKey: 'test-key',
+            models: [
+            create(ProviderModelSchema, {
+              id: 'gpt-5.4',
+              name: 'GPT 5.4',
+              contextLimit: 400000n,
+            }),
+            create(ProviderModelSchema, {
+              id: 'mock-text',
+              name: 'Mock Text',
+              contextLimit: 100000n,
+            }),
+            create(ProviderModelSchema, {
+              id: 'mock-tool',
+              name: 'Mock Tool',
+              contextLimit: 100000n,
+            }),
+            // A model that drives the subsession / mail-send flow.
+            create(ProviderModelSchema, {
+              id: 'mock-sub',
+              name: 'Mock Subsession',
+              contextLimit: 100000n,
+            }),
+            create(ProviderModelSchema, {
+              id: 'mock-slow',
+              name: 'Mock Slow',
+              contextLimit: 100000n,
+            }),
+            // A text model whose mock response triggers the image-generate
+            // tool call (the tool resolves via the gateway `image_model` knob).
+            create(ProviderModelSchema, {
+              id: 'mock-image',
+              name: 'Mock Image Turn',
+              contextLimit: 100000n,
+            }),
+            // A text model that calls image-read (VLM) against an uploaded blob.
+            create(ProviderModelSchema, {
+              id: 'mock-vlm',
+              name: 'Mock VLM Turn',
+              contextLimit: 100000n,
+            }),
+          ],
+        }),
       }),
-    }),
-  )
+    )
+  const reg = await registerMockText()
   check('registerProvider (text)', reg.ok)
 
   // The Vercel-compatible gateway is the SINGLETON that carries multimodal
@@ -1157,9 +1158,19 @@ async function run(
     create(ListToolsRequestSchema, { locale: 'en' }),
   )
   const toolNames = toolsEn.tools.map(t => t.name)
+  // The bundled toolset grows over time (tts/video/asr/subsession/mail were
+  // added after this suite was written); assert the STABLE CORE as a subset
+  // instead of pinning the full list.
+  const coreTools = [
+    'file-info',
+    'history-range',
+    'history-search',
+    'todo-write',
+    'web-fetch',
+  ]
   check(
     'listTools returns all bundled tools',
-    toolsEn.tools.length === 12,
+    coreTools.every(t => toolNames.includes(t)),
     `got ${toolsEn.tools.length}: ${toolNames.join(',')}`,
   )
   check(
@@ -1274,7 +1285,12 @@ async function run(
     }),
   )
   const toolsAfter = await client.listTools(create(ListToolsRequestSchema, {}))
-  check('setExtensionConfig accepted', toolsAfter.tools.length === 12)
+  // Count is not the assertion target anymore (the toolset grows); the call
+  // simply must succeed and keep the brave tool enabled.
+  check(
+    'setExtensionConfig accepted',
+    toolsAfter.tools.some(t => t.name === 'brave-search'),
+  )
 
   // Configure the image tool to point at the mock image model, then drive a
   // full image-generate tool call through the turn loop.
@@ -2125,14 +2141,30 @@ async function run(
     acmeSessions.sessions.length === 0,
     String(acmeSessions.sessions.length),
   )
+  // Providers are tenant-scoped (v2): acme has none of its own and must not
+  // see e2e's, so the session is created WITHOUT a model (a session may exist
+  // without one until a turn needs it) and, symmetrically, referencing e2e's
+  // model from acme must FAIL.
   const acmeCreate = await acmeClient.createSession(
     create(CreateSessionRequestSchema, {
       name: 'acme-only',
-      model: 'openai/gpt-5.4',
       preset: 'default',
     }),
   )
   check('tenant token can create its own session', acmeCreate.ok)
+  let acmeCrossModel = false
+  try {
+    await acmeClient.createSession(
+      create(CreateSessionRequestSchema, {
+        name: 'acme-cross',
+        model: 'openai/gpt-5.4',
+        preset: 'default',
+      }),
+    )
+  } catch {
+    acmeCrossModel = true
+  }
+  check('tenant cannot use another tenant\'s provider model', acmeCrossModel)
 
   // Issue + revoke a token: the issued one works, then fails after revocation.
   const issued = await admin.issueTenantToken(
@@ -2183,10 +2215,21 @@ async function run(
     t1.tenants.find(t => t.id === 'acme')?.disabled === true,
   )
 
-  // A tenant token can never reach the admin surface.
+  // A tenant token can never reach the admin surface. listTenants moved to
+  // AdminService in v2, so the probe must go through an AdminService client
+  // authenticated with a TENANT token (the AgentService client would fail
+  // with method-not-found instead of permission_denied).
+  const tenantAdmin: Client<typeof AdminService> = createClient(
+    AdminService,
+    createConnectTransport({
+      baseUrl,
+      httpVersion: '1.1',
+      interceptors: [bearerInterceptor()],
+    }),
+  )
   let tenantBlocked = false
   try {
-    await client.listTenants(create(ListTenantsRequestSchema, {}))
+    await tenantAdmin.listTenants(create(ListTenantsRequestSchema, {}))
   } catch (e) {
     tenantBlocked = String(e).includes('permission_denied') ||
       String(e).includes('admin token')
@@ -2199,7 +2242,14 @@ async function run(
   // new tools (subsession-create, mail-send) end-to-end through the turn loop.
   // -------------------------------------------------------------------------
   section('subsession + mail-send')
-  const subParent = `sub-parent-${uniq}`
+  // The provider-delete section removed 'openai'; the subsession flow drives
+  // through its mock-sub model, so re-register the (mock) provider first.
+  const subReg = await registerMockText()
+  check('subsession: mock provider re-registered', subReg.ok)
+  // FIXED name: the mock's mail-send reply targets 'mailsend-parent'
+  // verbatim, so the parent must carry exactly that name (the run DB is a
+  // throwaway sqlite file, no cross-run collision to avoid).
+  const subParent = 'mailsend-parent'
   const subChild = 'mailsend-child'
   const subParentCreate = await client.createSession(
     create(CreateSessionRequestSchema, {

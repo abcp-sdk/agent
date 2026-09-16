@@ -3,8 +3,9 @@ import { estimateTokens, maskSecret } from '../src/token.js'
 
 describe('maskSecret (provider key display + edit sentinel)', () => {
   it('long secrets keep a recognizable prefix/suffix', () => {
-    expect(maskSecret('gw-0c53f638b62edf7275d9443a7282123d3a9a7f7a96ce9ee0'))
-      .toBe('gw-0****9ee0')
+    expect(
+      maskSecret('gw-0c53f638b62edf7275d9443a7282123d3a9a7f7a96ce9ee0'),
+    ).toBe('gw-0****9ee0')
   })
 
   it('short secrets mask fully (nothing usable leaks)', () => {

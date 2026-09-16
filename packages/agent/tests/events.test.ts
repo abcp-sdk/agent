@@ -60,7 +60,10 @@ describe('publishLifecycle', () => {
     publishSessionChanged(bus, T, 'sess-a')
     await new Promise(r => setImmediate(r))
     expect(published).toEqual([
-      { subject: 'abc.t1.session.changed', payload: { session_name: 'sess-a' } },
+      {
+        subject: 'abc.t1.session.changed',
+        payload: { session_name: 'sess-a' },
+      },
     ])
   })
 })

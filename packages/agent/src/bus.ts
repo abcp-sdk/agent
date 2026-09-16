@@ -5,9 +5,15 @@ import type {
   InboxMsg as AbcInboxMsg,
   Subscription as AbcSubscription,
 } from '@abc-protocol/sdk'
-import { Agent as AbcAgent, connectNatsBus } from '@abc-protocol/sdk'
-import { CH, GLOBAL_TENANT } from '@abc-protocol/sdk'
-import { subjectTenant, tenantKVKey, tenantObjectName } from '@abc-protocol/sdk'
+import {
+  Agent as AbcAgent,
+  CH,
+  connectNatsBus,
+  GLOBAL_TENANT,
+  subjectTenant,
+  tenantKVKey,
+  tenantObjectName,
+} from '@abc-protocol/sdk'
 import { ResultAsync } from 'neverthrow'
 
 /**

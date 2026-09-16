@@ -207,12 +207,20 @@ export const Messages = {
   > {
     if (tipId === null || tipId === '') {
       return ResultAsync.fromSafePromise(
-        Promise.resolve({ messages: [], anchorReached: false, reachedRoot: true }),
+        Promise.resolve({
+          messages: [],
+          anchorReached: false,
+          reachedRoot: true,
+        }),
       )
     }
     if (anchorId === tipId) {
       return ResultAsync.fromSafePromise(
-        Promise.resolve({ messages: [], anchorReached: true, reachedRoot: false }),
+        Promise.resolve({
+          messages: [],
+          anchorReached: true,
+          reachedRoot: false,
+        }),
       )
     }
     return q(async () => {
@@ -250,19 +258,22 @@ export const Messages = {
       const all = parsed.data // newest-first (depth ASC)
       const anchorIdx = all.findIndex(r => r.id === anchorId)
       if (anchorIdx >= 0) {
-        return { rows: all.slice(0, anchorIdx), anchorReached: true, reachedRoot: false }
+        return {
+          rows: all.slice(0, anchorIdx),
+          anchorReached: true,
+          reachedRoot: false,
+        }
       }
       const reachedRoot = all.some(r => r.prev_id === null || r.prev_id === '')
       return { rows: all, anchorReached: false, reachedRoot }
-    }, 'query message delta')
-      .andThen(r =>
-        hydrateChain(db, tenant, r.rows).map(messages => ({
-          // Return oldest-first (the chain order the UI expects).
-          messages: [...messages].reverse(),
-          anchorReached: r.anchorReached,
-          reachedRoot: r.reachedRoot,
-        })),
-      )
+    }, 'query message delta').andThen(r =>
+      hydrateChain(db, tenant, r.rows).map(messages => ({
+        // Return oldest-first (the chain order the UI expects).
+        messages: [...messages].reverse(),
+        anchorReached: r.anchorReached,
+        reachedRoot: r.reachedRoot,
+      })),
+    )
   },
 }
 

@@ -3,8 +3,8 @@ import {
   buildGenerativeModel,
   buildModelForApiType,
   GATEWAY_API_TYPE,
-  parseCapability,
   type ProviderCredentials,
+  parseCapability,
 } from '../src/llm.js'
 
 const gateway: ProviderCredentials = {
@@ -50,7 +50,9 @@ describe('parseCapability', () => {
 
 describe('buildModelForApiType', () => {
   it('builds a language model for the gateway', () => {
-    expect(buildModelForApiType(gateway, 'qwen3.8-flash-next').isOk()).toBe(true)
+    expect(buildModelForApiType(gateway, 'qwen3.8-flash-next').isOk()).toBe(
+      true,
+    )
   })
 })
 

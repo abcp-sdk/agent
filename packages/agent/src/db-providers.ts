@@ -40,7 +40,12 @@ export const Providers = {
         db
           .select()
           .from(providers)
-          .where(or(eq(providers.tenant, tenant), eq(providers.tenant, SHARED_TENANT)))
+          .where(
+            or(
+              eq(providers.tenant, tenant),
+              eq(providers.tenant, SHARED_TENANT),
+            ),
+          )
           .orderBy(providers.providerId)
           .then(rows => {
             // Tenant-local rows shadow shared (global) rows with the same id.
@@ -58,10 +63,7 @@ export const Providers = {
     )
   },
 
-  listTenants(
-    db: Db,
-    tenant: string,
-  ): ResultAsync<ProviderRow[], string> {
+  listTenants(db: Db, tenant: string): ResultAsync<ProviderRow[], string> {
     return q(
       () =>
         db
@@ -109,16 +111,14 @@ export const Providers = {
     ).map(() => undefined)
   },
 
-  delete(
-    db: Db,
-    tenant: string,
-    id: string,
-  ): ResultAsync<boolean, string> {
+  delete(db: Db, tenant: string, id: string): ResultAsync<boolean, string> {
     return q(
       () =>
         db
           .delete(providers)
-          .where(and(eq(providers.tenant, tenant), eq(providers.providerId, id)))
+          .where(
+            and(eq(providers.tenant, tenant), eq(providers.providerId, id)),
+          )
           .returning({ id: providers.providerId })
           .then(rows => rows.length > 0),
       'delete provider',

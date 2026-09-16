@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
 import { maskSecret } from '@easylab-agent/agent'
+import { describe, expect, it } from 'vitest'
 import { providerToMsg } from '../src/connect.js'
 
 describe('providerToMsg masks the stored api key (A2 regression)', () => {
@@ -13,7 +13,9 @@ describe('providerToMsg masks the stored api key (A2 regression)', () => {
       models: '[]',
       updated_at: '',
     })
-    expect(msg.apiKey).toBe(maskSecret('gw-0c53f638b62edf7275d9443a7282123d3a9a7f7a96ce9ee0'))
+    expect(msg.apiKey).toBe(
+      maskSecret('gw-0c53f638b62edf7275d9443a7282123d3a9a7f7a96ce9ee0'),
+    )
     expect(msg.apiKey).toBe('gw-0****9ee0')
     expect(msg.apiKey).not.toContain('f638b62edf')
   })

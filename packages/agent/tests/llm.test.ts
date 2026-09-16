@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import type { Db } from '../src/db-client.js'
 import {
   buildModelForApiType,
   LlmRegistry,
   modelRef,
   parseProviderModelRef,
 } from '../src/llm.js'
-import type { Db } from '../src/db-client.js'
 import { catalogModel, variantsForApiType } from '../src/variants.js'
 
 // LLM endpoint smoke: prove the selected variant wiring composes with the
@@ -62,7 +62,9 @@ describe('variant + model composition', () => {
 
     const meta = catalogModel(catalog, 'openai', 'gpt-5.4')!
     const high = variantsForApiType(meta, 'openai').find(v => v.id === 'high')!
-    expect(high.providerOptions).toEqual({ openai: { reasoningEffort: 'high' } })
+    expect(high.providerOptions).toEqual({
+      openai: { reasoningEffort: 'high' },
+    })
   })
 
   it('modelRef round-trips through parseProviderModelRef', () => {

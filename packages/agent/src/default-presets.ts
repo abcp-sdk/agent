@@ -34,11 +34,7 @@ export function isSystemPreset(id: string): boolean {
  * names, plus the easylab plan/explore/build trio that used to be baked into
  * the generic agent (they now live in easylab's own deployment).
  */
-const RETIRED_SYSTEM_PRESETS = [
-  'orchestrator',
-  'executor',
-  'analyst',
-] as const
+const RETIRED_SYSTEM_PRESETS = ['orchestrator', 'executor', 'analyst'] as const
 
 export function isRetiredSystemPreset(id: string): boolean {
   return (RETIRED_SYSTEM_PRESETS as readonly string[]).includes(id)

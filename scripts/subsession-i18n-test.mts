@@ -44,7 +44,6 @@ async function main(): Promise<void> {
   const work = mkdtempSync(join(tmpdir(), 'subi18n-'))
   const nats = await startNats({
     storage: 'memory',
-    binary: '/tmp/opencode/nats/bin/nats-server',
   })
   const mockPort = 49000 + Math.floor(Math.random() * 900)
   const mock = createHttpServer((req, res) => {

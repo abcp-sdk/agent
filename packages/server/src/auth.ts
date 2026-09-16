@@ -1,5 +1,5 @@
-import { Code, ConnectError, createContextKey } from '@connectrpc/connect'
 import type { HandlerContext, Interceptor } from '@connectrpc/connect'
+import { Code, ConnectError, createContextKey } from '@connectrpc/connect'
 import type { AgentDeps } from '@easylab-agent/agent'
 import { Tenants, touchToken } from '@easylab-agent/agent'
 

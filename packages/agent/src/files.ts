@@ -145,7 +145,10 @@ export async function fileBySha(
         const hit = metaCache.get(metaCacheKey(tenant, cached))
         if (hit !== undefined) return hit
       }
-      const code = await bus.kvGet(BUCKET_FILES_META, fileShaKey(tenant, sha256))
+      const code = await bus.kvGet(
+        BUCKET_FILES_META,
+        fileShaKey(tenant, sha256),
+      )
       if (code === null) return null
       const raw = await bus.kvGet(BUCKET_FILES_META, fileMetaKey(tenant, code))
       if (raw === null) return null

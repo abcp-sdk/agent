@@ -123,7 +123,7 @@ export function normalizeGatewayModelType(
   raw: string | null | undefined,
 ): string {
   const t = (raw ?? '').trim().toLowerCase()
-  if (t === '' ) return ''
+  if (t === '') return ''
   if (t === 'language') return 'text'
   return t
 }

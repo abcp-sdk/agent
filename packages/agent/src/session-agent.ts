@@ -774,13 +774,19 @@ async function prepare(
   // logged, not fatal): a tool running later in THIS turn (e.g.
   // subsession-create reading the locale) must observe the write — a
   // fire-and-forget put raced the tool's read in the wild.
-  await setSessionVariable(deps.bus, tenant, 'agent', sid, 'locale', locale)
-    .catch(e => {
-      logger.warn(
-        { tenant, sid, err: String(e) },
-        'locale session-variable projection failed',
-      )
-    })
+  await setSessionVariable(
+    deps.bus,
+    tenant,
+    'agent',
+    sid,
+    'locale',
+    locale,
+  ).catch(e => {
+    logger.warn(
+      { tenant, sid, err: String(e) },
+      'locale session-variable projection failed',
+    )
+  })
 
   return {
     tools,
@@ -970,21 +976,25 @@ async function persistUserPrompt(
   text: string,
   messageId?: string,
 ): Promise<void> {
-  const id = messageId !== undefined && messageId !== '' ? messageId : randomUUID()
+  const id =
+    messageId !== undefined && messageId !== '' ? messageId : randomUUID()
   const tip = await Sessions.tip(deps.db, tenant, sid)
   const tipId = tip.isErr() ? null : tip.value
   // Idempotent by id: a producer that already wrote this message (HTTP Prompt
   // route) makes this a no-op, so the same logical user message is never
   // inserted twice even though BOTH the route and the mailbox handlers write.
-  const created = await Messages.insertWithId(deps.db, tenant, id, 'user', tipId)
+  const created = await Messages.insertWithId(
+    deps.db,
+    tenant,
+    id,
+    'user',
+    tipId,
+  )
   if (created.isErr()) return
   if (!created.value) return // already persisted by the producer
   await Parts.insert(deps.db, tenant, id, 'text', 0, { text })
   await Sessions.setTip(deps.db, tenant, sid, id)
-  fireAndForget(
-    appendSessionId(deps.bus, tenant, sid, id),
-    'appendSessionIds',
-  )
+  fireAndForget(appendSessionId(deps.bus, tenant, sid, id), 'appendSessionIds')
   projectMessageFact(
     deps.bus,
     tenant,

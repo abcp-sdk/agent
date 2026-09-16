@@ -14,7 +14,8 @@ function fakeBus() {
   const published: string[] = []
   const bus = {
     kvCreate: () => Promise.resolve(1),
-    kvGet: (_bucket: string, key: string) => Promise.resolve(kv.get(key) ?? null),
+    kvGet: (_bucket: string, key: string) =>
+      Promise.resolve(kv.get(key) ?? null),
     kvPut: (_bucket: string, key: string, value: string) => {
       kv.set(key, value)
       return Promise.resolve()

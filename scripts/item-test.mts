@@ -53,7 +53,6 @@ async function main(): Promise<void> {
   const work = mkdtempSync(join(tmpdir(), 'agent-item-'))
   const nats = await startNats({
     storage: 'memory',
-    binary: '/tmp/opencode/nats/bin/nats-server',
   })
   console.log(`[item] nats ${nats.url}`)
 

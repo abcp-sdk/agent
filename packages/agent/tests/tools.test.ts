@@ -139,11 +139,16 @@ describe('filterDeniedTools', () => {
       [bundledSub, repoSub, mailSend],
       ['bundled.subsession-create', 'bundled.mail-send'],
     )
-    expect(out.map(t => `${t.extId}.${t.name}`)).toEqual(['repo.subsession-create'])
+    expect(out.map(t => `${t.extId}.${t.name}`)).toEqual([
+      'repo.subsession-create',
+    ])
   })
 
   it('after removal the surviving same-named tool qualifies as its bare name', () => {
-    const out = filterDeniedTools([bundledSub, repoSub], ['bundled.subsession-create'])
+    const out = filterDeniedTools(
+      [bundledSub, repoSub],
+      ['bundled.subsession-create'],
+    )
     // Only repo's subsession-create is left, so the qualified name collapses to
     // the bare name a preset whitelist references.
     expect(toolQualifiedName(out, out[0])).toBe('subsession-create')

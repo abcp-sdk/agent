@@ -247,6 +247,19 @@ async function main(): Promise<void> {
     () => {},
     e => logger.warn({ err: String(e) }, 'models.dev refresh failed'),
   )
+  // Keep the catalog fresh: the read side caches for 30 minutes, so refresh
+  // on the same cadence — without this the catalog went stale until restart
+  // (the snapshot fallback only ever applied at boot).
+  const catalogRefreshMs = 30 * 60 * 1000
+  const catalogTimer = setInterval(
+    () =>
+      void refreshModelsDev(bus).then(
+        () => {},
+        e => logger.warn({ err: String(e) }, 'models.dev refresh failed'),
+      ),
+    catalogRefreshMs,
+  )
+  catalogTimer.unref()
 
   // ---- serving surface: Connect RPC (hono + createFetchHandler) ----
   // Build the Connect router (grpc + grpc-web + connect protocols), then wrap

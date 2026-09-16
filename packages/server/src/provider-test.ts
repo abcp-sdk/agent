@@ -4,7 +4,13 @@ import {
   type ModelCapability,
   type ProviderCredentials,
 } from '@easylab-agent/agent'
-import { generateImage, generateSpeech, generateText, experimental_generateVideo, transcribe } from 'ai'
+import {
+  experimental_generateVideo,
+  generateImage,
+  generateSpeech,
+  generateText,
+  transcribe,
+} from 'ai'
 
 /**
  * Provider-model test probes. The test runs a REAL smallest-possible
@@ -122,7 +128,10 @@ export async function runProviderTest(
         size: TEST_IMAGE_SIZE as `${number}x${number}`,
       })
       const bytes = res.images[0]?.uint8Array?.length ?? 0
-      return { ok: true, result: `image ok (${TEST_IMAGE_SIZE}, ${bytes} bytes)` }
+      return {
+        ok: true,
+        result: `image ok (${TEST_IMAGE_SIZE}, ${bytes} bytes)`,
+      }
     }
     case 'speech': {
       const built = buildGenerativeModel(c, input.modelId, 'speech')
@@ -161,9 +170,10 @@ export async function runProviderTest(
       })
       return {
         ok: true,
-        result: res.text.trim() === ''
-          ? 'transcription ok (empty transcript — synthetic tone carries no speech)'
-          : `transcription ok: ${res.text.trim().slice(0, 80)}`,
+        result:
+          res.text.trim() === ''
+            ? 'transcription ok (empty transcript — synthetic tone carries no speech)'
+            : `transcription ok: ${res.text.trim().slice(0, 80)}`,
       }
     }
     case 'video': {
@@ -181,7 +191,10 @@ export async function runProviderTest(
         abortSignal: AbortSignal.timeout(TEST_VIDEO_TIMEOUT_MS),
       })
       const bytes = res.videos[0]?.uint8Array?.length ?? 0
-      return { ok: true, result: `video ok (${TEST_VIDEO_SECONDS}s, ${bytes} bytes)` }
+      return {
+        ok: true,
+        result: `video ok (${TEST_VIDEO_SECONDS}s, ${bytes} bytes)`,
+      }
     }
     default:
       return { ok: false, result: `unknown capability '${input.capability}'` }

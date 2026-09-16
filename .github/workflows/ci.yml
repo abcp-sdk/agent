@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint (biome)
+        run: npm run check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      # E2E needs a nats-server binary; fetch the pinned release once per job.
+      - name: Fetch nats-server
+        run: |
+          curl -fsSL -o /tmp/nats.tgz \
+            https://github.com/nats-io/nats-server/releases/download/v2.14.6/nats-server-v2.14.6-linux-amd64.tar.gz
+          mkdir -p "$HOME/.local/nats/bin"
+          tar -xzf /tmp/nats.tgz -C "$HOME/.local/nats/bin" --strip-components=1 \
+            nats-server-v2.14.6-linux-amd64/nats-server
+          echo "ABC_NATS_SERVER_BIN=$HOME/.local/nats/bin/nats-server" >> "$GITHUB_ENV"
+
+      - name: Build (SEA binary)
+        run: npm run build
+
+      - name: E2E (full RPC suite)
+        run: npm run e2e
+
+      - name: E2E (subsession)
+        run: npx tsx scripts/subsession-test.mts
+
+      - name: E2E (subsession i18n)
+        run: npx tsx scripts/subsession-i18n-test.mts
+
+      - name: E2E (mailbox items)
+        run: npx tsx scripts/item-test.mts

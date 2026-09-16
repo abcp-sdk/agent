@@ -39,7 +39,11 @@ export function discoverExtensions(
   maxWaitMs = 500,
 ): ResultAsync<ResolvedExtension[], string> {
   return ResultAsync.fromPromise(
-    bus.requestMany(EXTENSION_DISCOVER_SUBJECT, {}, { maxWaitMs, tenant: GLOBAL_TENANT }),
+    bus.requestMany(
+      EXTENSION_DISCOVER_SUBJECT,
+      {},
+      { maxWaitMs, tenant: GLOBAL_TENANT },
+    ),
     e => `discover: ${String(e)}`,
   ).map(replies => {
     const out: ResolvedExtension[] = []

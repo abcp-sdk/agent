@@ -16,7 +16,8 @@
     "start": "node .sea/easylab-agent",
     "test": "npm test --workspaces --if-present",
     "e2e": "tsx scripts/e2e.mts",
-    "e2e:build": "npm run build && tsx scripts/e2e.mts"
+    "e2e:build": "npm run build && tsx scripts/e2e.mts",
+    "typecheck": "tsc -p packages/agent/tsconfig.json --noEmit && tsc -p packages/server/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.9",

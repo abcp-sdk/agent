@@ -177,10 +177,14 @@ export async function discoverTools(
   maxWaitMs = 500,
 ): Promise<DiscoveredTool[]> {
   const replies = await bus
-    .requestMany(EXTENSION_DISCOVER_SUBJECT, {}, {
-      maxWaitMs,
-      tenant: GLOBAL_TENANT,
-    })
+    .requestMany(
+      EXTENSION_DISCOVER_SUBJECT,
+      {},
+      {
+        maxWaitMs,
+        tenant: GLOBAL_TENANT,
+      },
+    )
     .catch(() => [])
   const out: DiscoveredTool[] = []
   for (const env of replies) {
@@ -330,7 +334,14 @@ export function buildAiTools(
       execute: async (args, { toolCallId }) => {
         return await raceFinal(
           new AbcAgent(bus)
-            .callTool(tenant, sessionId ?? '', t.extId, t.name, toolCallId, args ?? {})
+            .callTool(
+              tenant,
+              sessionId ?? '',
+              t.extId,
+              t.name,
+              toolCallId,
+              args ?? {},
+            )
             .then(r => {
               // A tool that failed surfaces its message in `r.error` (set by the
               // extension server). Propagate it as a thrown error so the AI SDK
@@ -383,7 +394,8 @@ async function raceFinal(
   // accumulate on it for the rest of the turn.
   let onAbort: (() => void) | undefined
   const aborted = new Promise<ToolResult>(resolve => {
-    onAbort = () => resolve({ content: `tool '${name}' interrupted`, metadata: null })
+    onAbort = () =>
+      resolve({ content: `tool '${name}' interrupted`, metadata: null })
     if (abortSignal === undefined) return
     if (abortSignal.aborted) {
       onAbort()

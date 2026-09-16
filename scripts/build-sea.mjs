@@ -36,6 +36,9 @@ await build({
   // Bundle all dependencies into the single CJS file so the SEA binary is
   // fully self-contained (node:sea's require only loads built-ins + bundle).
   packages: undefined,
+  // Minify the SHIPPED binary (~10MB → ~4MB). The per-package dist builds
+  // (build-esbuild.mjs) stay unminified for readable dev stack traces.
+  minify: true,
   outExtension: { '.js': '.cjs' },
   loader: {
     '.txt': 'text',

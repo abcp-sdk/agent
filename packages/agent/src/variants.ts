@@ -99,7 +99,10 @@ export interface CatalogModel {
   contextLimit: number | undefined
   modes: Record<
     string,
-    { body: JsonObject | undefined; headers: Record<string, string> | undefined }
+    {
+      body: JsonObject | undefined
+      headers: Record<string, string> | undefined
+    }
   >
 }
 
@@ -222,11 +225,15 @@ function budgetOptions(
   tokens: number,
 ): Record<string, JsonObject> | null {
   if (isAnthropic(ns)) {
-    return { anthropic: { thinking: { type: 'enabled', budgetTokens: tokens } } }
+    return {
+      anthropic: { thinking: { type: 'enabled', budgetTokens: tokens } },
+    }
   }
   if (isGoogle(ns)) {
     return {
-      google: { thinkingConfig: { includeThoughts: true, thinkingBudget: tokens } },
+      google: {
+        thinkingConfig: { includeThoughts: true, thinkingBudget: tokens },
+      },
     }
   }
   // Budget is not a portable concept for the other providers.

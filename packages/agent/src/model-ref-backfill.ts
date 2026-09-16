@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import type { Db } from './db-client.js'
-import { logger } from './logger.js'
 import { Providers } from './db-providers.js'
 import { Sessions } from './db-sessions.js'
-import { modelRef } from './llm.js'
 import { parse } from './json.js'
+import { modelRef } from './llm.js'
+import { logger } from './logger.js'
 
 const StringArraySchema = z.array(z.string())
 
@@ -61,7 +61,12 @@ export async function backfillModelRefs(
       if (owners.length !== 1) {
         ambiguous++
         logger.warn(
-          { tenant, name: s.name, model: s.model, owners: owners.map(o => o.provider_id) },
+          {
+            tenant,
+            name: s.name,
+            model: s.model,
+            owners: owners.map(o => o.provider_id),
+          },
           'model-ref backfill: cannot disambiguate; leaving bare model',
         )
         continue

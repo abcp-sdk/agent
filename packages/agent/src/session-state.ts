@@ -245,8 +245,7 @@ export async function calibrateMessageFacts(
       const existingRaw = await bus
         .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
         .catch(() => null)
-      const existing =
-        existingRaw === null ? null : parseFact(existingRaw)
+      const existing = existingRaw === null ? null : parseFact(existingRaw)
       const seq = existing?.message_seq ?? seqCache.get(sid) ?? 0
       seqCache.set(sid, seq)
       const fact: SessionMessageFact = {
@@ -258,7 +257,12 @@ export async function calibrateMessageFacts(
         last_message_role: String(r.last_message_role),
       }
       await bus
-        .kvPut(BUCKET_SESSION_STATE, factKey(tenant, sid), JSON.stringify(fact), 0)
+        .kvPut(
+          BUCKET_SESSION_STATE,
+          factKey(tenant, sid),
+          JSON.stringify(fact),
+          0,
+        )
         .catch(err => {
           logger.warn({ sid, err: String(err) }, 'calibration kvPut failed')
         })
@@ -307,5 +311,8 @@ export async function rawCalibrationRows(
     ) pmin ON pmin.message_id = m.id
     JOIN parts p ON p.message_id = m.id AND p.type = 'text' AND p.seq = pmin.min_seq
     WHERE s.tenant = ?`
-  return rawAll(db, dbBackend(db) === 'pg' ? pgSQL : sqliteSQL, [tenant, previewMax])
+  return rawAll(db, dbBackend(db) === 'pg' ? pgSQL : sqliteSQL, [
+    tenant,
+    previewMax,
+  ])
 }

@@ -55,7 +55,6 @@ async function main(): Promise<void> {
   const work = mkdtempSync(join(tmpdir(), 'subsess-'))
   const nats = await startNats({
     storage: 'memory',
-    binary: '/tmp/opencode/nats/bin/nats-server',
   })
 
   // Mock OpenAI-compatible LLM: model `mock-sub` whose behavior is driven by

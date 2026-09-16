@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { and, eq, isNull } from 'drizzle-orm'
-import { ResultAsync } from 'neverthrow'
+import type { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'
 import { nowStr, q } from './db-client.js'
-import { tenantTokens, tenants } from './db-schema.js'
+import { tenants, tenantTokens } from './db-schema.js'
 
 /**
  * Persistence for the multi-tenant identity layer: tenants + their bearer
@@ -52,8 +52,9 @@ function tokenSha256(data: string): string {
 
 /** Mint a fresh opaque token: 32 random bytes, base64url, no padding. */
 export function mintToken(): string {
-  return Buffer.from(crypto.getRandomValues(new Uint8Array(32)))
-    .toString('base64url')
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString(
+    'base64url',
+  )
 }
 
 export const Tenants = {
@@ -88,11 +89,7 @@ export const Tenants = {
     )
   },
 
-  create(
-    db: Db,
-    id: string,
-    name: string,
-  ): ResultAsync<TenantRow, string> {
+  create(db: Db, id: string, name: string): ResultAsync<TenantRow, string> {
     const now = nowStr()
     const row: TenantRow = {
       id,
@@ -167,10 +164,7 @@ export const Tenants = {
     }))
   },
 
-  listTokens(
-    db: Db,
-    tenantId: string,
-  ): ResultAsync<TenantTokenRow[], string> {
+  listTokens(db: Db, tenantId: string): ResultAsync<TenantTokenRow[], string> {
     return q(
       () =>
         db
@@ -224,7 +218,10 @@ export const Tenants = {
         revokedAt: null as string | null,
       }
       await db.insert(tenantTokens).values(newRow)
-      return { token: toToken(newRow as typeof tenantTokens.$inferSelect), plaintext }
+      return {
+        token: toToken(newRow as typeof tenantTokens.$inferSelect),
+        plaintext,
+      }
     }, 'rotate tenant token')
   },
 
