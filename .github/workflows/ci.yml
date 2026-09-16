@@ -8,6 +8,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agent
+          POSTGRES_PASSWORD: agent
+          POSTGRES_DB: agent_smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -52,3 +66,8 @@ jobs:
 
       - name: E2E (mailbox items)
         run: npx tsx scripts/item-test.mts
+
+      - name: PG smoke (postgres service)
+        env:
+          PG_SMOKE_DATABASE_URL: postgres://agent:agent@localhost:5432/agent_smoke
+        run: npx tsx scripts/pg-smoke.mts

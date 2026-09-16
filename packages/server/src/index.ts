@@ -185,8 +185,128 @@ async function main(): Promise<void> {
       await upsertFile(bus, t, record)
       return { code: record.code, mime }
     },
-    rawAll: (sql, params) => rawAll(db, sql, params),
-    rawRun: (sql, params) => rawRun(db, sql, params),
+    // ---- Narrow data access for the bundled extension ----
+    // The extension never speaks SQL: the HOST owns the schema and serves
+    // these named operations (see BundledDeps in bundled-extension/deps.ts).
+    sessionGroup: async (tenant, sid) => {
+      const rows = await rawAll(
+        db,
+        'SELECT "group" AS g FROM sessions WHERE tenant = ? AND name = ?',
+        [tenant, sid],
+      )
+      return rows.length > 0 ? String(rows[0]!['g'] ?? '') : ''
+    },
+    sessionExists: async (tenant, sid) => {
+      const rows = await rawAll(
+        db,
+        'SELECT 1 AS x FROM sessions WHERE tenant = ? AND name = ? LIMIT 1',
+        [tenant, sid],
+      )
+      return rows.length > 0
+    },
+    sessionTip: async (tenant, sid) => {
+      const rows = await rawAll(
+        db,
+        'SELECT tip_id AS t FROM sessions WHERE tenant = ? AND name = ?',
+        [tenant, sid],
+      )
+      return rows.length > 0 ? String(rows[0]!['t'] ?? '') : ''
+    },
+    sessionsInGroup: async (tenant, group) => {
+      const rows = await rawAll(
+        db,
+        'SELECT name AS n FROM sessions WHERE tenant = ? AND "group" = ?',
+        [tenant, group],
+      )
+      return rows.map(r => String(r['n'] ?? '')).filter(n => n !== '')
+    },
+    forkSession: (tenant, parent, child) =>
+      rawRun(
+        db,
+        `INSERT INTO sessions
+           (tenant, name, model, variant, preset, tip_id, max_turns,
+            system_prompt, locale, "group", created_at, updated_at)
+         SELECT tenant, ?, model, variant, preset, tip_id, max_turns,
+                system_prompt, locale, ?, datetime('now'), datetime('now')
+         FROM sessions WHERE tenant = ? AND name = ?`,
+        [child, parent, tenant, parent],
+      ),
+    deleteSessionRow: (tenant, sid) =>
+      rawRun(db, 'DELETE FROM sessions WHERE tenant = ? AND name = ?', [
+        tenant,
+        sid,
+      ]),
+    deleteSessionMailbox: (tenant, sid) =>
+      rawRun(db, 'DELETE FROM mailbox WHERE tenant = ? AND session_name = ?', [
+        tenant,
+        sid,
+      ]),
+    messageChain: async (tenant, tip, limit) => {
+      const rows = await rawAll(
+        db,
+        `WITH RECURSIVE chain AS (
+           SELECT m.id, m.role, m.prev_id, m.created_at, 0 AS depth
+           FROM messages m WHERE m.id = ? AND m.tenant = ?
+           UNION ALL
+           SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
+           FROM messages m JOIN chain c ON m.id = c.prev_id
+           WHERE m.tenant = ?
+         )
+         SELECT id, role, created_at, depth FROM chain WHERE depth < ? ORDER BY depth ASC`,
+        [tip, tenant, tenant, limit],
+      )
+      return rows.map(r => ({
+        id: String(r['id'] ?? ''),
+        role: String(r['role'] ?? ''),
+        createdAt: String(r['created_at'] ?? ''),
+        depth: Number(r['depth'] ?? 0),
+      }))
+    },
+    messageParts: async (tenant, ids) => {
+      if (ids.length === 0) return []
+      const placeholders = ids.map(() => '?').join(',')
+      const rows = await rawAll(
+        db,
+        `SELECT message_id, type, seq, data FROM parts
+         WHERE tenant = ? AND message_id IN (${placeholders})
+         ORDER BY message_id, seq`,
+        [tenant, ...ids],
+      )
+      return rows.map(r => ({
+        messageId: String(r['message_id'] ?? ''),
+        type: String(r['type'] ?? ''),
+        seq: Number(r['seq'] ?? 0),
+        data: String(r['data'] ?? ''),
+      }))
+    },
+    todosEnsure: () =>
+      rawRun(
+        db,
+        `CREATE TABLE IF NOT EXISTS bundled_todos (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant TEXT NOT NULL DEFAULT 'default',
+          session_id TEXT NOT NULL,
+          content TEXT NOT NULL,
+          status TEXT NOT NULL,
+          priority TEXT NOT NULL,
+          created_unix INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+        );
+        CREATE INDEX IF NOT EXISTS idx_bundled_todos_session ON bundled_todos (tenant, session_id);`,
+      ),
+    todosReplace: async (tenant, sid, rows) => {
+      await rawRun(
+        db,
+        'DELETE FROM bundled_todos WHERE tenant = ? AND session_id = ?',
+        [tenant, sid],
+      )
+      for (const r of rows) {
+        await rawRun(
+          db,
+          'INSERT INTO bundled_todos (tenant, session_id, content, status, priority) VALUES (?,?,?,?,?)',
+          [tenant, sid, r.content, r.status, r.priority],
+        )
+      }
+    },
     // Cross-session messaging (subsession handoff + direct session-send):
     // the bundled tools deliver to any session's mailbox over the same bus.
     publishMailbox: (tenant, sessionName, type, payload) =>
