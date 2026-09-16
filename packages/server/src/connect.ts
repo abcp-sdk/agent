@@ -35,6 +35,7 @@ import {
   isGatewayApiType,
   localizeSchema,
   Mailbox,
+  maskSecret,
   Messages,
   mailboxSubject,
   Parts,
@@ -261,7 +262,9 @@ function parseProviderModels(raw: string | null | undefined): {
   return out
 }
 
-function providerToMsg(p: ProviderRowView) {
+/** Provider row -> proto message. Exported for masking tests.
+ * The api key is ALWAYS masked (see maskSecret). */
+export function providerToMsg(p: ProviderRowView) {
   let headers: Record<string, string> = {}
   try {
     headers = JSON.parse(p.headers ?? '{}') ?? {}
@@ -270,7 +273,9 @@ function providerToMsg(p: ProviderRowView) {
     providerId: p.provider_id ?? '',
     apiType: p.api_type ?? '',
     baseUrl: p.base_url ?? '',
-    apiKey: p.api_key ?? '',
+    // Masked: the plaintext never leaves the server. The mask doubles as
+    // the edit-time sentinel (see registerProvider).
+    apiKey: maskSecret(p.api_key ?? ''),
     headers,
     models: parseProviderModels(p.models),
     updatedAt: p.updated_at ?? '',
@@ -427,7 +432,7 @@ export function buildConnectRoutes(
       async deleteSession(req, ctx: HandlerContext) {
         const tenant = tenantOf(ctx)
         const id = req.id
-        interruptRun(id)
+        interruptRun(tenant, id)
         const r = await Sessions.delete(deps.db, tenant, id)
         if (r.isErr()) throw new Error(r.error)
         publishLifecycle(deps.bus, tenant, 'deleted', { session_name: id })
@@ -904,7 +909,7 @@ export function buildConnectRoutes(
         // Abort any in-flight turn and invalidate its active-run marker BEFORE
         // moving the tip: a running turn must not keep emitting deltas (or a
         // late turn-complete) for content we are withdrawing.
-        interruptRun(id)
+        interruptRun(tenant, id)
         clearActiveRun(deps.bus, tenant, id)
         await Sessions.setTip(deps.db, tenant, id, target.value.prev_id)
         // AWAIT the context-cache invalidation: it must be complete before this
@@ -1012,7 +1017,7 @@ export function buildConnectRoutes(
       async interrupt(req, ctx: HandlerContext) {
         const tenant = tenantOf(ctx)
         const id = req.id
-        interruptRun(id)
+        interruptRun(tenant, id)
         void deps.bus
           .publish(mailboxSubject(tenant, id), {
             type: 'interrupt',
@@ -1101,11 +1106,28 @@ export function buildConnectRoutes(
             model_type: m.modelType ?? '',
           })
         }
+        // Edit-time sentinel: a client that LISTED providers prefills the form
+        // with the MASKED key; saving untouched round-trips the mask verbatim.
+        // Treat that as "unchanged" and keep the stored secret — only a
+        // genuinely different (user-typed) key overwrites it.
+        let apiKey = p.apiKey ?? ''
+        const existingRows = await Providers.list(deps.db, tenant)
+        if (existingRows.isErr()) throw new Error(existingRows.error)
+        const existing = existingRows.value.find(
+          r => r.provider_id === p.providerId,
+        )
+        if (
+          existing !== undefined &&
+          apiKey !== '' &&
+          apiKey === maskSecret(existing.api_key)
+        ) {
+          apiKey = existing.api_key
+        }
         const r = await Providers.upsert(deps.db, tenant, {
           providerId: p.providerId,
           apiType,
           baseUrl: p.baseUrl,
-          apiKey: p.apiKey ?? '',
+          apiKey,
           headers: p.headers ?? {},
           models,
         })
@@ -1163,6 +1185,17 @@ export function buildConnectRoutes(
         const modelId = ref !== null ? ref.modelId : r.model
         const providerId =
           r.providerId !== '' ? r.providerId : (ref?.providerId ?? '')
+        // Credential resolution: an EMPTY key or the edit-time MASK means
+        // "test what is registered" — fall back to the stored secret. A
+        // genuinely different key tests the unregistered credentials as-is.
+        let apiKey = r.apiKey ?? ''
+        if (apiKey === '' || (providerId !== '' && apiKey.includes('****'))) {
+          const rows = await Providers.list(deps.db, tenant)
+          if (rows.isOk()) {
+            const row = rows.value.find(x => x.provider_id === providerId)
+            if (row !== undefined) apiKey = row.api_key
+          }
+        }
         // Text models may carry a reasoning variant; resolve it to the
         // providerOptions the test generation should exercise.
         let textProviderOptions: Record<string, unknown> | undefined
@@ -1186,7 +1219,7 @@ export function buildConnectRoutes(
             {
               apiType: r.apiType,
               baseUrl: r.baseUrl,
-              apiKey: r.apiKey ?? '',
+              apiKey,
               modelId,
               capability: cap.value,
               providerId,

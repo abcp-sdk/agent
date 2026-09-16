@@ -162,3 +162,32 @@ describe('filterDeniedTools', () => {
     expect(filterDeniedTools(tools, [])).toBe(tools)
   })
 })
+
+describe('raceFinal abort-listener hygiene', () => {
+  it('removes the abort listener once the tool settles (no accumulation)', async () => {
+    const { getEventListeners } = await import('node:events')
+    const { bus } = fakeBus()
+    const ctrl = new AbortController()
+    const tools = buildAiTools([tool], bus, 500, T, 's', ctrl.signal)
+    // Several sequential tool calls share ONE turn-level abort signal.
+    for (let i = 0; i < 5; i++) {
+      await tools.read.execute({}, execOpts(`hyg-${i}`))
+      // After each settled call the listener count must return to zero —
+      // regression: resolved calls used to leave their listener attached for
+      // the rest of the turn.
+      expect(getEventListeners(ctrl.signal, 'abort').length).toBe(0)
+    }
+  })
+
+  it('still resolves immediately when the signal aborts mid-call', async () => {
+    const { bus } = fakeBus()
+    const ctrl = new AbortController()
+    const tools = buildAiTools([tool], bus, 60_000, T, 's', ctrl.signal)
+    const pending = tools.read.execute({}, execOpts('abort-mid'))
+    // Abort before the (immediate) reply would arrive; the raced interrupt
+    // path must win and produce an interrupt ToolResult.
+    ctrl.abort()
+    const out = (await pending) as { content: string }
+    expect(out.content).toContain('interrupted')
+  })
+})

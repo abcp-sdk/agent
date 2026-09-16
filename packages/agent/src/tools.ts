@@ -378,9 +378,12 @@ async function raceFinal(
   // Interrupt (stop button) must also cancel an in-flight tool call, not just
   // the LLM stream: resolve early the moment the abort signal fires so a long
   // tool (e.g. sandbox-job-wait) cannot block the turn past an interrupt.
+  // The listener is REMOVED in the finally below: the signal is shared by the
+  // whole turn, so listeners from resolved tool calls would otherwise
+  // accumulate on it for the rest of the turn.
+  let onAbort: (() => void) | undefined
   const aborted = new Promise<ToolResult>(resolve => {
-    const onAbort = () =>
-      resolve({ content: `tool '${name}' interrupted`, metadata: null })
+    onAbort = () => resolve({ content: `tool '${name}' interrupted`, metadata: null })
     if (abortSignal === undefined) return
     if (abortSignal.aborted) {
       onAbort()
@@ -395,5 +398,8 @@ async function raceFinal(
     }))
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (onAbort !== undefined && abortSignal !== undefined) {
+      abortSignal.removeEventListener('abort', onAbort)
+    }
   }
 }

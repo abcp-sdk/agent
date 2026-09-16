@@ -243,7 +243,7 @@ async function handleItem(
 ): Promise<void> {
   if (item.msg_type === 'interrupt') {
     // Interrupt is handled out-of-band by the wake watcher; ignore here.
-    interruptRun(sid)
+    interruptRun(tenant, sid)
     return
   }
 
@@ -307,7 +307,7 @@ async function runTurnOnce(
   tenant: string,
   sid: string,
 ): Promise<string | null> {
-  const ctrl = getAbortController(sid)
+  const ctrl = getAbortController(tenant, sid)
   const prepared = await prepare(deps, tenant, sid, ctrl.signal)
   if (typeof prepared === 'string') return prepared
   const { tools, system, maxTurns, model, providerOptions, headers } = prepared
@@ -630,7 +630,7 @@ async function runTurnOnce(
     // "stale status busy" hole that previously let replay anchor on a
     // long-finished turn.
     if (unsub !== null) unsub()
-    clearRun(sid)
+    clearRun(tenant, sid)
     clearActiveRun(deps.bus, tenant, sid)
     pushEvent(
       deps.bus,
@@ -770,8 +770,17 @@ async function prepare(
 
   // Project the effective locale as a session variable so extensions can
   // localize their tool-result text. Written by the agent (provider "agent")
-  // into the shared vars bucket during each turn.
-  void setSessionVariable(deps.bus, tenant, 'agent', sid, 'locale', locale)
+  // into the shared vars bucket during each turn. AWAITED (failures are
+  // logged, not fatal): a tool running later in THIS turn (e.g.
+  // subsession-create reading the locale) must observe the write — a
+  // fire-and-forget put raced the tool's read in the wild.
+  await setSessionVariable(deps.bus, tenant, 'agent', sid, 'locale', locale)
+    .catch(e => {
+      logger.warn(
+        { tenant, sid, err: String(e) },
+        'locale session-variable projection failed',
+      )
+    })
 
   return {
     tools,
