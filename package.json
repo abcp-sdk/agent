@@ -33,6 +33,7 @@
     "@easylab/client-sdk@0.1.1": true
   },
   "overrides": {
-    "@ai-sdk/gateway": "4.0.78"
+    "@ai-sdk/gateway": "4.0.78",
+    "@ai-sdk/cohere": "3.0.61"
   }
 }

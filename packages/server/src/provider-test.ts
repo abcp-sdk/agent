@@ -5,10 +5,12 @@ import {
   type ProviderCredentials,
 } from '@easylab-agent/agent'
 import {
+  embedMany,
   experimental_generateVideo,
   generateImage,
   generateSpeech,
   generateText,
+  rerank,
   transcribe,
 } from 'ai'
 
@@ -194,6 +196,41 @@ export async function runProviderTest(
       return {
         ok: true,
         result: `video ok (${TEST_VIDEO_SECONDS}s, ${bytes} bytes)`,
+      }
+    }
+    case 'embedding': {
+      const built = buildGenerativeModel(c, input.modelId, 'embedding')
+      if (built.isErr()) return { ok: false, result: built.error }
+      const res = await embedMany({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        model: built.value as any,
+        values: ['hello', 'world'],
+      })
+      const dim = res.embeddings[0]?.length ?? 0
+      return {
+        ok: dim > 0,
+        result:
+          dim > 0
+            ? `embedding ok (${res.embeddings.length} vectors, ${dim} dims)`
+            : 'embedding returned no vectors',
+      }
+    }
+    case 'rerank': {
+      const built = buildGenerativeModel(c, input.modelId, 'rerank')
+      if (built.isErr()) return { ok: false, result: built.error }
+      const res = await rerank({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        model: built.value as any,
+        query: 'cat',
+        documents: ['a dog barks', 'a cat sleeps'],
+        topN: 2,
+      })
+      return {
+        ok: res.ranking.length > 0,
+        result:
+          res.ranking.length > 0
+            ? `rerank ok (top: doc #${res.ranking[0]?.originalIndex})`
+            : 'rerank returned no ranking',
       }
     }
     default:

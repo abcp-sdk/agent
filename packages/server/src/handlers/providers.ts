@@ -55,6 +55,7 @@ import {
   renderTemplate,
   resolveLocale,
   Sessions,
+  supportsCapability,
   TextPartDataSchema,
   toModelVariant,
   toolConfigMap,
@@ -120,36 +121,16 @@ export function providersHandlers(
       const p = req.provider
       if (!p) throw new Error('provider required')
       const apiType = p.apiType
-      const gateway = isGatewayApiType(apiType)
       const validType = validateApiType(apiType)
       if (validType.isErr()) {
         throw new ConnectError(validType.error, Code.InvalidArgument)
       }
-      // The gateway is a SUPERSET (text + multimodal) and is registered AT
-      // MOST ONCE. Text providers carry only text models. A model's
-      // capability is implied by the tool config knob that references it,
-      // not stored here.
-      if (gateway) {
-        // The gateway is a SINGLETON with the fixed id `gateway`, so every
-        // multimodal model ref is uniformly `gateway/<model-id>`.
-        if (p.providerId !== GATEWAY_PROVIDER_ID) {
-          throw new ConnectError(
-            `the '${GATEWAY_API_TYPE}' provider id must be '${GATEWAY_PROVIDER_ID}'`,
-            Code.InvalidArgument,
-          )
-        }
-        const existing = await Providers.list(deps.db, tenant)
-        if (existing.isErr()) throw new Error(existing.error)
-        const other = existing.value.find(
-          r => isGatewayApiType(r.api_type) && r.provider_id !== p.providerId,
-        )
-        if (other !== undefined) {
-          throw new ConnectError(
-            `a '${GATEWAY_API_TYPE}' gateway is already registered ('${other.provider_id}')`,
-            Code.AlreadyExists,
-          )
-        }
-      }
+      // No gateway special-casing anymore: ANY api type registers like any
+      // other provider (several providers of one api type allowed, each with
+      // models of any capability its protocol serves — see CAPABILITY_MATRIX).
+      // A model's `model_type` IS its declared capability:
+      //   text  -> context_limit required (> 0)
+      //   other -> context_limit must be 0 (not a chat model)
       const models: {
         id: string
         name: string
@@ -160,12 +141,28 @@ export function providersHandlers(
         if (m.id === '') {
           throw new ConnectError('model id is required', Code.InvalidArgument)
         }
-        // A text provider's models are all text ⇒ context_limit required. The
-        // gateway is a superset: context_limit > 0 marks its text models,
-        // 0 marks its multimodal models (used by tools).
-        if (!gateway && m.contextLimit <= 0n) {
+        const cap = parseCapability(m.modelType ?? '')
+        if (cap.isErr()) {
           throw new ConnectError(
-            `model '${m.id}': context_limit is required and must be > 0`,
+            `model '${m.id}': ${cap.error}`,
+            Code.InvalidArgument,
+          )
+        }
+        if (!supportsCapability(apiType, cap.value)) {
+          throw new ConnectError(
+            `model '${m.id}': api type '${apiType}' cannot serve capability '${cap.value}'`,
+            Code.InvalidArgument,
+          )
+        }
+        if (cap.value === 'text' && m.contextLimit <= 0n) {
+          throw new ConnectError(
+            `model '${m.id}': context_limit is required and must be > 0 for text models`,
+            Code.InvalidArgument,
+          )
+        }
+        if (cap.value !== 'text' && m.contextLimit > 0n) {
+          throw new ConnectError(
+            `model '${m.id}': context_limit must be 0 for '${cap.value}' models`,
             Code.InvalidArgument,
           )
         }
@@ -173,9 +170,7 @@ export function providersHandlers(
           id: m.id,
           name: m.name !== '' ? m.name : m.id,
           context_limit: Number(m.contextLimit),
-          // Display-only kind (text|image|video|speech|transcription|…);
-          // empty for a plain text provider.
-          model_type: m.modelType ?? '',
+          model_type: cap.value,
         })
       }
       // Edit-time sentinel: a client that LISTED providers prefills the form

@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   buildGenerativeModel,
   buildModelForApiType,
+  COHERE_API_TYPE,
+  capabilitiesOf,
   GATEWAY_API_TYPE,
   type ProviderCredentials,
   parseCapability,
+  supportsCapability,
+  validateApiType,
 } from '../src/llm.js'
 
 const gateway: ProviderCredentials = {
@@ -36,6 +40,8 @@ describe('parseCapability', () => {
       [' speech ', 'speech'],
       ['Transcription', 'transcription'],
       ['text', 'text'],
+      ['Embedding', 'embedding'],
+      ['rerank', 'rerank'],
     ] as const) {
       const r = parseCapability(raw)
       expect(r.isOk()).toBe(true)
@@ -56,18 +62,107 @@ describe('buildModelForApiType', () => {
   })
 })
 
-describe('buildGenerativeModel (gateway-only multimodal)', () => {
-  it('the gateway builds every multimodal capability', () => {
-    for (const cap of ['image', 'video', 'speech', 'transcription'] as const) {
-      expect(buildGenerativeModel(gateway, 'qwen3-tts', cap).isOk()).toBe(true)
+describe('capability matrix', () => {
+  it('openai-protocol providers serve text/embedding/image/speech/transcription', () => {
+    for (const t of ['openai', 'openai-compatible']) {
+      expect(supportsCapability(t, 'text')).toBe(true)
+      expect(supportsCapability(t, 'embedding')).toBe(true)
+      expect(supportsCapability(t, 'image')).toBe(true)
+      expect(supportsCapability(t, 'speech')).toBe(true)
+      expect(supportsCapability(t, 'transcription')).toBe(true)
+      // No standard OpenAI endpoints for these:
+      expect(supportsCapability(t, 'video')).toBe(false)
+      expect(supportsCapability(t, 'rerank')).toBe(false)
     }
   })
 
-  it('non-gateway providers reject every multimodal capability', () => {
-    for (const cap of ['image', 'video', 'speech', 'transcription'] as const) {
-      const r = buildGenerativeModel(openai, 'gpt-image-1', cap)
-      expect(r.isErr()).toBe(true)
-      expect(r._unsafeUnwrapErr()).toContain(GATEWAY_API_TYPE)
+  it('the gateway serves every capability', () => {
+    expect(capabilitiesOf(GATEWAY_API_TYPE).size).toBe(7)
+  })
+
+  it('cohere serves text + rerank only', () => {
+    expect(supportsCapability(COHERE_API_TYPE, 'text')).toBe(true)
+    expect(supportsCapability(COHERE_API_TYPE, 'rerank')).toBe(true)
+    expect(supportsCapability(COHERE_API_TYPE, 'image')).toBe(false)
+  })
+
+  it('anthropic/deepseek/google are text-only', () => {
+    for (const t of ['anthropic', 'deepseek', 'google']) {
+      expect(supportsCapability(t, 'text')).toBe(true)
+      expect(supportsCapability(t, 'image')).toBe(false)
     }
+  })
+
+  it('cohere is a valid api type', () => {
+    expect(validateApiType('cohere').isOk()).toBe(true)
+    expect(validateApiType('nope').isErr()).toBe(true)
+  })
+})
+
+describe('buildGenerativeModel (matrix dispatch)', () => {
+  it('the gateway builds every capability', () => {
+    for (const cap of [
+      'image',
+      'video',
+      'speech',
+      'transcription',
+      'embedding',
+      'rerank',
+    ] as const) {
+      expect(buildGenerativeModel(gateway, 'm/x', cap).isOk()).toBe(true)
+    }
+  })
+
+  it('openai-protocol providers build their four generative kinds', () => {
+    for (const cap of [
+      'embedding',
+      'image',
+      'speech',
+      'transcription',
+    ] as const) {
+      expect(buildGenerativeModel(openai, 'm/x', cap).isOk()).toBe(true)
+    }
+  })
+
+  it('video on an openai provider is rejected (gateway-only)', () => {
+    const r = buildGenerativeModel(openai, 'm/x', 'video')
+    expect(r.isErr()).toBe(true)
+    expect(r._unsafeUnwrapErr()).toContain('cannot serve')
+  })
+
+  it('rerank on an openai provider is rejected; cohere serves it', () => {
+    const cohere: ProviderCredentials = {
+      providerId: 'co',
+      apiType: COHERE_API_TYPE,
+      baseUrl: 'https://co.example',
+      apiKey: 'k',
+      headers: {},
+    }
+    expect(buildGenerativeModel(openai, 'm/x', 'rerank').isErr()).toBe(true)
+    expect(buildGenerativeModel(cohere, 'rerank-v3.5', 'rerank').isOk()).toBe(
+      true,
+    )
+  })
+
+  it('cohere rejects non-rerank generative kinds', () => {
+    const cohere: ProviderCredentials = {
+      providerId: 'co',
+      apiType: COHERE_API_TYPE,
+      baseUrl: 'https://co.example',
+      apiKey: 'k',
+      headers: {},
+    }
+    expect(buildGenerativeModel(cohere, 'm/x', 'image').isErr()).toBe(true)
+  })
+
+  it('text models build for cohere', () => {
+    const cohere: ProviderCredentials = {
+      providerId: 'co',
+      apiType: COHERE_API_TYPE,
+      baseUrl: 'https://co.example',
+      apiKey: 'k',
+      headers: {},
+    }
+    expect(buildModelForApiType(cohere, 'command-x').isOk()).toBe(true)
   })
 })

@@ -144,6 +144,7 @@ interface MockState {
   lastReasoningEffort: string | undefined
   requests: number
   /** Number of /images/generations calls (image toolchain coverage). */
+  embeddingRequests: number
   imageRequests: number
   speechRequests: number
   transcriptionRequests: number
@@ -430,6 +431,21 @@ async function startMockLlm(
       res.end(Buffer.from('RIFF....WAVEfmt '))
       return
     }
+    // Embeddings endpoint: JSON {input:[..]} -> vector list.
+    if (req.method === 'POST' && req.url?.endsWith('/embeddings')) {
+      state.embeddingRequests++
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          object: 'list',
+          data: [
+            { object: 'embedding', index: 0, embedding: [0.1, 0.2, 0.3] },
+            { object: 'embedding', index: 1, embedding: [0.4, 0.5, 0.6] },
+          ],
+        }),
+      )
+      return
+    }
     // Transcription (ASR) endpoint: multipart in, JSON {text} out.
     if (req.method === 'POST' && req.url?.endsWith('/audio/transcriptions')) {
       state.transcriptionRequests++
@@ -683,6 +699,7 @@ async function main(): Promise<void> {
   const state: MockState = {
     lastReasoningEffort: undefined,
     requests: 0,
+    embeddingRequests: 0,
     imageRequests: 0,
     speechRequests: 0,
     transcriptionRequests: 0,
@@ -945,23 +962,8 @@ async function run(
   )
   check('registerProvider (gateway)', regGw.ok)
 
-  // The gateway id is fixed: registering another one is rejected.
-  let gatewayIdRejected = false
-  try {
-    await client.registerProvider(
-      create(RegisterProviderRequestSchema, {
-        provider: create(ProviderSchema, {
-          providerId: 'gw2',
-          apiType: 'vercel-compatible-gateway',
-          baseUrl: gatewayUrl,
-          models: [],
-        }),
-      }),
-    )
-  } catch {
-    gatewayIdRejected = true
-  }
-  check('gateway id must be "gateway"', gatewayIdRejected)
+  // Gateway providers are no longer special-cased: an arbitrary id is fine
+  // (several gateways may coexist — the dedicated matrix section probes one).
 
   // Model discovery: ask the gateway /config and classify by modelType.
   const disco = await client.discoverGatewayModels(
@@ -1134,23 +1136,190 @@ async function run(
       state.transcriptionRequests >= 1,
     `${state.imageRequests}/${state.speechRequests}/${state.transcriptionRequests}`,
   )
-  // A non-gateway provider cannot serve a multimodal model.
-  const tBadMultimodal = await client.testProvider(
+  // The capability matrix: an openai-protocol provider has no VIDEO
+  // endpoint — the probe must be rejected before any network call.
+  const tBadVideo = await client.testProvider(
     create(TestProviderRequestSchema, {
       providerId: 'openai',
       apiType: 'openai-compatible',
       baseUrl: mockUrl,
       apiKey: 'test-key',
-      model: 'openai/mock-image',
+      model: 'openai/mock-slow',
+      capability: 'video',
+    }),
+  )
+  check(
+    'testProvider rejects video on an openai provider',
+    tBadVideo.ok === false && tBadVideo.result.includes('cannot serve'),
+    tBadVideo.result,
+  )
+
+  // -------------------------------------------------------------------------
+  section('per-modality provider registration (no gateway special-casing)')
+  // An openai-protocol provider registers MIXED-modality models; every kind
+  // probes through the standard OpenAI endpoints of the mock.
+  const regMixed = await client.registerProvider(
+    create(RegisterProviderRequestSchema, {
+      provider: create(ProviderSchema, {
+        providerId: 'oa-multi',
+        apiType: 'openai-compatible',
+        baseUrl: mockUrl,
+        apiKey: 'test-key',
+        models: [
+          create(ProviderModelSchema, {
+            id: 'oa-embed',
+            name: 'OA Embed',
+            contextLimit: 0n,
+            modelType: 'embedding',
+          }),
+          create(ProviderModelSchema, {
+            id: 'oa-image',
+            name: 'OA Image',
+            contextLimit: 0n,
+            modelType: 'image',
+          }),
+          create(ProviderModelSchema, {
+            id: 'oa-tts',
+            name: 'OA TTS',
+            contextLimit: 0n,
+            modelType: 'speech',
+          }),
+          create(ProviderModelSchema, {
+            id: 'oa-asr',
+            name: 'OA ASR',
+            contextLimit: 0n,
+            modelType: 'transcription',
+          }),
+        ],
+      }),
+    }),
+  )
+  check('openai provider with mixed-modality models registers', regMixed.ok)
+  const oaTest = (model: string, capability: string) =>
+    client.testProvider(
+      create(TestProviderRequestSchema, {
+        providerId: 'oa-multi',
+        apiType: 'openai-compatible',
+        baseUrl: mockUrl,
+        apiKey: 'test-key',
+        model: `oa-multi/${model}`,
+        capability,
+      }),
+    )
+  const oaEmbed = await oaTest('oa-embed', 'embedding')
+  check(
+    'testProvider openai embedding ok',
+    oaEmbed.ok && oaEmbed.result.includes('embedding ok'),
+    oaEmbed.result,
+  )
+  const oaImage = await oaTest('oa-image', 'image')
+  check(
+    'testProvider openai image ok',
+    oaImage.ok && oaImage.result.includes('image ok'),
+    oaImage.result,
+  )
+  const oaSpeech = await oaTest('oa-tts', 'speech')
+  check(
+    'testProvider openai speech ok',
+    oaSpeech.ok && oaSpeech.result.includes('speech ok'),
+    oaSpeech.result,
+  )
+  const oaAsr = await oaTest('oa-asr', 'transcription')
+  check(
+    'testProvider openai transcription ok',
+    oaAsr.ok && oaAsr.result.includes('transcription ok'),
+    oaAsr.result,
+  )
+  check(
+    'openai embeddings endpoint hit',
+    state.embeddingRequests >= 1,
+    String(state.embeddingRequests),
+  )
+  // A SECOND gateway provider with an arbitrary id coexists with 'gateway'.
+  const regGw2 = await client.registerProvider(
+    create(RegisterProviderRequestSchema, {
+      provider: create(ProviderSchema, {
+        providerId: 'gateway-two',
+        apiType: 'vercel-compatible-gateway',
+        baseUrl: gatewayUrl,
+        apiKey: 'EMPTY',
+        models: [
+          create(ProviderModelSchema, {
+            id: 'gw2-image',
+            name: 'GW2 Image',
+            contextLimit: 0n,
+            modelType: 'image',
+          }),
+        ],
+      }),
+    }),
+  )
+  check('a second gateway provider registers', regGw2.ok)
+  const gw2Image = await client.testProvider(
+    create(TestProviderRequestSchema, {
+      providerId: 'gateway-two',
+      apiType: 'vercel-compatible-gateway',
+      baseUrl: gatewayUrl,
+      apiKey: 'EMPTY',
+      model: 'gateway-two/gw2-image',
       capability: 'image',
     }),
   )
   check(
-    'testProvider rejects multimodal on a text provider',
-    tBadMultimodal.ok === false &&
-      tBadMultimodal.result.includes('vercel-compatible-gateway'),
-    tBadMultimodal.result,
+    'testProvider second-gateway image ok',
+    gw2Image.ok && gw2Image.result.includes('image ok'),
+    gw2Image.result,
   )
+  // Registration-time matrix rejection: video on an openai provider.
+  let videoRejected = false
+  try {
+    await client.registerProvider(
+      create(RegisterProviderRequestSchema, {
+        provider: create(ProviderSchema, {
+          providerId: 'oa-bad',
+          apiType: 'openai-compatible',
+          baseUrl: mockUrl,
+          apiKey: 'k',
+          models: [
+            create(ProviderModelSchema, {
+              id: 'v',
+              name: 'V',
+              contextLimit: 0n,
+              modelType: 'video',
+            }),
+          ],
+        }),
+      }),
+    )
+  } catch (e) {
+    videoRejected = String(e).includes('cannot serve')
+  }
+  check('registerProvider rejects video on openai', videoRejected)
+  // context_limit rules: text requires > 0, non-text requires 0.
+  let ctxRule = false
+  try {
+    await client.registerProvider(
+      create(RegisterProviderRequestSchema, {
+        provider: create(ProviderSchema, {
+          providerId: 'oa-bad-ctx',
+          apiType: 'openai-compatible',
+          baseUrl: mockUrl,
+          apiKey: 'k',
+          models: [
+            create(ProviderModelSchema, {
+              id: 't',
+              name: 'T',
+              contextLimit: 0n,
+              modelType: 'text',
+            }),
+          ],
+        }),
+      }),
+    )
+  } catch (e) {
+    ctxRule = String(e).includes('context_limit')
+  }
+  check('registerProvider enforces context_limit rules', ctxRule)
 
   // -------------------------------------------------------------------------
   section('tools discovery + i18n')

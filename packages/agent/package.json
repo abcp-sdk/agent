@@ -16,6 +16,7 @@
   "dependencies": {
     "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#faa81f02653f4f114e5faa664c354c9b58e2de58",
     "@ai-sdk/anthropic": "^4.0.40",
+    "@ai-sdk/cohere": "^3.0.61",
     "@ai-sdk/deepseek": "^3.0.29",
     "@ai-sdk/gateway": "4.0.78",
     "@ai-sdk/google": "^4.0.49",
