@@ -61,6 +61,7 @@ import {
   ListPresetsRequestSchema,
   ListProvidersRequestSchema,
   ListSessionsRequestSchema,
+  ListProvidersCatalogRequestSchema,
   ListToolsRequestSchema,
   MailboxRequestSchema,
   PresetSchema,
@@ -1152,6 +1153,22 @@ async function run(
     'testProvider rejects video on an openai provider',
     tBadVideo.ok === false && tBadVideo.result.includes('cannot serve'),
     tBadVideo.result,
+  )
+
+  // The catalog RPC serves the capability matrix (single source of truth for
+  // client registration forms).
+  const catalog = await client.listProvidersCatalog(
+    create(ListProvidersCatalogRequestSchema, {}),
+  )
+  check(
+    'providers catalog serves the capability matrix',
+    (catalog.apiTypes['openai-compatible']?.capabilities ?? []).includes(
+      'speech',
+    ) &&
+      (catalog.apiTypes['vercel-compatible-gateway']?.capabilities ?? [])
+        .length === 7 &&
+      (catalog.apiTypes['cohere']?.capabilities ?? []).includes('rerank'),
+    JSON.stringify(Object.keys(catalog.apiTypes)),
   )
 
   // -------------------------------------------------------------------------

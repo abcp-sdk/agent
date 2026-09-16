@@ -13,6 +13,7 @@ import {
   type AgentDeps,
   appendSessionId,
   BUCKET_SESSION_STATE,
+  CAPABILITY_MATRIX,
   type ChainMessage,
   CONFIG_DEFAULT_MODEL,
   CONFIG_DEFAULT_PRESET,
@@ -112,8 +113,15 @@ export function providersHandlers(
     },
 
     async listProvidersCatalog(_req, ctx: HandlerContext) {
-      const tenant = tenantOf(ctx)
-      return { providers: {} }
+      // Auth-gated like every tenant RPC (the matrix itself is not tenant
+      // scoped). Serve the capability matrix: the single source of truth
+      // client registration forms consume (api type -> its capabilities).
+      tenantOf(ctx)
+      const apiTypes: Record<string, { capabilities: string[] }> = {}
+      for (const [apiType, caps] of Object.entries(CAPABILITY_MATRIX)) {
+        apiTypes[apiType] = { capabilities: [...caps] }
+      }
+      return { apiTypes }
     },
 
     async registerProvider(req, ctx: HandlerContext) {

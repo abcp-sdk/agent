@@ -89,7 +89,7 @@ export function parseCapability(raw: string): Result<ModelCapability, string> {
  *   - cohere: rerank ({baseURL}/v1/rerank) + text.
  *   - anthropic / deepseek / google: text only.
  */
-const CAPABILITY_MATRIX: Record<string, ReadonlySet<ModelCapability>> = {
+export const CAPABILITY_MATRIX: Record<string, ReadonlySet<ModelCapability>> = {
   openai: new Set(['text', 'embedding', 'image', 'speech', 'transcription']),
   'openai-compatible': new Set([
     'text',

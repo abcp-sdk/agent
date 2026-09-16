@@ -19,28 +19,29 @@ import { providersHandlers } from '../src/handlers/providers.js'
  * gateway carries no special-casing anymore — several gateway providers with
  * arbitrary ids are allowed.
  */
-describe('registerProvider capability validation', () => {
-  const dbs: Db[] = []
-  afterEach(async () => {
-    for (const db of dbs) {
-      const c = db.$client as { close?: () => void }
-      c.close?.()
-    }
-    dbs.length = 0
-  })
+const dbs: Db[] = []
+afterEach(async () => {
+  for (const db of dbs) {
+    const c = db.$client as { close?: () => void }
+    c.close?.()
+  }
+  dbs.length = 0
+})
 
-  async function handlers() {
-    const dir = mkdtempSync(join(tmpdir(), 'prov-matrix-'))
-    const r = await connectDb('sqlite', `sqlite://${join(dir, 'a.db')}`)
-    if (r.isErr()) throw new Error(r.error)
-    dbs.push(r.value)
-    return providersHandlers({ db: r.value } as never)
-  }
-  const ctx = (): HandlerContext => {
-    const values = createContextValues()
-    values.set(kIdentity, { role: 'tenant', tenant: 'default' })
-    return { values } as unknown as HandlerContext
-  }
+async function handlers() {
+  const dir = mkdtempSync(join(tmpdir(), 'prov-matrix-'))
+  const r = await connectDb('sqlite', `sqlite://${join(dir, 'a.db')}`)
+  if (r.isErr()) throw new Error(r.error)
+  dbs.push(r.value)
+  return providersHandlers({ db: r.value } as never)
+}
+const ctx = (): HandlerContext => {
+  const values = createContextValues()
+  values.set(kIdentity, { role: 'tenant', tenant: 'default' })
+  return { values } as unknown as HandlerContext
+}
+
+describe('registerProvider capability validation', () => {
   const reg = (
     providerId: string,
     apiType: string,
@@ -173,6 +174,37 @@ describe('registerProvider capability validation', () => {
     } catch (e) {
       expect(e).toBeInstanceOf(ConnectError)
       expect((e as ConnectError).code).toBe(Code.InvalidArgument)
+    }
+  })
+})
+
+describe('ListProvidersCatalog serves the capability matrix', () => {
+  it('returns every api type with its served capabilities', async () => {
+    const h = await handlers()
+    const r = (await h.listProvidersCatalog!({} as never, ctx())) as {
+      apiTypes: Record<string, { capabilities: string[] }>
+    }
+    const t = r.apiTypes
+    expect(t['openai']?.capabilities.sort()).toEqual([
+      'embedding',
+      'image',
+      'speech',
+      'text',
+      'transcription',
+    ])
+    expect(t['vercel-compatible-gateway']?.capabilities.length).toBe(7)
+    expect(t['cohere']?.capabilities).toEqual(['text', 'rerank'])
+    expect(t['anthropic']?.capabilities).toEqual(['text'])
+  })
+
+  it('covers the same api types the validator accepts', async () => {
+    const h = await handlers()
+    const r = (await h.listProvidersCatalog!({} as never, ctx())) as {
+      apiTypes: Record<string, { capabilities: string[] }>
+    }
+    // Every known api type is present with at least `text`.
+    for (const caps of Object.values(r.apiTypes)) {
+      expect(caps.capabilities).toContain('text')
     }
   })
 })
