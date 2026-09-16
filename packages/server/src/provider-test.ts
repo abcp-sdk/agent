@@ -158,8 +158,11 @@ export async function runProviderTest(
         model: built.value as any,
         prompt: 'a cat sitting still',
         duration: TEST_VIDEO_SECONDS,
-        // Force the async start/status flow (the gateway's native contract).
-        poll: { intervalMs: 2000, timeoutMs: TEST_VIDEO_TIMEOUT_MS },
+        // Single-shot doGenerate (POST /video-model): the current gateway
+        // serves video on the unary endpoint only — its /video-model/start
+        // (async start/status flow) returns 404, which the SDK surfaces as
+        // "Invalid error response format". The unary call returns the video
+        // inline; the abort timeout still bounds worst-case latency.
         abortSignal: AbortSignal.timeout(TEST_VIDEO_TIMEOUT_MS),
       })
       const bytes = res.videos[0]?.uint8Array?.length ?? 0
