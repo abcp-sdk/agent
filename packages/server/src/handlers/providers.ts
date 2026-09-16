@@ -13,6 +13,7 @@ import {
   type AgentDeps,
   appendSessionId,
   BUCKET_SESSION_STATE,
+  CANONICAL_API_TYPES,
   CAPABILITY_MATRIX,
   type ChainMessage,
   CONFIG_DEFAULT_MODEL,
@@ -118,8 +119,11 @@ export function providersHandlers(
       // client registration forms consume (api type -> its capabilities).
       tenantOf(ctx)
       const apiTypes: Record<string, { capabilities: string[] }> = {}
-      for (const [apiType, caps] of Object.entries(CAPABILITY_MATRIX)) {
-        apiTypes[apiType] = { capabilities: [...caps] }
+      for (const apiType of CANONICAL_API_TYPES) {
+        const caps = CAPABILITY_MATRIX[apiType]
+        if (caps !== undefined) {
+          apiTypes[apiType] = { capabilities: [...caps] }
+        }
       }
       return { apiTypes }
     },

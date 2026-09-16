@@ -195,6 +195,16 @@ describe('ListProvidersCatalog serves the capability matrix', () => {
     expect(t['vercel-compatible-gateway']?.capabilities.length).toBe(7)
     expect(t['cohere']?.capabilities).toEqual(['text', 'rerank'])
     expect(t['anthropic']?.capabilities).toEqual(['text'])
+    // Historical aliases validate but are HIDDEN from the served catalog.
+    expect(Object.keys(t).sort()).toEqual([
+      'anthropic',
+      'cohere',
+      'deepseek',
+      'google',
+      'openai',
+      'openai-compatible',
+      'vercel-compatible-gateway',
+    ])
   })
 
   it('covers the same api types the validator accepts', async () => {

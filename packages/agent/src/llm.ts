@@ -114,6 +114,21 @@ export const CAPABILITY_MATRIX: Record<string, ReadonlySet<ModelCapability>> = {
   gemini: new Set(['text']),
 }
 
+/**
+ * Canonical (user-facing) api type ids — the historical aliases
+ * (openai_compatible / claude / gemini) still VALIDATE but are hidden from
+ * the served catalog so client pickers list one entry per protocol.
+ */
+export const CANONICAL_API_TYPES: readonly string[] = [
+  'openai-compatible',
+  'openai',
+  'anthropic',
+  'deepseek',
+  'google',
+  GATEWAY_API_TYPE,
+  COHERE_API_TYPE,
+]
+
 /** The capabilities an api type may serve (empty set for unknown types). */
 export function capabilitiesOf(apiType: string): ReadonlySet<ModelCapability> {
   return CAPABILITY_MATRIX[apiType.toLowerCase()] ?? new Set()
