@@ -174,11 +174,10 @@ export async function runProviderTest(
         model: built.value as any,
         prompt: 'a cat sitting still',
         duration: TEST_VIDEO_SECONDS,
-        // Single-shot doGenerate (POST /video-model): the current gateway
-        // serves video on the unary endpoint only — its /video-model/start
-        // (async start/status flow) returns 404, which the SDK surfaces as
-        // "Invalid error response format". The unary call returns the video
-        // inline; the abort timeout still bounds worst-case latency.
+        // Async start/status flow (POST /video-model/start + /status): the
+        // gateway's native contract and the AI SDK's default when `poll` is
+        // given. The abort timeout bounds worst-case latency.
+        poll: { intervalMs: 2000, timeoutMs: TEST_VIDEO_TIMEOUT_MS },
         abortSignal: AbortSignal.timeout(TEST_VIDEO_TIMEOUT_MS),
       })
       const bytes = res.videos[0]?.uint8Array?.length ?? 0
