@@ -16,8 +16,8 @@ import { generateImage, generateSpeech, generateText, experimental_generateVideo
 export const TEST_IMAGE_SIZE = '256x256'
 export const TEST_SPEECH_TEXT = 'hi'
 export const TEST_VIDEO_SECONDS = 4
-/** Video generation is slow; allow up to 10 minutes (unary call). */
-export const TEST_VIDEO_TIMEOUT_MS = 600_000
+/** Video generation is slow; allow up to 30 minutes (unary call). */
+export const TEST_VIDEO_TIMEOUT_MS = 1_800_000
 /** ASR test sample: a 1s 16kHz mono PCM WAV (quiet tone). */
 export const TEST_ASR_SAMPLE_SECONDS = 1
 
