@@ -138,15 +138,31 @@ export async function runProviderTest(
     case 'transcription': {
       const built = buildGenerativeModel(c, input.modelId, 'transcription')
       if (built.isErr()) return { ok: false, result: built.error }
+      // A synthetic tone often yields an empty transcript (nothing spoken);
+      // the AI SDK throws AI_NoTranscriptGeneratedError in that case, so treat
+      // it as a PASS with an explicit note rather than a provider failure.
       const res = await transcribe({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         model: built.value as any,
         audio: asrSampleWav(16000, TEST_ASR_SAMPLE_SECONDS),
+      }).catch((e: unknown) => {
+        if (String(e).includes('NoTranscriptGenerated')) {
+          return {
+            text: '',
+            segments: [],
+            language: undefined,
+            durationInSeconds: undefined,
+            warnings: [],
+            providerMetadata: undefined,
+            response: {},
+          }
+        }
+        throw e
       })
       return {
         ok: true,
         result: res.text.trim() === ''
-          ? 'transcription ok (empty transcript)'
+          ? 'transcription ok (empty transcript — synthetic tone carries no speech)'
           : `transcription ok: ${res.text.trim().slice(0, 80)}`,
       }
     }
