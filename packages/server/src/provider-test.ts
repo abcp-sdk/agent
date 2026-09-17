@@ -21,13 +21,29 @@ import {
  */
 
 /** Fixed test parameters (not user-configurable). */
-export const TEST_IMAGE_SIZE = '256x256'
+export const TEST_IMAGE_SIZE = '1024x1024'
 export const TEST_SPEECH_TEXT = 'hi'
 export const TEST_VIDEO_SECONDS = 4
 /** Video generation is slow; allow up to 30 minutes (unary call). */
 export const TEST_VIDEO_TIMEOUT_MS = 1_800_000
 /** ASR test sample: a 1s 16kHz mono PCM WAV (quiet tone). */
 export const TEST_ASR_SAMPLE_SECONDS = 1
+
+/**
+ * Minimal shape of a realtime model/factory. `buildGenerativeModel` returns the
+ * realtime MODEL (gateway + OpenAI protocols); some SDK versions also expose a
+ * factory-level `getToken`. Either way the server-side proof is minting a
+ * short-lived client secret via `doCreateClientSecret` / `getToken`. Typed
+ * structurally so the probe does not couple to the SDK's experimental aliases.
+ */
+interface RealtimeSecretMinter {
+  getToken?(options: {
+    model: string
+  }): Promise<{ token: string; url: string; expiresAt?: number }>
+  doCreateClientSecret?(options?: {
+    expiresAfterSeconds?: number
+  }): Promise<{ token: string; url: string; expiresAt?: number }>
+}
 
 /**
  * Synthesize a minimal 16kHz mono 16-bit PCM WAV containing a quiet tone. An
@@ -231,6 +247,48 @@ export async function runProviderTest(
           res.ranking.length > 0
             ? `rerank ok (top: doc #${res.ranking[0]?.originalIndex})`
             : 'rerank returned no ranking',
+      }
+    }
+    case 'realtime': {
+      const built = buildGenerativeModel(c, input.modelId, 'realtime')
+      if (built.isErr()) return { ok: false, result: built.error }
+      // Realtime is WebSocket-based: there is no one-shot generation to run.
+      // The server-side proof is minting a short-lived client secret (the
+      // browser then opens the socket with it). Some gateways do not expose
+      // the mint endpoint yet, so an UNSUPPORTED error is reported as a
+      // distinct "not implemented" note rather than a credential failure.
+      const minter = built.value as RealtimeSecretMinter
+      try {
+        const secret =
+          typeof minter.getToken === 'function'
+            ? await minter.getToken({ model: input.modelId })
+            : await (minter.doCreateClientSecret?.({}) ??
+                Promise.reject(new Error('realtime mint unsupported')))
+        if (secret.token === '') {
+          return { ok: false, result: 'realtime mint returned no token' }
+        }
+        return {
+          ok: true,
+          result: `realtime ok (token ${secret.token.slice(0, 6)}…, ws url ${secret.url})`,
+        }
+      } catch (e) {
+        const msg = String(e)
+        // A gateway that does not implement the mint endpoint answers 404 and
+        // the SDK surfaces it as `GatewayResponseError: Invalid error response
+        // format` (the 404 body is not a gateway error envelope). Treat both
+        // the explicit "unsupported" wording and that wrapper as NOT
+        // IMPLEMENTED, so it is not mistaken for a bad credential.
+        if (
+          /404|not implemented|unsupported|GatewayResponseError|Invalid error response format/i.test(
+            msg,
+          )
+        ) {
+          return {
+            ok: false,
+            result: `realtime endpoint not implemented by this provider: ${msg.slice(0, 200)}`,
+          }
+        }
+        throw e
       }
     }
     default:

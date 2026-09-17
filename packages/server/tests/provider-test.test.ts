@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { asrSampleWav, TEST_IMAGE_SIZE } from '../src/provider-test.js'
 
 describe('provider-test params', () => {
-  it('fixed image size', () => {
-    expect(TEST_IMAGE_SIZE).toBe('256x256')
+  it('fixed image size clears gateway minimum-pixel budgets', () => {
+    // Some gateways reject tiny images ("below the current minimum pixel
+    // budget"); 1024x1024 is the standard smallest accepted square.
+    expect(TEST_IMAGE_SIZE).toBe('1024x1024')
   })
 })
 

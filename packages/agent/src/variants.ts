@@ -160,9 +160,6 @@ function isAnthropic(ns: string): boolean {
 function isGoogle(ns: string): boolean {
   return ns === 'google'
 }
-function isOpenAI(ns: string): boolean {
-  return ns === 'openai'
-}
 function isDeepSeek(ns: string): boolean {
   return ns === 'deepseek'
 }

@@ -275,6 +275,19 @@ async function startMockLlm(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
   const server = createServer((req, res) => {
     const url = req.url ?? ''
+    // ---- Realtime client-secret mint (AI SDK gateway + openai protocols) ----
+    // The gateway factory POSTs to {origin}/v1/realtime/client-secrets and the
+    // OpenAI factory to {baseURL}/realtime/client_secrets; both return an
+    // ephemeral token the browser uses to open the WebSocket.
+    if (
+      req.method === 'POST' &&
+      (url.endsWith('/realtime/client-secrets') ||
+        url.endsWith('/realtime/client_secrets'))
+    ) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ token: 'vcst_e2e_token', expiresAt: 4102444800 }))
+      return
+    }
     // ---- Vercel-AI-SDK-compatible gateway (v4 wire) ----
     if (url.startsWith('/v4/ai/')) {
       const chunks: Buffer[] = []
@@ -1014,6 +1027,19 @@ async function run(
     }),
   )
   check('registerProvider (gateway transcription)', regGwAsr.ok)
+  const regGwRealtime = await client.registerProvider(
+    create(RegisterProviderRequestSchema, {
+      provider: create(ProviderSchema, {
+        providerId: 'gateway-realtime',
+        capability: 'realtime',
+        apiType: 'vercel-compatible-gateway',
+        baseUrl: gatewayUrl,
+        apiKey: 'EMPTY',
+        models: [create(ProviderModelSchema, { id: 'gw-rt', name: 'GW Realtime' })],
+      }),
+    }),
+  )
+  check('registerProvider (gateway realtime)', regGwRealtime.ok)
 
   // context_limit is required > 0 for a text provider.
   let rejectedBadLimit = false
@@ -1147,6 +1173,14 @@ async function run(
     'testProvider gateway video ok',
     tVideo.ok && tVideo.result.includes('video ok'),
     tVideo.result,
+  )
+  // realtime has no one-shot generation: the probe mints a short-lived client
+  // secret (the mock answers the mint endpoint).
+  const tRealtime = await gwTest('gateway-realtime', 'gw-rt', 'realtime')
+  check(
+    'testProvider gateway realtime ok',
+    tRealtime.ok && tRealtime.result.includes('realtime ok'),
+    tRealtime.result,
   )
   check(
     'gateway image/speech/transcription endpoints hit',
