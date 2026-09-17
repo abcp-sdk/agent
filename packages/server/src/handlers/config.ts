@@ -51,6 +51,7 @@ import {
   readMessageFacts,
   renderTemplate,
   resolveLocale,
+  logger,
   Sessions,
   TextPartDataSchema,
   toModelVariant,
@@ -190,7 +191,26 @@ export function configHandlers(
         // Defensive fallback for embedders that did not wire the agent role.
         await agent.serveConfig()
       }
-      await agent.setConfig(tenant, extId, name, v)
+      try {
+        await agent.setConfig(tenant, extId, name, v)
+      } catch (e) {
+        // The SDK throws ConfigError ({code,message}); surface the REAL reason
+        // instead of an opaque `internal error` (a bad/missing declaration, a
+        // session-scoped knob written without a session, a rejected value…).
+        const err = e as { code?: string; message?: string }
+        logger.warn(
+          { extId, name, code: err?.code, err: err?.message },
+          'setExtensionConfig failed',
+        )
+        throw new ConnectError(
+          `setExtensionConfig ${extId}.${name}: ${err?.message ?? String(e)}`,
+          err?.code === 'invalid_argument'
+            ? Code.InvalidArgument
+            : err?.code === 'not_found'
+              ? Code.NotFound
+              : Code.Internal,
+        )
+      }
       return { ok: true }
     },
 
