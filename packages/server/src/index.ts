@@ -135,12 +135,19 @@ async function main(): Promise<void> {
 
   const llm = new LlmRegistry()
   const files = makeBlobStore(bus)
+  // ONE long-lived abc agent role: it owns the extension-manifest cache and
+  // the config authority. `serveConfig()` must run before any config write,
+  // otherwise SetExtensionConfig fails with an opaque internal error (the
+  // authority would be created per call and immediately discarded).
+  const abcAgent = new AbcAgent(bus)
+  await abcAgent.serveConfig()
   const deps: AgentDeps = {
     db,
     bus,
     config,
     llm,
     files,
+    agent: abcAgent,
   }
 
   // ---- bundled extension (in-process) ----

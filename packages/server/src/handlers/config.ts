@@ -177,11 +177,19 @@ export function configHandlers(
     async setExtensionConfig(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
       const { extId, name, value } = req
-      const agent = new AbcAgent(deps.bus)
+      // The LONG-LIVED agent owns the manifest cache + config authority
+      // (`serveConfig()` runs once at boot). A per-request AbcAgent would have
+      // an empty cache and an unstarted authority, so the write could never be
+      // applied (it surfaced as an opaque internal error).
+      const agent = deps.agent ?? new AbcAgent(deps.bus)
       await agent.discover(500)
       // Request.value is a google.protobuf.Value message; unwrap it with the
       // canonical toJson() mapping into the raw value the config store needs.
       const v = valueToRaw(value)
+      if (deps.agent === undefined) {
+        // Defensive fallback for embedders that did not wire the agent role.
+        await agent.serveConfig()
+      }
       await agent.setConfig(tenant, extId, name, v)
       return { ok: true }
     },

@@ -1447,7 +1447,11 @@ async function run(
     toolCfg.config?.values !== undefined,
   )
 
-  await client.setExtensionConfig(
+  // REGRESSION: SetExtensionConfig must actually APPLY (ok:true) and be
+  // READABLE back. It used to return an opaque internal error because the
+  // handler built a throwaway `new AbcAgent(bus)` per request (empty manifest
+  // cache, unstarted config authority) instead of the long-lived agent role.
+  const setBrave = await client.setExtensionConfig(
     create(SetExtensionConfigRequestSchema, {
       extId: 'bundled',
       name: 'brave_api_key',
@@ -1456,7 +1460,23 @@ async function run(
       }),
     }),
   )
+  check('setExtensionConfig returns ok', setBrave.ok === true, setBrave)
+  const readBack = await client.getToolConfig({})
+  check(
+    'setExtensionConfig value is readable back',
+    JSON.stringify(readBack).includes('e2e-brave'),
+    JSON.stringify(readBack.config?.values?.['brave-search']),
+  )
+  // The manifest declares model-reference knobs (kind=model + capability), so
+  // a client can render a modality-scoped picker without name heuristics.
   const toolsAfter = await client.listTools(create(ListToolsRequestSchema, {}))
+  const imgGen = toolsAfter.tools.find(t => t.name === 'image-generate')
+  const imgKnob = imgGen?.configFields.find(c => c.name === 'model.image')
+  check(
+    'listTools carries kind=model + capability on model knobs',
+    imgKnob?.kind === 'model' && imgKnob?.capability === 'image',
+    { kind: imgKnob?.kind, capability: imgKnob?.capability },
+  )
   // Count is not the assertion target anymore (the toolset grows); the call
   // simply must succeed and keep the brave tool enabled.
   check(

@@ -69,6 +69,14 @@ export interface AgentDeps {
   config: ServerConfig
   llm: LlmRegistry
   files: BlobStore
+  /**
+   * The LONG-LIVED abc agent role. It owns the manifest cache and the
+   * config authority (see `AbcAgent.serveConfig()`), so config writes must go
+   * through this ONE instance — a per-request `new AbcAgent(bus)` starts with
+   * an empty manifest cache and an unstarted authority, which made
+   * `SetExtensionConfig` fail with an internal error.
+   */
+  agent?: AbcAgent
 }
 
 const DRAIN_GRACE_MS = 200
@@ -86,7 +94,7 @@ const DRAIN_GRACE_MS = 200
 export function watchMailboxWake(deps: AgentDeps): () => void {
   let stopped = false
   let stop: (() => void | Promise<void>) | null = null
-  const agent = new AbcAgent(deps.bus)
+  const agent = deps.agent ?? new AbcAgent(deps.bus)
   void agent
     .consumeMailbox(async msg => {
       if (stopped) return
@@ -172,7 +180,7 @@ export async function runSessionTurn(
   sid: string,
 ): Promise<void> {
   for (;;) {
-    const agent = new AbcAgent(deps.bus)
+    const agent = deps.agent ?? new AbcAgent(deps.bus)
     let revision: number | null
     try {
       revision = await claimSession(deps.bus, tenant, sid)
