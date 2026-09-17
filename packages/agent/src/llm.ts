@@ -17,18 +17,13 @@ const HeadersSchema = z.record(z.string(), z.string())
 
 /**
  * The api type that fronts a Vercel-AI-SDK-compatible gateway (`/v4/ai`).
- * A gateway can serve EVERY capability (text + all six non-text kinds), but
- * it is no longer special-cased: any provider api type may register any of
- * the capabilities its protocol supports (see CAPABILITY_MATRIX).
+ *
+ * It is ONE protocol among many — there is no gateway special case, no fixed
+ * provider id and no discovery RPC. It simply happens to serve every modality,
+ * exactly like any protocol may serve the modalities its wire format supports
+ * (see CAPABILITY_MATRIX).
  */
 export const GATEWAY_API_TYPE = 'vercel-compatible-gateway'
-
-/**
- * Historical default id for a gateway provider. Purely conventional now —
- * gateway providers may use ANY id and there may be several of them (e.g.
- * two gateways with different keys).
- */
-export const GATEWAY_PROVIDER_ID = 'gateway'
 
 /** The Cohere protocol api type (rerank; text via the cohere chat API). */
 export const COHERE_API_TYPE = 'cohere'
@@ -42,9 +37,10 @@ export interface ProviderCredentials {
 }
 
 /**
- * A model's capability. `text` models drive chat turns; the non-text kinds
- * are registered per model (`model_type`) and resolved by the tools / the
- * provider test probes.
+ * A model's capability (modality). `text` models drive chat turns; every other
+ * kind is registered per provider (semantic grouping) and resolved by the tools
+ * / the provider test probes. `realtime` is a first-class modality with no
+ * consumer yet, but a real factory (OpenAI + gateway protocols).
  */
 export type ModelCapability =
   | 'text'
@@ -54,6 +50,7 @@ export type ModelCapability =
   | 'transcription'
   | 'embedding'
   | 'rerank'
+  | 'realtime'
 
 export const MODEL_CAPABILITIES: readonly ModelCapability[] = [
   'text',
@@ -63,6 +60,7 @@ export const MODEL_CAPABILITIES: readonly ModelCapability[] = [
   'transcription',
   'embedding',
   'rerank',
+  'realtime',
 ]
 
 /** Normalize a client-supplied capability string; empty = text. */
@@ -78,25 +76,35 @@ export function parseCapability(raw: string): Result<ModelCapability, string> {
 }
 
 /**
- * Which capabilities each provider api type can serve. This is the SINGLE
- * source of truth for registration validation, model resolution, and the
- * generative-model factory — the gateway has no special-cased role anymore.
+ * Which capabilities each provider protocol can serve. This is the SINGLE
+ * source of truth for registration validation, model resolution, and the model
+ * factories. A modality is registered under exactly one protocol per provider
+ * (semantic grouping); the protocol list for a modality is the inverse of this
+ * table.
  *
- *   - openai / openai-compatible: the OpenAI protocol surfaces
- *     (embeddings / images / audio-speech / audio-transcriptions) — but NO
- *     video (no standard endpoint) and NO rerank (not an OpenAI API).
- *   - vercel-compatible-gateway: every capability, via /v4/ai.
+ *   - openai / openai-compatible: the OpenAI protocol surfaces — text,
+ *     embeddings, images, audio speech, audio transcriptions and realtime.
+ *     NO video (no standard endpoint) and NO rerank.
+ *   - vercel-compatible-gateway: every modality, via /v4/ai.
  *   - cohere: rerank ({baseURL}/v1/rerank) + text.
  *   - anthropic / deepseek / google: text only.
  */
 export const CAPABILITY_MATRIX: Record<string, ReadonlySet<ModelCapability>> = {
-  openai: new Set(['text', 'embedding', 'image', 'speech', 'transcription']),
+  openai: new Set([
+    'text',
+    'embedding',
+    'image',
+    'speech',
+    'transcription',
+    'realtime',
+  ]),
   'openai-compatible': new Set([
     'text',
     'embedding',
     'image',
     'speech',
     'transcription',
+    'realtime',
   ]),
   openai_compatible: new Set([
     'text',
@@ -104,6 +112,7 @@ export const CAPABILITY_MATRIX: Record<string, ReadonlySet<ModelCapability>> = {
     'image',
     'speech',
     'transcription',
+    'realtime',
   ]),
   [GATEWAY_API_TYPE]: new Set(MODEL_CAPABILITIES),
   [COHERE_API_TYPE]: new Set(['text', 'rerank']),
@@ -112,6 +121,13 @@ export const CAPABILITY_MATRIX: Record<string, ReadonlySet<ModelCapability>> = {
   deepseek: new Set(['text']),
   google: new Set(['text']),
   gemini: new Set(['text']),
+}
+
+/** The protocols (canonical api types) that can serve [capability]. */
+export function protocolsForCapability(capability: ModelCapability): string[] {
+  return CANONICAL_API_TYPES.filter(apiType =>
+    supportsCapability(apiType, capability),
+  )
 }
 
 /**
@@ -150,77 +166,6 @@ export function validateApiType(apiType: string): Result<void, string> {
     : err(
         `unknown api type: ${apiType} (expected anthropic|openai|openai-compatible|deepseek|google|${GATEWAY_API_TYPE}|${COHERE_API_TYPE})`,
       )
-}
-
-export function isGatewayApiType(apiType: string): boolean {
-  return apiType.toLowerCase() === GATEWAY_API_TYPE
-}
-
-/**
- * Default context window assigned to a gateway LANGUAGE model discovered via
- * `/config` (the gateway does not advertise one). It is only a starting point
- * — the user can edit it. Multimodal models always get 0 (which, together with
- * a positive limit on text, is how listModels/tool knobs tell them apart).
- */
-export const GATEWAY_DEFAULT_CONTEXT_LIMIT = 200_000
-
-/**
- * A model discovered from the gateway's `/config` (AI-SDK's
- * `getAvailableModels`). `modelType` distinguishes language from the
- * multimodal kinds; `model_type` is the normalized display kind.
- */
-export interface DiscoveredGatewayModel {
-  id: string
-  name: string
-  contextLimit: number
-  /** Normalized kind: text|image|video|speech|transcription|<raw>. */
-  modelType: string
-}
-
-/**
- * Normalize a gateway `/config` `modelType` to a short display tag. `language`
- * → `text`; every other known kind is passed through; unknown/empty → `''`.
- */
-export function normalizeGatewayModelType(
-  raw: string | null | undefined,
-): string {
-  const t = (raw ?? '').trim().toLowerCase()
-  if (t === '') return ''
-  if (t === 'language') return 'text'
-  return t
-}
-
-/**
- * Ask a Vercel-compatible gateway which models it serves and classify each by
- * its advertised `modelType` (language → a real context limit, everything else
- * → 0). Throws-free: returns an error string for the caller to surface.
- */
-export async function discoverGatewayModels(
-  credentials: ProviderCredentials,
-): Promise<Result<DiscoveredGatewayModel[], string>> {
-  if (!isGatewayApiType(credentials.apiType)) {
-    return err(
-      `model discovery requires a '${GATEWAY_API_TYPE}' provider (got '${credentials.apiType}')`,
-    )
-  }
-  try {
-    const gw = buildGateway(credentials)
-    const { models } = await gw.getAvailableModels()
-    const out: DiscoveredGatewayModel[] = []
-    for (const m of models) {
-      const type = normalizeGatewayModelType(m.modelType)
-      const language = type === '' || type === 'text'
-      out.push({
-        id: m.id,
-        name: m.name !== '' ? m.name : m.id,
-        contextLimit: language ? GATEWAY_DEFAULT_CONTEXT_LIMIT : 0,
-        modelType: type,
-      })
-    }
-    return ok(out)
-  } catch (e) {
-    return err(`gateway model discovery failed: ${String(e)}`)
-  }
 }
 
 function buildGateway(credentials: ProviderCredentials) {
@@ -286,17 +231,17 @@ export function buildModelForApiType(
 }
 
 /**
- * Non-text model factory, dispatched by (apiType x capability) per
+ * Non-text model factory, dispatched by (protocol x capability) per
  * CAPABILITY_MATRIX:
  *
  *   - openai / openai-compatible → the OpenAI protocol surfaces via
  *     `createOpenAI({baseURL, apiKey, name})` (embeddings / images /
- *     audio-speech / audio-transcriptions multipart).
- *   - vercel-compatible-gateway → the /v4/ai gateway factories (all kinds).
+ *     audio-speech / audio-transcriptions / realtime).
+ *   - vercel-compatible-gateway → the /v4/ai gateway factories (all modalities).
  *   - cohere → rerank via `{baseURL}/v1/rerank`.
  *
- * Video has no OpenAI-protocol endpoint, so it remains gateway-only (the
- * matrix rejects the combination at registration; this is the backstop).
+ * Video has no OpenAI-protocol endpoint, so only the gateway protocol serves it
+ * (the matrix rejects the combination at registration; this is the backstop).
  */
 export function buildGenerativeModel(
   credentials: ProviderCredentials,
@@ -315,7 +260,7 @@ export function buildGenerativeModel(
     case 'openai_compatible': {
       // The openai package honors a custom baseURL, so it doubles as the
       // factory for ANY OpenAI-protocol endpoint (the openai-compatible
-      // package lacks speech/transcription factories).
+      // package lacks speech/transcription/realtime factories).
       const oai = createOpenAI({ baseURL: baseUrl, apiKey, headers })
       switch (capability) {
         case 'embedding':
@@ -326,6 +271,8 @@ export function buildGenerativeModel(
           return ok(oai.speech(modelId))
         case 'transcription':
           return ok(oai.transcription(modelId))
+        case 'realtime':
+          return ok(oai.experimental_realtime(modelId))
         default:
           return err(
             `capability '${capability}' has no OpenAI-protocol endpoint (video/rerank are gateway/cohere only)`,
@@ -347,6 +294,8 @@ export function buildGenerativeModel(
           return ok(gw.embeddingModel(modelId))
         case 'rerank':
           return ok(gw.rerankingModel(modelId))
+        case 'realtime':
+          return ok(gw.experimental_realtime(modelId))
         default:
           return err(`unsupported gateway capability: ${capability}`)
       }
@@ -455,6 +404,12 @@ export class LlmRegistry {
     if (hit === undefined) {
       return err(`provider not found: ${providerId}`)
     }
+    // Semantic grouping: only a TEXT provider can drive chat turns.
+    if ((hit.capability ?? 'text') !== 'text') {
+      return err(
+        `provider '${providerId}' serves '${hit.capability ?? 'text'}', not 'text'`,
+      )
+    }
     const creds: ProviderCredentials = {
       providerId: hit.provider_id,
       apiType: hit.api_type,
@@ -490,9 +445,9 @@ export class LlmRegistry {
   }
 
   /**
-   * Resolve a multimodal model (image / video / speech / transcription). The
-   * referenced provider must be the gateway; no fallback: a tool asking for a
-   * specific model gets that model or an error.
+   * Resolve a non-text model (image / video / speech / transcription /
+   * embedding / rerank / realtime). A tool / knob asking for a specific
+   * modality gets that model or an error — never a silent fallback.
    */
   async resolveGenerative(
     db: Db,
@@ -512,11 +467,14 @@ export class LlmRegistry {
     if (hit === undefined) {
       return err(`provider not found: ${parsed.providerId}`)
     }
-    // The model's DECLARED capability must match what the caller asks for:
-    // pointing image_model at a text model (same provider) is a config error.
-    // LEGACY rows registered before capabilities existed store an EMPTY
-    // model_type — those skip the strict match (the api-type matrix still
-    // applies); every row registered since carries an explicit type.
+    // Semantic grouping: the provider serves exactly ONE modality, and the
+    // reference must name a model of it. Pointing an image knob at a text
+    // provider (or vice versa) is a config error.
+    if ((hit.capability ?? 'text') !== capability) {
+      return err(
+        `provider '${parsed.providerId}' serves '${hit.capability ?? 'text'}', not '${capability}'`,
+      )
+    }
     const declared = declaredModelType(hit.models, parsed.modelId)
     if (declared.isErr()) return err(declared.error)
     if (declared.value.explicit && declared.value.capability !== capability) {

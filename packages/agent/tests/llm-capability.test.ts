@@ -70,6 +70,7 @@ describe('capability matrix', () => {
       expect(supportsCapability(t, 'image')).toBe(true)
       expect(supportsCapability(t, 'speech')).toBe(true)
       expect(supportsCapability(t, 'transcription')).toBe(true)
+      expect(supportsCapability(t, 'realtime')).toBe(true)
       // No standard OpenAI endpoints for these:
       expect(supportsCapability(t, 'video')).toBe(false)
       expect(supportsCapability(t, 'rerank')).toBe(false)
@@ -77,7 +78,7 @@ describe('capability matrix', () => {
   })
 
   it('the gateway serves every capability', () => {
-    expect(capabilitiesOf(GATEWAY_API_TYPE).size).toBe(7)
+    expect(capabilitiesOf(GATEWAY_API_TYPE).size).toBe(8)
   })
 
   it('cohere serves text + rerank only', () => {

@@ -122,6 +122,10 @@ export interface DiscoveredTool {
   extConfig?: {
     name: string
     type: string
+    /** `model` marks a `provider_id/model_id` reference (UI renders a picker). */
+    kind?: string
+    /** When kind == 'model': the modality the reference must match. */
+    capability?: string
     enum_values?: string[]
     default?: unknown
     description?: string
@@ -281,6 +285,8 @@ function withExtConfig(
     .map(c => ({
       name: c.name,
       type: c.type,
+      kind: c.kind ?? 'value',
+      ...(c.capability !== undefined ? { capability: c.capability } : {}),
       enum_values: c.enum_values ?? [],
       default: c.default,
       description: c.description,

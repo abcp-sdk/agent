@@ -87,6 +87,10 @@ export const providers = sqliteTable(
   {
     tenant: text('tenant').notNull().default('default'),
     providerId: text('provider_id').notNull(),
+    // Semantic grouping: a provider serves EXACTLY ONE modality. Its models
+    // all share this capability (text -> context_limit>0, everything else 0).
+    // A host serving several modalities registers one provider per modality.
+    capability: text('capability').notNull().default('text'),
     apiType: text('api_type').notNull().default('openai-compatible'),
     baseUrl: text('base_url').notNull(),
     apiKey: text('api_key').notNull().default(''),

@@ -45,6 +45,7 @@ export interface SessionRowView {
 
 export interface ProviderRowView {
   provider_id: string
+  capability?: string | null | undefined
   api_type?: string | null | undefined
   base_url?: string | null | undefined
   api_key?: string | null | undefined
@@ -155,6 +156,7 @@ export function providerToMsg(p: ProviderRowView) {
   } catch {}
   return {
     providerId: p.provider_id ?? '',
+    capability: p.capability ?? 'text',
     apiType: p.api_type ?? '',
     baseUrl: p.base_url ?? '',
     // Masked: the plaintext never leaves the server. The mask doubles as

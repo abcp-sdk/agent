@@ -12,6 +12,8 @@ export const SHARED_TENANT = 'global'
 
 export interface ProviderInput {
   providerId: string
+  /** The single modality this provider serves (semantic grouping). */
+  capability: string
   apiType: string
   baseUrl: string
   apiKey: string
@@ -21,6 +23,7 @@ export interface ProviderInput {
 
 const toRow = (r: typeof providers.$inferSelect): ProviderRow => ({
   provider_id: r.providerId,
+  capability: r.capability,
   api_type: r.apiType,
   base_url: r.baseUrl,
   api_key: r.apiKey,
@@ -63,6 +66,32 @@ export const Providers = {
     )
   },
 
+  /** The providers of ONE modality (e.g. every `image` provider). */
+  listByCapability(
+    db: Db,
+    tenant: string,
+    capability: string,
+  ): ResultAsync<ProviderRow[], string> {
+    return Providers.list(db, tenant).map(rows =>
+      rows.filter(r => r.capability === capability),
+    )
+  },
+
+  /** The provider that owns [providerId] and serves [capability]. */
+  get(
+    db: Db,
+    tenant: string,
+    providerId: string,
+    capability: string,
+  ): ResultAsync<ProviderRow | null, string> {
+    return Providers.list(db, tenant).map(
+      rows =>
+        rows.find(
+          r => r.provider_id === providerId && r.capability === capability,
+        ) ?? null,
+    )
+  },
+
   listTenants(db: Db, tenant: string): ResultAsync<ProviderRow[], string> {
     return q(
       () =>
@@ -88,6 +117,7 @@ export const Providers = {
           .values({
             tenant,
             providerId: input.providerId,
+            capability: input.capability,
             apiType: input.apiType,
             baseUrl: input.baseUrl,
             apiKey: input.apiKey,
@@ -99,6 +129,7 @@ export const Providers = {
           .onConflictDoUpdate({
             target: [providers.tenant, providers.providerId],
             set: {
+              capability: input.capability,
               apiType: input.apiType,
               baseUrl: input.baseUrl,
               apiKey: input.apiKey,

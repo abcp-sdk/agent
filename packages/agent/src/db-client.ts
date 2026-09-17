@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
 CREATE TABLE IF NOT EXISTS providers (
     tenant TEXT NOT NULL DEFAULT 'default',
     provider_id TEXT NOT NULL,
+    capability TEXT NOT NULL DEFAULT 'text',
     api_type TEXT NOT NULL DEFAULT 'openai-compatible',
     base_url TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT '',
@@ -117,6 +118,7 @@ CREATE TABLE IF NOT EXISTS providers (
     PRIMARY KEY (tenant, provider_id)
 );
 ALTER TABLE providers ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE providers ADD COLUMN IF NOT EXISTS capability TEXT NOT NULL DEFAULT 'text';
 
 -- Multi-tenant identity: tenants + their bearer tokens. Done in a single
 -- statement list so sqlite/pg share the shape.
@@ -204,6 +206,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
 CREATE TABLE IF NOT EXISTS providers (
     tenant TEXT NOT NULL DEFAULT 'default',
     provider_id TEXT NOT NULL,
+    capability TEXT NOT NULL DEFAULT 'text',
     api_type TEXT NOT NULL DEFAULT 'openai-compatible',
     base_url TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT '',
@@ -247,6 +250,7 @@ const PG_MIGRATIONS = `
     ALTER TABLE parts ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE mailbox ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE providers ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE providers ADD COLUMN IF NOT EXISTS capability TEXT NOT NULL DEFAULT 'text';
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_name;
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_call_id;
     ALTER TABLE sessions DROP COLUMN IF EXISTS last_read_at;
@@ -286,6 +290,7 @@ const SQLITE_MIGRATIONS = [
   `ALTER TABLE parts ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE mailbox ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE providers ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
+  `ALTER TABLE providers ADD COLUMN capability TEXT NOT NULL DEFAULT 'text'`,
   `ALTER TABLE messages DROP COLUMN tool_name`,
   `ALTER TABLE messages DROP COLUMN tool_call_id`,
   `ALTER TABLE sessions DROP COLUMN last_read_at`,
@@ -575,6 +580,7 @@ const SQLITE_TABLE_DDL: Record<string, string> = {
   providers: `CREATE TABLE IF NOT EXISTS providers (
     tenant TEXT NOT NULL DEFAULT 'default',
     provider_id TEXT NOT NULL,
+    capability TEXT NOT NULL DEFAULT 'text',
     api_type TEXT NOT NULL DEFAULT 'openai-compatible',
     base_url TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT '',

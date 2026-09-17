@@ -47,7 +47,6 @@ import {
   DeletePresetRequestSchema,
   DeleteProviderRequestSchema,
   DeleteSessionRequestSchema,
-  DiscoverGatewayModelsRequestSchema,
   FileRefSchema,
   ForkRequestSchema,
   GetConfigRequestSchema,
@@ -888,6 +887,7 @@ async function run(
       create(RegisterProviderRequestSchema, {
         provider: create(ProviderSchema, {
           providerId: 'openai',
+          capability: 'text',
           apiType: 'openai-compatible',
           baseUrl: mockUrl,
           apiKey: 'test-key',
@@ -919,7 +919,7 @@ async function run(
               contextLimit: 100000n,
             }),
             // A text model whose mock response triggers the image-generate
-            // tool call (the tool resolves via the gateway `image_model` knob).
+            // tool call (the tool resolves via the `model.image` knob).
             create(ProviderModelSchema, {
               id: 'mock-image',
               name: 'Mock Image Turn',
@@ -938,12 +938,29 @@ async function run(
   const reg = await registerMockText()
   check('registerProvider (text)', reg.ok)
 
-  // The Vercel-compatible gateway is the SINGLETON that carries multimodal
-  // models (context_limit 0) alongside text models (context_limit > 0).
+  // The Vercel-compatible gateway protocol serves every modality, but a
+  // PROVIDER carries exactly ONE (semantic grouping): register one provider
+  // per modality, all pointed at the same gateway endpoint.
   const regGw = await client.registerProvider(
     create(RegisterProviderRequestSchema, {
       provider: create(ProviderSchema, {
         providerId: 'gateway',
+        capability: 'image',
+        apiType: 'vercel-compatible-gateway',
+        baseUrl: gatewayUrl,
+        apiKey: 'EMPTY',
+        models: [
+          create(ProviderModelSchema, { id: 'gw-image', name: 'GW Image' }),
+        ],
+      }),
+    }),
+  )
+  check('registerProvider (gateway image)', regGw.ok)
+  const regGwText = await client.registerProvider(
+    create(RegisterProviderRequestSchema, {
+      provider: create(ProviderSchema, {
+        providerId: 'gateway-text',
+        capability: 'text',
         apiType: 'vercel-compatible-gateway',
         baseUrl: gatewayUrl,
         apiKey: 'EMPTY',
@@ -953,56 +970,50 @@ async function run(
             name: 'GW Mock Text',
             contextLimit: 100000n,
           }),
-          create(ProviderModelSchema, { id: 'gw-image', name: 'GW Image', modelType: 'image' }),
-          create(ProviderModelSchema, { id: 'gw-video', name: 'GW Video', modelType: 'video' }),
-          create(ProviderModelSchema, { id: 'gw-tts', name: 'GW TTS', modelType: 'speech' }),
-          create(ProviderModelSchema, { id: 'gw-asr', name: 'GW ASR', modelType: 'transcription' }),
         ],
       }),
     }),
   )
-  check('registerProvider (gateway)', regGw.ok)
-
-  // Gateway providers are no longer special-cased: an arbitrary id is fine
-  // (several gateways may coexist — the dedicated matrix section probes one).
-
-  // Model discovery: ask the gateway /config and classify by modelType.
-  const disco = await client.discoverGatewayModels(
-    create(DiscoverGatewayModelsRequestSchema, {
-      providerId: 'gateway',
-      apiType: 'vercel-compatible-gateway',
-      baseUrl: gatewayUrl,
-      apiKey: 'EMPTY',
+  check('registerProvider (gateway text)', regGwText.ok)
+  const regGwVideo = await client.registerProvider(
+    create(RegisterProviderRequestSchema, {
+      provider: create(ProviderSchema, {
+        providerId: 'gateway-video',
+        capability: 'video',
+        apiType: 'vercel-compatible-gateway',
+        baseUrl: gatewayUrl,
+        apiKey: 'EMPTY',
+        models: [create(ProviderModelSchema, { id: 'gw-video', name: 'GW Video' })],
+      }),
     }),
   )
-  check('discoverGatewayModels ok', disco.ok, disco.error)
-  check('discoverGatewayModels found 5', disco.models.length === 5)
-  const discoText = disco.models.find(m => m.id === 'gw-mock-text')
-  const discoImage = disco.models.find(m => m.id === 'gw-image')
-  check(
-    'discovered language model gets a context limit',
-    (discoText?.contextLimit ?? 0n) > 0n,
+  check('registerProvider (gateway video)', regGwVideo.ok)
+  const regGwSpeech = await client.registerProvider(
+    create(RegisterProviderRequestSchema, {
+      provider: create(ProviderSchema, {
+        providerId: 'gateway-speech',
+        capability: 'speech',
+        apiType: 'vercel-compatible-gateway',
+        baseUrl: gatewayUrl,
+        apiKey: 'EMPTY',
+        models: [create(ProviderModelSchema, { id: 'gw-tts', name: 'GW TTS' })],
+      }),
+    }),
   )
-  check(
-    'discovered multimodal model has context 0',
-    (discoImage?.contextLimit ?? 1n) === 0n,
+  check('registerProvider (gateway speech)', regGwSpeech.ok)
+  const regGwAsr = await client.registerProvider(
+    create(RegisterProviderRequestSchema, {
+      provider: create(ProviderSchema, {
+        providerId: 'gateway-asr',
+        capability: 'transcription',
+        apiType: 'vercel-compatible-gateway',
+        baseUrl: gatewayUrl,
+        apiKey: 'EMPTY',
+        models: [create(ProviderModelSchema, { id: 'gw-asr', name: 'GW ASR' })],
+      }),
+    }),
   )
-  check(
-    'discovered language model carries model_type "text"',
-    discoText?.modelType === 'text',
-    discoText?.modelType,
-  )
-  check(
-    'discovered image model carries model_type "image"',
-    discoImage?.modelType === 'image',
-    discoImage?.modelType,
-  )
-  const discoVideo = disco.models.find(m => m.id === 'gw-video')
-  check(
-    'discovered video model carries model_type "video"',
-    discoVideo?.modelType === 'video',
-    discoVideo?.modelType,
-  )
+  check('registerProvider (gateway transcription)', regGwAsr.ok)
 
   // context_limit is required > 0 for a text provider.
   let rejectedBadLimit = false
@@ -1028,20 +1039,27 @@ async function run(
     providers.providers.some(p => p.providerId === 'openai'),
     providers.providers.map(p => p.providerId),
   )
-  // The gateway's stored models carry their kind (model_type) so the UI can
-  // label image/video/speech/transcription instead of a generic "multimodal".
+  // A provider echoes its single modality + the model's mirrored model_type.
   const gwRow = providers.providers.find(p => p.providerId === 'gateway')
-  const gwVideo = gwRow?.models.find(m => m.id === 'gw-video')
   check(
-    'listProviders echoes gateway model_type',
-    gwVideo?.modelType === 'video',
-    gwVideo?.modelType,
+    'listProviders echoes the provider capability',
+    gwRow?.capability === 'image',
+    gwRow?.capability,
   )
   const gwImage = gwRow?.models.find(m => m.id === 'gw-image')
   check(
-    'listProviders echoes gateway image kind',
+    'listProviders echoes the model kind',
     gwImage?.modelType === 'image',
     gwImage?.modelType,
+  )
+  const gwVideoRow = providers.providers.find(
+    p => p.providerId === 'gateway-video',
+  )
+  check(
+    'listProviders echoes a video provider',
+    gwVideoRow?.capability === 'video' &&
+      gwVideoRow?.models.find(m => m.id === 'gw-video')?.modelType === 'video',
+    gwVideoRow?.capability,
   )
 
   const models = await client.listModels(
@@ -1101,30 +1119,30 @@ async function run(
 
   // Per-capability test probes through the GATEWAY (real smallest-possible
   // generations).
-  const gwTest = (model: string, capability: string) =>
+  const gwTest = (providerId: string, model: string, capability: string) =>
     client.testProvider(
       create(TestProviderRequestSchema, {
-        providerId: 'gateway',
+        providerId,
         apiType: 'vercel-compatible-gateway',
         baseUrl: gatewayUrl,
         apiKey: 'EMPTY',
-        model: `gateway/${model}`,
+        model: `${providerId}/${model}`,
         capability,
       }),
     )
-  const tText = await gwTest('gw-mock-text', 'text')
+  const tText = await gwTest('gateway-text', 'gw-mock-text', 'text')
   check('testProvider gateway text ok', tText.ok, tText.result)
-  const tImage = await gwTest('gw-image', 'image')
+  const tImage = await gwTest('gateway', 'gw-image', 'image')
   check('testProvider gateway image ok', tImage.ok && tImage.result.includes('image ok'), tImage.result)
-  const tSpeech = await gwTest('gw-tts', 'speech')
+  const tSpeech = await gwTest('gateway-speech', 'gw-tts', 'speech')
   check('testProvider gateway speech ok', tSpeech.ok && tSpeech.result.includes('speech ok'), tSpeech.result)
-  const tAsr = await gwTest('gw-asr', 'transcription')
+  const tAsr = await gwTest('gateway-asr', 'gw-asr', 'transcription')
   check(
     'testProvider gateway transcription ok',
     tAsr.ok && tAsr.result.includes('transcription ok'),
     tAsr.result,
   )
-  const tVideo = await gwTest('gw-video', 'video')
+  const tVideo = await gwTest('gateway-video', 'gw-video', 'video')
   check(
     'testProvider gateway video ok',
     tVideo.ok && tVideo.result.includes('video ok'),
@@ -1166,82 +1184,68 @@ async function run(
       'speech',
     ) &&
       (catalog.apiTypes['vercel-compatible-gateway']?.capabilities ?? [])
-        .length === 7 &&
+        .length === 8 &&
       (catalog.apiTypes['cohere']?.capabilities ?? []).includes('rerank'),
     JSON.stringify(Object.keys(catalog.apiTypes)),
   )
 
   // -------------------------------------------------------------------------
-  section('per-modality provider registration (no gateway special-casing)')
-  // An openai-protocol provider registers MIXED-modality models; every kind
-  // probes through the standard OpenAI endpoints of the mock.
-  const regMixed = await client.registerProvider(
-    create(RegisterProviderRequestSchema, {
-      provider: create(ProviderSchema, {
-        providerId: 'oa-multi',
-        apiType: 'openai-compatible',
-        baseUrl: mockUrl,
-        apiKey: 'test-key',
-        models: [
-          create(ProviderModelSchema, {
-            id: 'oa-embed',
-            name: 'OA Embed',
-            contextLimit: 0n,
-            modelType: 'embedding',
-          }),
-          create(ProviderModelSchema, {
-            id: 'oa-image',
-            name: 'OA Image',
-            contextLimit: 0n,
-            modelType: 'image',
-          }),
-          create(ProviderModelSchema, {
-            id: 'oa-tts',
-            name: 'OA TTS',
-            contextLimit: 0n,
-            modelType: 'speech',
-          }),
-          create(ProviderModelSchema, {
-            id: 'oa-asr',
-            name: 'OA ASR',
-            contextLimit: 0n,
-            modelType: 'transcription',
-          }),
-        ],
+  section('per-modality provider registration (semantic grouping)')
+  // The OpenAI protocol serves embedding/image/speech/transcription too, but
+  // each modality is its OWN provider.
+  const regCap = (providerId: string, capability: string, id: string) =>
+    client.registerProvider(
+      create(RegisterProviderRequestSchema, {
+        provider: create(ProviderSchema, {
+          providerId,
+          capability,
+          apiType: 'openai-compatible',
+          baseUrl: mockUrl,
+          apiKey: 'test-key',
+          models: [create(ProviderModelSchema, { id, name: id })],
+        }),
       }),
-    }),
+    )
+  const [regEmb, regImg, regTts, regAsr2] = await Promise.all([
+    regCap('oa-embed', 'embedding', 'oa-embed'),
+    regCap('oa-image', 'image', 'oa-image'),
+    regCap('oa-tts', 'speech', 'oa-tts'),
+    regCap('oa-asr', 'transcription', 'oa-asr'),
+  ])
+  check(
+    'per-modality openai providers register',
+    regEmb.ok && regImg.ok && regTts.ok && regAsr2.ok,
   )
-  check('openai provider with mixed-modality models registers', regMixed.ok)
-  const oaTest = (model: string, capability: string) =>
+  const oaTest = (providerId: string, model: string, capability: string) =>
     client.testProvider(
       create(TestProviderRequestSchema, {
-        providerId: 'oa-multi',
+        providerId,
         apiType: 'openai-compatible',
         baseUrl: mockUrl,
         apiKey: 'test-key',
-        model: `oa-multi/${model}`,
+        model: `${providerId}/${model}`,
         capability,
       }),
     )
-  const oaEmbed = await oaTest('oa-embed', 'embedding')
+  const oaEmbed = await oaTest('oa-embed', 'oa-embed', 'embedding')
   check(
     'testProvider openai embedding ok',
     oaEmbed.ok && oaEmbed.result.includes('embedding ok'),
     oaEmbed.result,
   )
-  const oaImage = await oaTest('oa-image', 'image')
+  const oaImage = await oaTest('oa-image', 'oa-image', 'image')
   check(
     'testProvider openai image ok',
     oaImage.ok && oaImage.result.includes('image ok'),
     oaImage.result,
   )
-  const oaSpeech = await oaTest('oa-tts', 'speech')
+  const oaSpeech = await oaTest('oa-tts', 'oa-tts', 'speech')
   check(
     'testProvider openai speech ok',
     oaSpeech.ok && oaSpeech.result.includes('speech ok'),
     oaSpeech.result,
   )
-  const oaAsr = await oaTest('oa-asr', 'transcription')
+  const oaAsr = await oaTest('oa-asr', 'oa-asr', 'transcription')
   check(
     'testProvider openai transcription ok',
     oaAsr.ok && oaAsr.result.includes('transcription ok'),
@@ -1257,17 +1261,11 @@ async function run(
     create(RegisterProviderRequestSchema, {
       provider: create(ProviderSchema, {
         providerId: 'gateway-two',
+        capability: 'image',
         apiType: 'vercel-compatible-gateway',
         baseUrl: gatewayUrl,
         apiKey: 'EMPTY',
-        models: [
-          create(ProviderModelSchema, {
-            id: 'gw2-image',
-            name: 'GW2 Image',
-            contextLimit: 0n,
-            modelType: 'image',
-          }),
-        ],
+        models: [create(ProviderModelSchema, { id: 'gw2-image', name: 'GW2 Image' })],
       }),
     }),
   )
@@ -1294,17 +1292,11 @@ async function run(
       create(RegisterProviderRequestSchema, {
         provider: create(ProviderSchema, {
           providerId: 'oa-bad',
+          capability: 'video',
           apiType: 'openai-compatible',
           baseUrl: mockUrl,
           apiKey: 'k',
-          models: [
-            create(ProviderModelSchema, {
-              id: 'v',
-              name: 'V',
-              contextLimit: 0n,
-              modelType: 'video',
-            }),
-          ],
+          models: [create(ProviderModelSchema, { id: 'v', name: 'V' })],
         }),
       }),
     )
@@ -1319,17 +1311,11 @@ async function run(
       create(RegisterProviderRequestSchema, {
         provider: create(ProviderSchema, {
           providerId: 'oa-bad-ctx',
+          capability: 'text',
           apiType: 'openai-compatible',
           baseUrl: mockUrl,
           apiKey: 'k',
-          models: [
-            create(ProviderModelSchema, {
-              id: 't',
-              name: 'T',
-              contextLimit: 0n,
-              modelType: 'text',
-            }),
-          ],
+          models: [create(ProviderModelSchema, { id: 't', name: 'T' })],
         }),
       }),
     )
@@ -1390,8 +1376,8 @@ async function run(
   }
   const imageGen = toolsEn.tools.find(t => t.name === 'image-generate')
   check(
-    'image-generate requires image_model only',
-    (imageGen?.requiredConfig ?? []).join(',') === 'image_model',
+    'image-generate requires model.image only',
+    (imageGen?.requiredConfig ?? []).join(',') === 'model.image',
     imageGen?.requiredConfig,
   )
 
@@ -1483,7 +1469,7 @@ async function run(
   await client.setExtensionConfig(
     create(SetExtensionConfigRequestSchema, {
       extId: 'bundled',
-      name: 'image_model',
+      name: 'model.image',
       value: create(ValueSchema, {
         kind: { case: 'stringValue', value: 'gateway/gw-image' },
       }),
@@ -1496,7 +1482,7 @@ async function run(
   await client.setExtensionConfig(
     create(SetExtensionConfigRequestSchema, {
       extId: 'bundled',
-      name: 'vlm_model',
+      name: 'model.text',
       value: create(ValueSchema, {
         kind: { case: 'stringValue', value: 'openai/mock-text' },
       }),

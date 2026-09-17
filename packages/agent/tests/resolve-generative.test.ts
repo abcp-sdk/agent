@@ -22,13 +22,14 @@ describe('LlmRegistry.resolveGenerative capability matching', () => {
     dbs.length = 0
   })
 
-  async function setup(models: string) {
+  async function setup(models: string, capability = 'transcription') {
     const dir = mkdtempSync(join(tmpdir(), 'gen-cap-'))
     const r = await connectDb('sqlite', `sqlite://${join(dir, 'a.db')}`)
     if (r.isErr()) throw new Error(r.error)
     dbs.push(r.value)
     await Providers.upsert(r.value, 't', {
       providerId: 'gw',
+      capability,
       apiType: 'vercel-compatible-gateway',
       baseUrl: 'https://gw.example/v4/ai',
       apiKey: 'k',
@@ -50,7 +51,12 @@ describe('LlmRegistry.resolveGenerative capability matching', () => {
   })
 
   it('rejects a capability mismatch with the declared kind', async () => {
-    const llm = await setup([{ id: 'asr/1', model_type: 'transcription' }])
+    // The provider IS a speech provider; the model inside it was declared as
+    // transcription, so the model-level declared-kind check is what fires.
+    const llm = await setup(
+      [{ id: 'asr/1', model_type: 'transcription' }],
+      'speech',
+    )
     const r = await llm.resolveGenerative(dbs[0]!, 't', 'gw/asr/1', 'speech')
     expect(r.isErr()).toBe(true)
     expect(r._unsafeUnwrapErr()).toContain(
@@ -59,7 +65,7 @@ describe('LlmRegistry.resolveGenerative capability matching', () => {
   })
 
   it('rejects an unregistered model id', async () => {
-    const llm = await setup([{ id: 'asr/1', model_type: 'speech' }])
+    const llm = await setup([{ id: 'asr/1', model_type: 'speech' }], 'speech')
     const r = await llm.resolveGenerative(dbs[0]!, 't', 'gw/nope', 'speech')
     expect(r.isErr()).toBe(true)
     expect(r._unsafeUnwrapErr()).toContain('not registered')
@@ -87,6 +93,7 @@ describe('LlmRegistry.resolveGenerative capability matching', () => {
     dbs.push(r2.value)
     await Providers.upsert(r2.value, 't', {
       providerId: 'oa',
+      capability: 'video',
       apiType: 'openai-compatible',
       baseUrl: 'http://oa/v1',
       apiKey: 'k',

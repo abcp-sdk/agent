@@ -24,17 +24,13 @@ import {
   compactSession,
   DEFAULT_PRESET,
   deleteSessionIds,
-  discoverGatewayModels,
   discoverTools,
   factFromPersist,
   fileByCode,
   findVariant,
   fireAndForget,
-  GATEWAY_API_TYPE,
-  GATEWAY_PROVIDER_ID,
   getModelsDev,
   interruptRun,
-  isGatewayApiType,
   localizeSchema,
   Mailbox,
   Messages,
@@ -137,12 +133,24 @@ export function providersHandlers(
       if (validType.isErr()) {
         throw new ConnectError(validType.error, Code.InvalidArgument)
       }
-      // No gateway special-casing anymore: ANY api type registers like any
-      // other provider (several providers of one api type allowed, each with
-      // models of any capability its protocol serves — see CAPABILITY_MATRIX).
-      // A model's `model_type` IS its declared capability:
+      // Semantic grouping: a provider serves exactly ONE modality, declared by
+      // `provider.capability`. ALL of its models must share it (a host serving
+      // several modalities registers one provider per modality).
       //   text  -> context_limit required (> 0)
       //   other -> context_limit must be 0 (not a chat model)
+      const cap = parseCapability(p.capability ?? '')
+      if (cap.isErr()) {
+        throw new ConnectError(
+          `provider '${p.providerId}': ${cap.error}`,
+          Code.InvalidArgument,
+        )
+      }
+      if (!supportsCapability(apiType, cap.value)) {
+        throw new ConnectError(
+          `provider '${p.providerId}': api type '${apiType}' cannot serve capability '${cap.value}'`,
+          Code.InvalidArgument,
+        )
+      }
       const models: {
         id: string
         name: string
@@ -152,19 +160,6 @@ export function providersHandlers(
       for (const m of p.models ?? []) {
         if (m.id === '') {
           throw new ConnectError('model id is required', Code.InvalidArgument)
-        }
-        const cap = parseCapability(m.modelType ?? '')
-        if (cap.isErr()) {
-          throw new ConnectError(
-            `model '${m.id}': ${cap.error}`,
-            Code.InvalidArgument,
-          )
-        }
-        if (!supportsCapability(apiType, cap.value)) {
-          throw new ConnectError(
-            `model '${m.id}': api type '${apiType}' cannot serve capability '${cap.value}'`,
-            Code.InvalidArgument,
-          )
         }
         if (cap.value === 'text' && m.contextLimit <= 0n) {
           throw new ConnectError(
@@ -182,6 +177,7 @@ export function providersHandlers(
           id: m.id,
           name: m.name !== '' ? m.name : m.id,
           context_limit: Number(m.contextLimit),
+          // The model's modality mirrors its provider's capability.
           model_type: cap.value,
         })
       }
@@ -204,6 +200,7 @@ export function providersHandlers(
       }
       const r = await Providers.upsert(deps.db, tenant, {
         providerId: p.providerId,
+        capability: cap.value,
         apiType,
         baseUrl: p.baseUrl,
         apiKey,
@@ -212,33 +209,6 @@ export function providersHandlers(
       })
       if (r.isErr()) throw new Error(r.error)
       return { ok: true }
-    },
-
-    async discoverGatewayModels(req, ctx: HandlerContext) {
-      const tenant = tenantOf(ctx)
-      // Ask the gateway's /config for its models and classify by modelType.
-      // The gateway is the only multimodal provider, so a non-gateway type
-      // is rejected here.
-      const creds = {
-        providerId:
-          req.providerId !== '' ? req.providerId : GATEWAY_PROVIDER_ID,
-        apiType: req.apiType,
-        baseUrl: req.baseUrl,
-        apiKey: req.apiKey ?? '',
-        headers: req.headers ?? {},
-      }
-      const r = await discoverGatewayModels(creds)
-      if (r.isErr()) return { ok: false, error: r.error, models: [] }
-      return {
-        ok: true,
-        error: '',
-        models: r.value.map(m => ({
-          id: m.id,
-          name: m.name,
-          contextLimit: BigInt(m.contextLimit),
-          modelType: m.modelType,
-        })),
-      }
     },
 
     async deleteProvider(req, ctx: HandlerContext) {
@@ -326,14 +296,15 @@ export function providersHandlers(
       if (r.isErr()) throw new Error(r.error)
       const catalog = await getModelsDev(deps.bus)
       const provider = r.value.find(p => p?.provider_id === pid)
+      // Session model listing surfaces the provider's TEXT models. A provider
+      // serves exactly ONE modality, so its capability decides: a non-text
+      // provider contributes nothing to a chat model picker.
+      const isText = (provider?.capability ?? 'text') === 'text'
       const apiType = provider?.api_type ?? ''
       const parsed =
         provider === undefined ? [] : parseProviderModels(provider.models)
-      // Session model listing surfaces TEXT models only. For a text provider
-      // every model is text; for the gateway (superset) only models with a
-      // positive context_limit are text (context_limit 0 = multimodal).
       const models = parsed
-        .filter(m => m.contextLimit > 0n)
+        .filter(m => isText && m.contextLimit > 0n)
         .map(m => {
           const meta = catalogModel(catalog, pid, m.id)
           const variants =

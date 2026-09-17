@@ -96,6 +96,8 @@ export type PresetRow = z.infer<typeof PresetRowSchema>
 
 export const ProviderRowSchema = z.object({
   provider_id: z.string(),
+  /** The single modality this provider serves (semantic grouping). */
+  capability: z.string().default('text'),
   api_type: z.string(),
   base_url: z.string(),
   api_key: z.string(),
@@ -331,6 +333,11 @@ export type ExtensionVariable = z.infer<typeof ExtensionVariableSchema>
 export const ExtensionConfigItemSchema = z.object({
   name: z.string(),
   type: z.enum(['string', 'number', 'boolean', 'enum', 'json']),
+  /** `value` (default) is an ordinary knob; `model` is a `provider_id/model_id`
+   *  reference the UI renders as a picker scoped to `capability`. */
+  kind: z.enum(['value', 'model']).default('value'),
+  /** Required when `kind == 'model'`: the modality the reference must match. */
+  capability: z.string().optional(),
   enum_values: z.array(z.string()).optional(),
   default: z.unknown().optional(),
   description: z.string().optional(),

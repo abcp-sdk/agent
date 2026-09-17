@@ -41,48 +41,46 @@ const ctx = (): HandlerContext => {
   return { values } as unknown as HandlerContext
 }
 
-describe('registerProvider capability validation', () => {
+describe('registerProvider capability validation (semantic grouping)', () => {
+  // A provider serves EXACTLY ONE modality; `capability` is the provider's.
   const reg = (
     providerId: string,
+    capability: string,
     apiType: string,
-    models: Array<{ id: string; modelType?: string; contextLimit?: bigint }>,
+    models: Array<{ id: string; contextLimit?: bigint }>,
   ) => ({
     provider: {
       providerId,
+      capability,
       apiType,
       baseUrl: 'http://x/v1',
       apiKey: 'k',
       models: models.map(m => ({
         id: m.id,
         name: m.id,
-        contextLimit:
-          m.contextLimit ??
-          (m.modelType && m.modelType !== 'text' ? 0n : 1000n),
-        modelType: m.modelType ?? '',
+        contextLimit: m.contextLimit ?? (capability === 'text' ? 1000n : 0n),
       })),
     },
   })
 
-  it('an openai provider may carry mixed-modality models', async () => {
+  it('a multi-modality host registers one provider per modality', async () => {
     const h = await handlers()
     const r = await h.registerProvider!(
-      reg('oa', 'openai-compatible', [
-        { id: 'chat', modelType: 'text' },
-        { id: 'embed', modelType: 'embedding' },
-        { id: 'tts', modelType: 'speech' },
-        { id: 'asr', modelType: 'transcription' },
-        { id: 'img', modelType: 'image' },
-      ]) as never,
+      reg('oa-text', 'text', 'openai-compatible', [{ id: 'chat' }]) as never,
       ctx(),
     )
-    expect((r as { ok: boolean }).ok).toBe(true)
+    const r2 = await h.registerProvider!(
+      reg('oa-image', 'image', 'openai-compatible', [{ id: 'img' }]) as never,
+      ctx(),
+    )
+    expect((r as { ok: boolean }).ok && (r2 as { ok: boolean }).ok).toBe(true)
   })
 
   it('video on an openai provider is rejected', async () => {
     const h = await handlers()
     await expect(
       h.registerProvider!(
-        reg('oa', 'openai', [{ id: 'vid', modelType: 'video' }]) as never,
+        reg('oa', 'video', 'openai', [{ id: 'vid' }]) as never,
         ctx(),
       ),
     ).rejects.toThrow(/cannot serve capability 'video'/)
@@ -92,14 +90,12 @@ describe('registerProvider capability validation', () => {
     const h = await handlers()
     await expect(
       h.registerProvider!(
-        reg('oa', 'openai', [{ id: 'r', modelType: 'rerank' }]) as never,
+        reg('oa', 'rerank', 'openai', [{ id: 'r' }]) as never,
         ctx(),
       ),
     ).rejects.toThrow(/cannot serve capability 'rerank'/)
     const ok2 = await h.registerProvider!(
-      reg('co', 'cohere', [
-        { id: 'rerank-v3.5', modelType: 'rerank' },
-      ]) as never,
+      reg('co', 'rerank', 'cohere', [{ id: 'rerank-v3.5' }]) as never,
       ctx(),
     )
     expect((ok2 as { ok: boolean }).ok).toBe(true)
@@ -108,15 +104,14 @@ describe('registerProvider capability validation', () => {
   it('several gateway providers with arbitrary ids are allowed', async () => {
     const h = await handlers()
     const a = await h.registerProvider!(
-      reg('gateway', 'vercel-compatible-gateway', [
-        { id: 'm/1', modelType: 'text' },
-        { id: 'm/2', modelType: 'image' },
+      reg('gateway', 'text', 'vercel-compatible-gateway', [
+        { id: 'm/1' },
       ]) as never,
       ctx(),
     )
     const b = await h.registerProvider!(
-      reg('gateway-two', 'vercel-compatible-gateway', [
-        { id: 'm/3', modelType: 'speech' },
+      reg('gateway-two', 'image', 'vercel-compatible-gateway', [
+        { id: 'm/3' },
       ]) as never,
       ctx(),
     )
@@ -127,37 +122,35 @@ describe('registerProvider capability validation', () => {
     const h = await handlers()
     await expect(
       h.registerProvider!(
-        reg('oa', 'openai', [
-          { id: 't', modelType: 'text', contextLimit: 0n },
-        ]) as never,
+        reg('oa', 'text', 'openai', [{ id: 't', contextLimit: 0n }]) as never,
         ctx(),
       ),
     ).rejects.toThrow(/context_limit is required/)
     await expect(
       h.registerProvider!(
-        reg('oa', 'openai', [
-          { id: 't', modelType: 'image', contextLimit: 500n },
+        reg('oa', 'image', 'openai', [
+          { id: 't', contextLimit: 500n },
         ]) as never,
         ctx(),
       ),
     ).rejects.toThrow(/context_limit must be 0/)
   })
 
-  it('an unknown model_type is rejected with the capability list', async () => {
+  it('an unknown capability is rejected with the capability list', async () => {
     const h = await handlers()
     await expect(
       h.registerProvider!(
-        reg('oa', 'openai', [{ id: 'x', modelType: 'vibe' }]) as never,
+        reg('oa', 'vibe', 'openai', [{ id: 'x' }]) as never,
         ctx(),
       ),
     ).rejects.toThrow(/unknown capability/)
   })
 
-  it('anthropic rejects non-text models', async () => {
+  it('anthropic rejects non-text providers', async () => {
     const h = await handlers()
     await expect(
       h.registerProvider!(
-        reg('an', 'anthropic', [{ id: 'c', modelType: 'image' }]) as never,
+        reg('an', 'image', 'anthropic', [{ id: 'c' }]) as never,
         ctx(),
       ),
     ).rejects.toThrow(/cannot serve/)
@@ -167,7 +160,7 @@ describe('registerProvider capability validation', () => {
     const h = await handlers()
     try {
       await h.registerProvider!(
-        reg('oa', 'openai', [{ id: 'v', modelType: 'video' }]) as never,
+        reg('oa', 'video', 'openai', [{ id: 'v' }]) as never,
         ctx(),
       )
       expect.unreachable()
@@ -188,11 +181,12 @@ describe('ListProvidersCatalog serves the capability matrix', () => {
     expect(t['openai']?.capabilities.sort()).toEqual([
       'embedding',
       'image',
+      'realtime',
       'speech',
       'text',
       'transcription',
     ])
-    expect(t['vercel-compatible-gateway']?.capabilities.length).toBe(7)
+    expect(t['vercel-compatible-gateway']?.capabilities.length).toBe(8)
     expect(t['cohere']?.capabilities).toEqual(['text', 'rerank'])
     expect(t['anthropic']?.capabilities).toEqual(['text'])
     // Historical aliases validate but are HIDDEN from the served catalog.
