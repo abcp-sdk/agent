@@ -11,13 +11,9 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
     NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc
 WORKDIR /build
-# The sibling SDK repos (@abc-protocol/sdk, @abc-protocol/bundled-extension,
-# @abcp/agent-sdk) are consumed via `file:../..` links, so copy them in first at
-# the paths the .npmrc/package.json point at: they live one level above `agent`.
-COPY agent/ .
-COPY abc-protocol-typescript /abc-protocol-typescript
-COPY bundled-extension /bundled-extension
-COPY agent-sdk-typescript /agent-sdk-typescript
+COPY package.json package-lock.json tsconfig.base.json .npmrc ./
+COPY scripts scripts
+COPY packages packages
 # No --ignore-scripts: the root package.json allowScripts whitelist gates
 # which packages may run lifecycle scripts (esbuild builds this package's
 # bundled TS). prepare builds the schema dist, which the server step needs.

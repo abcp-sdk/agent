@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build and push the abcp-agent image WITHOUT a local build daemon.
-# Mirrors abcp/build-image.sh: buildkitd (in-cluster) -> docker archive ->
+# Mirrors upstream build-image.sh: buildkitd (in-cluster) -> docker archive ->
 # skopeo -> forgejo OCI.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,15 +20,10 @@ DOCKERFILE="Dockerfile"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
-# Build context is the abcp-sdk root (the Dockerfile COPYs the sibling SDK repos
-# abc-protocol-typescript/ bundled-extension/ agent-sdk-typescript/), while the
-# dockerfile stays in this directory.
-CTX="$(cd "${DIR}/.." && pwd)"
-
 echo "Building agent image -> ${DEST} (buildkitd=${BUILDKIT})"
 buildctl --addr "${BUILDKIT}" build \
   --frontend dockerfile.v0 \
-  --local "context=${CTX}" \
+  --local "context=${DIR}" \
   --local "dockerfile=${DIR}" \
   --opt "filename=${DOCKERFILE}" \
   --opt "build-arg:REGISTRY=${REGISTRY}" \

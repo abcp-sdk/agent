@@ -15,8 +15,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@abc-protocol/sdk": "file:../../../abc-protocol-typescript",
-    "@abcp/agent-sdk": "file:../../../agent-sdk-typescript",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#9bdc70d75415548f0ace37b1b187b1112c46f25e",
+    "@abcp/agent-sdk": "github:abcp-sdk/agent-sdk-typescript#4b4ee98f4c41579c053aebdfebc330e861a740e2",
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",
     "neverthrow": "^8.2.0",
