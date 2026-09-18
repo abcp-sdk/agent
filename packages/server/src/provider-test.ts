@@ -3,7 +3,7 @@ import {
   buildModelForApiType,
   type ModelCapability,
   type ProviderCredentials,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 import {
   embedMany,
   experimental_generateVideo,

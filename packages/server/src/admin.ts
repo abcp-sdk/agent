@@ -1,12 +1,12 @@
 import type { ConnectRouter, HandlerContext } from '@connectrpc/connect'
 import { Code, ConnectError } from '@connectrpc/connect'
-import type { AgentDeps } from '@easylab-agent/agent'
+import type { AgentDeps } from '@abcp-agent/agent'
 import {
   Presets,
   type TenantRow,
   Tenants,
   type TenantTokenRow,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 import {
   AdminService,
   CreateTenantRequestSchema,
@@ -17,7 +17,7 @@ import {
   RevokeTenantTokenRequestSchema,
   RotateTenantTokenRequestSchema,
   UpdateTenantRequestSchema,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 import { identityOf } from './auth.js'
 
 /**

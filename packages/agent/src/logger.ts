@@ -8,7 +8,7 @@ export type Logger = pino.Logger
  * bindings without breaking the JSON shape.
  */
 export const logger: Logger = pino({
-  name: 'easylab-agent',
+  name: 'abcp-agent',
   level: process.env.LOG_LEVEL ?? 'info',
 })
 

@@ -9,13 +9,13 @@ import {
   maskSecret,
   pickLocalized,
   toModelVariant,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 import {
   GetFileResponseSchema,
   ListToolsResponseSchema,
   type Session,
   type ToolInfo,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 
 export interface SessionRowView {
   name: string

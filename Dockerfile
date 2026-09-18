@@ -26,6 +26,6 @@ RUN --mount=type=cache,target=/root/.npm \
 FROM ${REGISTRY}/root/alpine:3.24
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
     && apk add --no-cache ca-certificates libstdc++
-COPY --from=build /build/.sea/easylab-agent /usr/local/bin/easylab-agent
+COPY --from=build /build/.sea/abcp-agent /usr/local/bin/abcp-agent
 EXPOSE 8080
-ENTRYPOINT ["easylab-agent"]
+ENTRYPOINT ["abcp-agent"]

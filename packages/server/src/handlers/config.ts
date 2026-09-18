@@ -59,7 +59,7 @@ import {
   validateApiType,
   variantsForApiType,
   writeMessageFact,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 import {
   type AgentService,
   GetAgentConfigResponseSchema,
@@ -70,7 +70,7 @@ import {
   WatchSessionResponseSchema,
   type WatchSessionsResponse,
   WatchSessionsResponseSchema,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 import { EidDedup } from '../context.js'
 import {
   fieldString,

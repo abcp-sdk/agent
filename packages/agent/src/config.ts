@@ -99,7 +99,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     return v !== undefined && v !== '' ? v : d
   }
 
-  const pgUrl = `postgres://${or('POSTGRES_USER', 'root')}:${or('POSTGRES_PASSWORD', 'devpassword')}@${or('POSTGRES_HOST', 'postgres.easylab.svc.cluster.local')}:${or('POSTGRES_PORT', '5432')}/${or('POSTGRES_DB_AGENT', 'easylab_agent')}`
+  const pgUrl = `postgres://${or('POSTGRES_USER', 'root')}:${or('POSTGRES_PASSWORD', 'devpassword')}@${or('POSTGRES_HOST', 'postgres.abcp.svc.cluster.local')}:${or('POSTGRES_PORT', '5432')}/${or('POSTGRES_DB_AGENT', 'abcp_agent')}`
 
   const backend = resolveBackend(env)
 
@@ -109,9 +109,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     backend,
     dbUrl:
       backend === 'sqlite'
-        ? or('DATABASE_URL', 'sqlite:///data/easylab-agent.db')
+        ? or('DATABASE_URL', 'sqlite:///data/abcp-agent.db')
         : pgUrl,
-    natsUrl: or('NATS_URL', 'nats://nats.easylab.svc.cluster.local:4222'),
+    natsUrl: or('NATS_URL', 'nats://nats.abcp.svc.cluster.local:4222'),
     toolTimeoutMs: TOOL_TIMEOUT_MS,
     defaultMaxTurns: DEFAULT_MAX_TURNS,
     corsOrigin: or('AGENT_CORS_ORIGIN', '*'),

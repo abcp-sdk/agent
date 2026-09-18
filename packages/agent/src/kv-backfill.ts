@@ -24,12 +24,12 @@ export async function backfillKvFromPg(db: Db, bus: Bus): Promise<void> {
 
 async function markerSet(bus: Bus, domain: string): Promise<boolean> {
   return (
-    (await bus.kvGet('abc-agent-config', `${MARKER_KEY}.${domain}`)) !== null
+    (await bus.kvGet('abcp-agent-config', `${MARKER_KEY}.${domain}`)) !== null
   )
 }
 
 async function setMarker(bus: Bus, domain: string): Promise<void> {
-  await bus.kvPut('abc-agent-config', `${MARKER_KEY}.${domain}`, '1', 0)
+  await bus.kvPut('abcp-agent-config', `${MARKER_KEY}.${domain}`, '1', 0)
 }
 
 async function legacyRows(

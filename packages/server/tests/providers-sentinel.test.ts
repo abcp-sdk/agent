@@ -8,7 +8,7 @@ import {
   maskSecret,
   Providers,
   rawAll,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 import { afterEach, describe, expect, it } from 'vitest'
 import { kIdentity } from '../src/auth.js'
 import { providersHandlers } from '../src/handlers/providers.js'

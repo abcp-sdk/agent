@@ -1,4 +1,4 @@
-import type { MailboxRow } from '@easylab-agent/schema'
+import type { MailboxRow } from '@abcp-agent/schema'
 import { and, eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import { z } from 'zod'

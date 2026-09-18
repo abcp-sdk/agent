@@ -1,5 +1,5 @@
 {
-  "name": "@easylab-agent/schema",
+  "name": "@abcp-agent/schema",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -10,11 +10,13 @@
     "./gen/*": "./dist/gen/*"
   },
   "scripts": {
-    "build": "tsc --emitDeclarationOnly && node ../../scripts/build-esbuild.mjs && node ../../scripts/gen-extension-schema.mjs",
+    "build": "tsc --emitDeclarationOnly && node ../../scripts/build-esbuild.mjs && tsx ../../scripts/gen-extension-schema.mjs",
     "check": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@abc-protocol/sdk": "file:../../../abc-protocol-typescript",
+    "@abcp/agent-sdk": "file:../../../agent-sdk-typescript",
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",
     "neverthrow": "^8.2.0",

@@ -21,7 +21,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 const bundleOut = join(root, '.sea', 'server.cjs')
 const blob = join(root, '.sea', 'sea-prep.blob')
-const bin = join(root, '.sea', 'easylab-agent')
+const bin = join(root, '.sea', 'abcp-agent')
 const seaConfig = join(root, '.sea', 'sea-config.json')
 
 mkdirSync(dirname(bundleOut), { recursive: true })

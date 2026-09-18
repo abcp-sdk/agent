@@ -3,7 +3,7 @@ import {
   type ExtensionConfigItem,
   ExtensionManifestSchema,
   type ExtensionTool,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 import { jsonSchema, type Tool } from 'ai'
 import { z } from 'zod'
 import type { Bus } from './bus.js'

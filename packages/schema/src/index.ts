@@ -1,3 +1,22 @@
+import {
+  type MailboxEntry,
+  MailboxEntrySchema as MailboxEntryDesc,
+  type Message,
+  MessageSchema as MessageDesc,
+  type Part,
+  PartSchema as PartDesc,
+  type Preset,
+  PresetSchema as PresetDesc,
+  type Provider,
+  ProviderSchema as ProviderDesc,
+  type Session,
+  SessionSchema as SessionDesc,
+} from '@abcp/agent-sdk'
+import {
+  type DescField,
+  type DescMessage,
+  ScalarType,
+} from '@bufbuild/protobuf'
 import { err, ok, type Result } from 'neverthrow'
 import { z } from 'zod'
 
@@ -27,354 +46,195 @@ export function parse<T extends z.ZodType>(
   return err(`parse: schema mismatch: ${z.treeifyError(result.error)}`)
 }
 
-// ---- zod schemas (API contract, shared with server) ----------------
-
-export const SessionRowSchema = z.object({
-  name: z.string(),
-  /** Canonical model reference "provider_id/model_id". */
-  model: z.string(),
-  /** Selected reasoning variant id (empty = provider defaults). */
-  variant: z.string(),
-  preset: z.string(),
-  tip_id: z.string().nullable(),
-  max_turns: z.number().int(),
-  system_prompt: z.string(),
-  input_tokens: z.number().int(),
-  output_tokens: z.number().int(),
-  total_tokens: z.number().int(),
-  last_input_tokens: z.number().int(),
-  last_output_tokens: z.number().int(),
-  created_at: z.string(),
-  updated_at: z.string(),
-  last_used_at: z.string().nullable(),
-  locale: z.string().optional(),
-  /** Generic grouping key (empty = ungrouped). */
-  group: z.string().optional(),
-})
-export type SessionRow = z.infer<typeof SessionRowSchema>
-
-export const MessageRowSchema = z.object({
-  id: z.string(),
-  role: z.string(),
-  prev_id: z.string().nullable(),
-  created_at: z.string(),
-})
-export type MessageRow = z.infer<typeof MessageRowSchema>
-
-export const PartRowSchema = z.object({
-  id: z.string(),
-  message_id: z.string(),
-  type: z.string(),
-  seq: z.number().int(),
-  data: z.string(),
-})
-export type PartRow = z.infer<typeof PartRowSchema>
-
-export const MailboxRowSchema = z.object({
-  id: z.string(),
-  session_name: z.string(),
-  msg_type: z.string(),
-  payload: z.string(),
-  effective_at: z.string().nullable(),
-  status: z.string(),
-  created_at: z.string(),
-  consumed_at: z.string().nullable(),
-  seq: z.number().int().nullable(),
-})
-export type MailboxRow = z.infer<typeof MailboxRowSchema>
-
-export const PresetRowSchema = z.object({
-  id: z.string(),
-  system_prompt: z.string(),
-  system_prompt_i18n: z.string().optional(),
-  tools: z.string(),
-  max_turns: z.number().int(),
-  /** True when this is an immutable system preset (cannot be edited/deleted). */
-  is_system: z.boolean().optional(),
-})
-export type PresetRow = z.infer<typeof PresetRowSchema>
-
-export const ProviderRowSchema = z.object({
-  provider_id: z.string(),
-  /** The single modality this provider serves (semantic grouping). */
-  capability: z.string().default('text'),
-  api_type: z.string(),
-  base_url: z.string(),
-  api_key: z.string(),
-  headers: z.string(),
-  models: z.string(),
-  updated_at: z.string(),
-})
-export type ProviderRow = z.infer<typeof ProviderRowSchema>
-
-// ---- request bodies ----------------
-
-export const CreateSessionBodySchema = z.object({
-  name: z.string().min(1),
-  model: z.string().optional(),
-  preset: z.string().optional(),
-})
-export type CreateSessionBody = z.infer<typeof CreateSessionBodySchema>
-
-export const PromptBodySchema = z.object({
-  prompt: z.string(),
-  /** Structured attachments, persisted as their own `file` parts. */
-  attachments: z
-    .array(
-      z.object({
-        code: z.string(),
-        name: z.string().optional(),
-        mime: z.string().optional(),
-        size: z.number().int().optional(),
-      }),
-    )
-    .optional(),
-})
-export type PromptBody = z.infer<typeof PromptBodySchema>
-
-export interface FileAttachment {
-  code: string
-  name?: string
-  mime?: string
-  size?: number
-}
-
-/** Structured payload of a `file` part (user attachment ref). */
-export interface FilePartData {
-  code: string
-  name?: string | undefined
-  mime?: string | undefined
-  size?: number | undefined
-}
-
-export const ForkBodySchema = z.object({
-  name: z.string().min(1),
-  /**
-   * Optional fork point: a message id on the parent's chain. Absent forks
-   * from the parent's current tip (legacy behavior); present forks from that
-   * exact message, letting callers pin the fork to the moment they captured
-   * the id. Validated with a chain-membership walk (see the undo route).
-   */
-  message_id: z.string().optional(),
-  /**
-   * Explicit preset for the forked session. When omitted the fork inherits
-   * the parent's full config (model/preset/system_prompt/max_turns/locale).
-   */
-  preset: z.string().optional(),
-})
-export type ForkBody = z.infer<typeof ForkBodySchema>
-
-export const RenameBodySchema = z.object({
-  name: z.string().min(1),
-})
-export type RenameBody = z.infer<typeof RenameBodySchema>
-
-export const ModelBodySchema = z.object({ model: z.string().min(1) })
-export type ModelBody = z.infer<typeof ModelBodySchema>
-
-export const UndoBodySchema = z.object({ message_id: z.string().optional() })
-export type UndoBody = z.infer<typeof UndoBodySchema>
-
-export const SessionSettingsBodySchema = z.object({
-  model: z.string().optional(),
-  preset: z.string().optional(),
-  max_turns: z.number().int().optional(),
-  system_prompt: z.string().optional(),
-  locale: z.string().optional(),
-})
-export type SessionSettingsBody = z.infer<typeof SessionSettingsBodySchema>
-
-export const PresetBodySchema = z.object({
-  id: z.string().min(1),
-  system_prompt: z.string().optional(),
-  system_prompt_i18n: z.any().optional(),
-  tools: z.unknown().optional(),
-  max_turns: z.number().int().optional(),
-})
-export type PresetBody = z.infer<typeof PresetBodySchema>
-
-export const ConfigBodySchema = z.object({
-  key: z.string().min(1),
-  value: z.string(),
-})
-export type ConfigBody = z.infer<typeof ConfigBodySchema>
-
-export const ProviderModelBodySchema = z.object({
-  id: z.string().min(1),
-  name: z.string().optional(),
-  /** Model context window (tokens). REQUIRED and user-supplied; drives
-   * compaction budgets and is never inferred from an external catalog. */
-  context_limit: z.number().int().positive(),
-})
-export type ProviderModelBody = z.infer<typeof ProviderModelBodySchema>
-
-export const ProviderBodySchema = z.object({
-  provider_id: z.string().min(1),
-  api_type: z.string().min(1),
-  base_url: z.string().url(),
-  api_key: z.string().optional(),
-  headers: z.record(z.string(), z.unknown()).optional(),
-  models: z.array(ProviderModelBodySchema).optional(),
-})
-export type ProviderBody = z.infer<typeof ProviderBodySchema>
-
-export const ProviderTestBodySchema = z.object({
-  api_type: z.string(),
-  base_url: z.string().url(),
-  api_key: z.string().optional(),
-  /** When set, the test performs a real 1-turn text generation (proving the
-   * model works), instead of only probing `GET /models`. */
-  model: z.string().optional(),
-})
-export type ProviderTestBody = z.infer<typeof ProviderTestBodySchema>
-
-// ---- SSE events ----------------
-
-export const SSE_EVENT_NAMES = [
-  'status',
-  'text-delta',
-  'tool-call',
-  'tool-result',
-  'error',
-  'turn-complete',
-] as const
-export type SSEEventName = (typeof SSE_EVENT_NAMES)[number]
-
-/** Parsed SSE delta params, discriminated by event type for the UI. */
-export const SseTextDeltaParamsSchema = z.object({ text: z.string() })
-export const SseErrorParamsSchema = z.object({ message: z.string() })
-export const SseParamsSchema = z.union([
-  z.object({ type: z.string() }),
-  z.object({ text: z.string() }),
-  z.object({ content: z.string() }),
-  z.object({ message: z.string() }),
-  z.object({ reason: z.string() }),
-  z.object({ tool_use_id: z.string(), content: z.string() }),
-  z.object({
-    toolCallId: z.string(),
-    toolName: z.string(),
-    content: z.string(),
-  }),
-])
-export const SSEEnvelopeSchema = z.object({
-  event: z.string(),
-  params: z.record(z.string(), z.unknown()).optional(),
-  eid: z.string().optional(),
-})
-export type SSEEnvelope = z.infer<typeof SSEEnvelopeSchema>
-
-// ---- API error envelope ----------------
-
-export interface ApiErrorBody {
-  ok: false
-  error: string
-}
-
-// ---- typed API contract ----------------
+// ---- database-row schemas -----------------------------------------------
 //
-// The single source of truth for the typed API surface is the server router:
-// the UI derives its Hono client with `hc<AppType>()` from
-// @easylab-agent/server (`AppType = typeof app`). No hand-written contract.
-
-export type SessionJson = SessionRow
-
-export const ProviderJsonSchema = z.object({
-  provider_id: z.string(),
-  api_type: z.string(),
-  base_url: z.string(),
-  api_key: z.string(),
-  headers: z.record(z.string(), z.string()),
-  models: z.array(z.string()),
-})
-export type ProviderJson = z.infer<typeof ProviderJsonSchema>
-
-/** A single provider entry from the models.dev catalog (prefill hint). */
-export const CatalogProviderSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  api: z.string().optional(),
-  npm: z.string(),
-  env: z.array(z.string()),
-  models: z.record(z.string(), z.unknown()),
-})
-export type CatalogProvider = z.infer<typeof CatalogProviderSchema>
-
-export const CatalogProvidersSchema = z.record(
-  z.string(),
-  CatalogProviderSchema,
-)
-export type CatalogProviders = z.infer<typeof CatalogProvidersSchema>
-
-// ---- extension server protocol ----------------
+// These validate the SERVER'S OWN database rows (sqlite/postgres columns),
+// not the RPC wire messages — a different concern from the generated
+// `agent.v1` messages. The shapes are derived from the SAME `.proto` message
+// descriptors (single source of truth) rather than hand-maintained copies:
+// each field is materialized as its JSON-realm primitive (int64 -> number,
+// enums -> string, bytes -> string, sub-messages -> their scalar shape). This
+// kills the drift between the DB row type and the proto message it mirrors.
 //
-// The single source of truth for the agent ↔ extension-server contract. TS
-// clients import these zod schemas directly; Go/Rust clients are generated
-// from `z.toJSONSchema()` (see scripts/gen-extension-schema.mjs).
+// `ProtoRow` produces the snake_case JSON shape (the DB column naming, which
+// equals the proto `name`), while `ProtoMsg` names the spec by the generated
+// message's camelCase property names.
 
-/** A tool manifest entry (identical shape to the existing tool servers). */
-export const ExtensionToolSchema = z.object({
-  name: z.string(),
-  description: z.string(),
-  descriptions: z.record(z.string(), z.string()).optional(),
-  input_schema: z.record(z.string(), z.unknown()).optional(),
-  /** Config names whose value this tool requires to run (may be shared). */
-  required_config: z.array(z.string()).optional(),
-})
-export type ExtensionTool = z.infer<typeof ExtensionToolSchema>
+type ZodField = z.ZodTypeAny
 
-/** A named template variable an extension can resolve (e.g. `org`, `repo`). */
-export const ExtensionVariableSchema = z.object({
-  name: z.string(),
-  description: z.string().optional(),
-})
-export type ExtensionVariable = z.infer<typeof ExtensionVariableSchema>
+/** A proto message -> zod object over its fields' JSON-realm primitives. */
+function protoMessageSchema(desc: DescMessage): z.ZodObject<z.ZodRawShape> {
+  const shape: Record<string, z.ZodType> = {}
+  for (const f of desc.fields) shape[f.name] = zField(f)
+  return z.object(shape)
+}
+function zField(f: DescField): ZodField {
+  switch (f.fieldKind) {
+    case 'scalar':
+      return zScalar(f.scalar, f.name)
+    case 'enum':
+      return z.string()
+    case 'list':
+      return z.array(
+        f.scalar !== undefined ? zScalar(f.scalar, f.name) : z.string(),
+      )
+    case 'map':
+      return z.record(z.string(), z.string())
+    case 'message':
+      // Sub-messages do not appear in the flat DB rows; validate them permissively.
+      return z.unknown()
+    default:
+      return z.unknown()
+  }
+}
 
-/** A declared extension config knob (mirrors @abc-protocol ExtensionConfigItem). */
-export const ExtensionConfigItemSchema = z.object({
-  name: z.string(),
-  type: z.enum(['string', 'number', 'boolean', 'enum', 'json']),
-  /** `value` (default) is an ordinary knob; `model` is a `provider_id/model_id`
-   *  reference the UI renders as a picker scoped to `capability`. */
-  kind: z.enum(['value', 'model']).default('value'),
-  /** Required when `kind == 'model'`: the modality the reference must match. */
-  capability: z.string().optional(),
-  enum_values: z.array(z.string()).optional(),
-  default: z.unknown().optional(),
-  description: z.string().optional(),
-  // Localized config descriptions (locale → text); `description` is the
-  // fallback, same convention as tool descriptions.
-  descriptions: z.record(z.string(), z.string()).optional(),
-  scope: z.enum(['global', 'session']).default('global'),
-})
-export type ExtensionConfigItem = z.infer<typeof ExtensionConfigItemSchema>
+/** enum -> string; int64 -> number; bytes -> string; everything else as-is. */
+function zScalar(scalar: ScalarType, field: string): ZodField {
+  switch (scalar) {
+    case ScalarType.INT64:
+    case ScalarType.UINT64:
+    case ScalarType.SINT64:
+    case ScalarType.FIXED64:
+    case ScalarType.SFIXED64:
+      // Postgres bigints are read/JSON-shaped as numbers by the server.
+      return z.number().int().nullable()
+    case ScalarType.INT32:
+    case ScalarType.UINT32:
+    case ScalarType.SINT32:
+    case ScalarType.FIXED32:
+    case ScalarType.SFIXED32:
+    case ScalarType.FLOAT:
+    case ScalarType.DOUBLE:
+      // NUMERIC/INTEGER DB columns are NULL-able.
+      return z.number().nullable()
+    case ScalarType.BOOL:
+      return z.boolean().nullable()
+    case ScalarType.BYTES:
+      return z.string().nullable()
+    case ScalarType.STRING:
+      // MOST columns are NOT NULL, but a few nullable text columns exist
+      // (tip_id / prev_id / effective_at / consumed_at / last_used_at); the
+      // proto message has no presence bit for proto3 scalars, so the schema
+      // accepts null and the row types are narrowed by their consumers.
+      return z.string().nullable()
+    default:
+      throw new Error(`proto row field ${field}: unsupported scalar ${scalar}`)
+  }
+}
 
-/** The manifest an extension serves at GET /api/v1/extension. */
-export const ExtensionManifestSchema = z.object({
-  id: z.string(),
-  version: z.string(),
-  capabilities: z.array(z.enum(['tools', 'prompt'])),
-  tools: z.array(ExtensionToolSchema).optional(),
-  prompt: z
-    .object({
-      variables: z.array(ExtensionVariableSchema).optional(),
-    })
-    .optional(),
-  config: z.array(ExtensionConfigItemSchema).optional(),
-})
-export type ExtensionManifest = z.infer<typeof ExtensionManifestSchema>
+/** camelCase -> snake_case at the type level (protobuf field naming). */
+type Snake<S extends string> = S extends `${infer H}${infer T}`
+  ? H extends Uppercase<H>
+    ? H extends Lowercase<H>
+      ? `${H}${Snake<T>}`
+      : `_${Lowercase<H>}${Snake<T>}`
+    : `${H}${Snake<T>}`
+  : S
 
-/** A resolved template variable value (request/reply body). */
-export const ExtensionVariableValueSchema = z.object({
-  name: z.string(),
-  value: z.string(),
-})
-export type ExtensionVariableValue = z.infer<
-  typeof ExtensionVariableValueSchema
+/** The generated runtime shape carried on a `GenMessage` descriptor. */
+type GenShape<G> = G extends { $codegenv2: { a: infer A } } ? A : never
+
+/** Drops the protobuf runtime `$typeName` brand from a message shape. */
+type Clean<T> = T extends { $typeName: string } ? Omit<T, '$typeName'> : T
+
+/** Precise JSON-realm row shape for a generated message `G`, re-keyed by the
+ *  snake_case proto field names (== the DB column naming). The protobuf
+ *  runtime properties (`$typeName` / `$unknown`) are excluded. */
+type DerivedRow<G> = {
+  [K in keyof GenShape<G> as K extends string
+    ? K extends `$${string}`
+      ? never
+      : Snake<K>
+    : never]: Clean<GenShape<G>[K]>
+}
+
+/** DerivedRow with DB-representation overrides (a column stored as a JSON
+ *  string while the proto field is a message/map/list) and proto-only fields
+ *  dropped (UI aggregates the DB row does not carry). */
+type RowOf<
+  G,
+  Overrides extends Record<string, unknown>,
+  Drop extends keyof DerivedRow<G>,
+> = Omit<DerivedRow<G>, Drop | keyof Overrides> & Overrides
+
+/** Public row types: the proto message's snake_case JSON shape (the DB column
+ *  naming), with the per-column DB representation/nullability applied. These
+ *  are DERIVED from the `.proto` descriptors — no hand-maintained field list —
+ *  so a proto change can never silently drift from the DB row type. */
+export type SessionRow = RowOf<
+  typeof SessionDesc,
+  { tip_id: string | null; last_used_at: string | null },
+  | 'tip_id'
+  | 'last_used_at'
+  | 'org'
+  | 'repo'
+  | 'branch'
+  | 'unread_count'
+  | 'last_message_at'
+  | 'last_message_preview'
+  | 'message_seq'
+>
+export type MessageRow = RowOf<
+  typeof MessageDesc,
+  { prev_id: string | null },
+  'prev_id' | 'parts'
+>
+export type PartRow = DerivedRow<typeof PartDesc>
+export type MailboxRow = RowOf<
+  typeof MailboxEntryDesc,
+  {
+    effective_at: string | null
+    consumed_at: string | null
+    seq: number | null // int64 in proto; the DB/JSON realm exposes a number
+  },
+  'seq' | 'effective_at' | 'consumed_at'
+>
+export type PresetRow = RowOf<
+  typeof PresetDesc,
+  // JSON-encoded text columns (the DB stores these as strings).
+  { system_prompt_i18n: string; tools: string },
+  'system_prompt_i18n' | 'tools'
+>
+export type ProviderRow = RowOf<
+  typeof ProviderDesc,
+  { headers: string; models: string },
+  'headers' | 'models'
 >
 
-// Generated Connect types (strong-typed RPC contract from .proto).
+export const SessionRowSchema = protoMessageSchema(SessionDesc)
+export const MessageRowSchema = protoMessageSchema(MessageDesc)
+export const PartRowSchema = protoMessageSchema(PartDesc)
+export const MailboxRowSchema = protoMessageSchema(MailboxEntryDesc)
+export const PresetRowSchema = protoMessageSchema(PresetDesc)
+export const ProviderRowSchema = protoMessageSchema(ProviderDesc)
 
-// Agent.v1 RPC contract (locally generated from proto/agent/v1/agent.proto;
-// decoupled from @easylab/sdk). agent_pb.ts carries the message types + the
-// GenService descriptor (AgentService) the Connect router consumes.
-export * from './gen/agent/v1/agent_pb.js'
+export type { MailboxEntry, Message, Part, Preset, Provider, Session }
+
+// ---- extension server protocol ------------------------------------------
+//
+// Re-exported from @abc-protocol/sdk (the single source of truth for the
+// agent <-> extension-server contract). Previously hand-copied here, which
+// had already drifted (capability charset vs enum).
+
+export type {
+  ExtensionConfigItem,
+  ExtensionManifest,
+  ExtensionTool,
+  ExtensionVariable,
+  ExtensionVariableValue,
+} from '@abc-protocol/sdk'
+export {
+  ExtensionConfigItemSchema,
+  ExtensionManifestSchema,
+  ExtensionToolSchema,
+  ExtensionVariableSchema,
+  ExtensionVariableValueSchema,
+} from '@abc-protocol/sdk'
+
+// Generated Connect types (strong-typed RPC contract from .proto).
+//
+// The TS generation lives in agent-sdk-typescript (@abcp/agent-sdk) — the
+// single copy in this monorepo — and is re-exported here so this package
+// stays the agent's single schema entry point. Do NOT keep a second copy of
+// `agent_pb.ts` in this repo; update via agent-proto/scripts/sync-agent-sdks.sh.
+export * from '@abcp/agent-sdk'

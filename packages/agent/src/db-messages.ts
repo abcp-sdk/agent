@@ -1,4 +1,4 @@
-import type { FilePartData, MessageRow } from '@easylab-agent/schema'
+import type { MessageRow } from '@abcp-agent/schema'
 import { and, eq, inArray } from 'drizzle-orm'
 import { err, ok, ResultAsync } from 'neverthrow'
 import { z } from 'zod'
@@ -12,6 +12,7 @@ import {
   TextPartDataSchema,
   ToolPartDataSchema,
   ToolResultPartDataSchema,
+  type FilePartData,
 } from './json.js'
 
 const toRow = (r: typeof messages.$inferSelect): MessageRow => ({

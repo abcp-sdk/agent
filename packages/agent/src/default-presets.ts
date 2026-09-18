@@ -2,7 +2,7 @@
 //
 // The base agent ships exactly ONE preset — `default` — which has NO tool
 // whitelist (empty `tools` = every discovered tool is allowed) and a generic
-// bilingual system prompt. Host-specific presets (e.g. easylab's
+// bilingual system prompt. Host-specific presets (e.g. abcp's
 // plan/explore/build) are NOT baked in here; they are injected at deploy time
 // via `SYSTEM_PRESETS_FILE` (see `seedDefaults`), so the standalone agent
 // never sees them.
@@ -31,8 +31,8 @@ export function isSystemPreset(id: string): boolean {
  * System-preset ids that existed in a previous set but were retired. Kept
  * distinct from user presets so bootstrap can remove exactly these stale keys
  * (never a user's custom preset). The three-role orchestrator/executor/analyst
- * names, plus the easylab plan/explore/build trio that used to be baked into
- * the generic agent (they now live in easylab's own deployment).
+ * names, plus the abcp plan/explore/build trio that used to be baked into
+ * the generic agent (they now live in abcp's own deployment).
  */
 const RETIRED_SYSTEM_PRESETS = ['orchestrator', 'executor', 'analyst'] as const
 

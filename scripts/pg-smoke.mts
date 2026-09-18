@@ -30,7 +30,7 @@ import {
   ProviderModelSchema,
   ProviderSchema,
   UndoRequestSchema,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 
 const DB_URL = process.env.PG_SMOKE_DATABASE_URL ?? ''
 let pass = 0
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
     return
   }
   const root = process.cwd()
-  const bin = process.env.E2E_AGENT_BIN ?? join(root, '.sea', 'easylab-agent')
+  const bin = process.env.E2E_AGENT_BIN ?? join(root, '.sea', 'abcp-agent')
   if (!process.env.E2E_AGENT_BIN && !existsSync(bin)) {
     throw new Error(`agent binary not built: ${bin} (npm run build first)`)
   }

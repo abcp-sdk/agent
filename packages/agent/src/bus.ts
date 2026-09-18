@@ -61,7 +61,7 @@ export const BUCKET_SESSION_STATE = 'abc-session-meta'
 // replay to hand only the LIVE turn back (never finished/revoked ones).
 export const BUCKET_SESSION_RUN = 'abc-session-run'
 export const BUCKET_TOOL = 'ABC_TOOL'
-export const BUCKET_CONFIG = 'abc-agent-config'
+export const BUCKET_CONFIG = 'abcp-agent-config'
 export const BUCKET_PRESETS = 'abc-presets'
 export const BUCKET_FILES_META = 'abc-files-meta'
 export const SESSION_LEASE_MS = 30_000

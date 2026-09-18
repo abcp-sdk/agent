@@ -3,10 +3,8 @@ import { z } from 'zod'
 import {
   ExtensionManifestSchema,
   MailboxRowSchema,
-  ProviderJsonSchema,
-  parse,
   SessionRowSchema,
-  SSEEnvelopeSchema,
+  parse,
 } from '../src/index.js'
 
 describe('parse', () => {
@@ -41,7 +39,7 @@ describe('parse', () => {
   })
 })
 
-describe('wire schemas', () => {
+describe('proto-derived row schemas', () => {
   it('accepts a mailbox row', () => {
     const r = MailboxRowSchema.safeParse({
       id: 'e1',
@@ -57,15 +55,13 @@ describe('wire schemas', () => {
     expect(r.success).toBe(true)
   })
 
-  it('accepts an SSE envelope', () => {
-    const r = SSEEnvelopeSchema.safeParse({
-      event: 'text-delta',
-      params: { text: 'hi' },
-      eid: 'x',
-    })
-    expect(r.success).toBe(true)
+  it('session row rejects a non-numeric token count', () => {
+    const r = SessionRowSchema.safeParse({ input_tokens: 'many' })
+    expect(r.success).toBe(false)
   })
+})
 
+describe('extension protocol schemas (re-exported from @abc-protocol/sdk)', () => {
   it('parses an extension manifest with tools', () => {
     const r = ExtensionManifestSchema.safeParse({
       id: 'x',
@@ -74,22 +70,5 @@ describe('wire schemas', () => {
       tools: [{ name: 'read', description: 'd' }],
     })
     expect(r.success).toBe(true)
-  })
-
-  it('accepts a provider json', () => {
-    const r = ProviderJsonSchema.safeParse({
-      provider_id: 'openai',
-      api_type: 'openai',
-      base_url: 'https://api.openai.com',
-      api_key: '',
-      headers: {},
-      models: ['gpt-4o'],
-    })
-    expect(r.success).toBe(true)
-  })
-
-  it('session row requires integer token counts', () => {
-    const r = SessionRowSchema.safeParse({ input_tokens: 'many' })
-    expect(r.success).toBe(false)
   })
 })

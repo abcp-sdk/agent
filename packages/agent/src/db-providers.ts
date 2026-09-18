@@ -1,4 +1,4 @@
-import type { ProviderRow } from '@easylab-agent/schema'
+import type { ProviderRow } from '@abcp-agent/schema'
 import { and, eq, or } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'

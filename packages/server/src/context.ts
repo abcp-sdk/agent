@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentDeps, LlmRegistry } from '@easylab-agent/agent'
+import type { AgentDeps, LlmRegistry } from '@abcp-agent/agent'
 
 /**
  * Bounded `eid` dedup for the SSE replay/live handover: replayed events are

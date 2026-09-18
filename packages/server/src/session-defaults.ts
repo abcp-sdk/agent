@@ -6,7 +6,7 @@ import {
   Config,
   DEFAULT_PRESET,
   Presets,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 
 export async function resolveSessionDefaults(
   deps: AgentDeps,

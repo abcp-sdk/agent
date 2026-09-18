@@ -1,4 +1,4 @@
-import { maskSecret } from '@easylab-agent/agent'
+import { maskSecret } from '@abcp-agent/agent'
 import { describe, expect, it } from 'vitest'
 import { providerToMsg } from '../src/connect.js'
 

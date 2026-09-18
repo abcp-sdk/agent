@@ -1,7 +1,7 @@
 /**
  * End-to-end test for the standalone agent.
  *
- * Boots the REAL agent binary (`.sea/easylab-agent`, built by `npm run build`)
+ * Boots the REAL agent binary (`.sea/abcp-agent`, built by `npm run build`)
  * against an ephemeral NATS + sqlite DB, with a local mock OpenAI-compatible
  * LLM upstream, then drives EVERY agent.v1 RPC over Connect and asserts the
  * observable behaviour:
@@ -19,7 +19,7 @@
  *
  * Run: `npm run e2e` (which builds first) or `tsx scripts/e2e.mts`.
  * Env: ABC_NATS_SERVER_BIN / ABC_NATS_URL, E2E_AGENT_BIN (default
- * `.sea/easylab-agent`), E2E_KEEP=1 to keep the temp dir for debugging.
+ * `.sea/abcp-agent`), E2E_KEEP=1 to keep the temp dir for debugging.
  */
 import { type ChildProcess, spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
@@ -82,7 +82,7 @@ import {
   UpsertPresetRequestSchema,
   WatchSessionRequestSchema,
   WatchSessionsRequestSchema,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 
 // ---- multi-tenant identity for the e2e run ----
 const E2E_ADMIN_TOKEN = 'e2e-admin-token'
@@ -688,7 +688,7 @@ interface Env {
 async function main(): Promise<void> {
   const root = resolve(process.cwd())
   const bin =
-    process.env['E2E_AGENT_BIN'] ?? join(root, '.sea', 'easylab-agent')
+    process.env['E2E_AGENT_BIN'] ?? join(root, '.sea', 'abcp-agent')
   if (!process.env['E2E_AGENT_BIN'] && !existsSync(bin)) {
     console.error(`agent binary not found at ${bin}. Run: npm run build`)
     process.exit(2)

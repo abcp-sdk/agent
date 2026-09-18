@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build and push the easylab-agent image WITHOUT a local build daemon.
-# Mirrors easylab/build-image.sh: buildkitd (in-cluster) -> docker archive ->
+# Build and push the abcp-agent image WITHOUT a local build daemon.
+# Mirrors abcp/build-image.sh: buildkitd (in-cluster) -> docker archive ->
 # skopeo -> forgejo OCI.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REGISTRY="${REGISTRY:-forgejo.develop.10.199.64.20.nip.io}"
-NAMESPACE="${NAMESPACE:-easylab}"
+NAMESPACE="${NAMESPACE:-abcp}"
 NAME="${NAME:-agent}"
 TAG="${TAG:-$(date +%Y%m%d%H%M%S)}"
 DEST="${REGISTRY}/${NAMESPACE}/${NAME}:${TAG}"

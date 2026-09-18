@@ -7,7 +7,7 @@ import {
   createContextValues,
   type HandlerContext,
 } from '@connectrpc/connect'
-import { connectDb, type Db } from '@easylab-agent/agent'
+import { connectDb, type Db } from '@abcp-agent/agent'
 import { afterEach, describe, expect, it } from 'vitest'
 import { kIdentity } from '../src/auth.js'
 import { providersHandlers } from '../src/handlers/providers.js'

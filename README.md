@@ -1,4 +1,4 @@
-# easylab-agent (standalone agent)
+# abcp-agent (standalone agent)
 
 Multi-tenant, single-binary agent service implementing `agent.v1.AgentService`
 (Connect RPC over HTTP/1+h2c): chat sessions with streaming turns, tool
@@ -8,7 +8,7 @@ NATS/JetStream + SQLite or Postgres, no other runtime dependency.
 
 ```
 ┌────────────┐  Connect RPC   ┌────────────────────────────────────┐
-│  clients   │ ─────────────► │  easylab-agent (Node SEA binary)   │
+│  clients   │ ─────────────► │  abcp-agent (Node SEA binary)   │
 │ (Flutter / │  Bearer token  │  ┌────────┐ ┌────────┐ ┌────────┐  │     NATS
 │  web / SDK)│                │  │ server │ │ agent  │ │ schema │  │ ──────────► JetStream
 └────────────┘                │  └────────┘ └────────┘ └────────┘  │   streams/KV/object store
@@ -37,7 +37,7 @@ agent/
 ```bash
 npm install
 npm run dev          # tsx watch packages/server (needs NATS_URL)
-npm run build        # schema → agent → server → .sea/easylab-agent
+npm run build        # schema → agent → server → .sea/abcp-agent
 npm run check        # biome lint/format
 npm test             # vitest (agent + server + bundled suites)
 npm run e2e          # boots the REAL binary: embedded NATS + sqlite + mock LLM
@@ -51,7 +51,7 @@ E2E drivers (all against the real binary, no shared state):
 - `scripts/subsession-i18n-test.mts` — handoff localization (zh/en).
 - `scripts/item-test.mts` — mailbox item semantics (idempotency, ordering).
 
-Environment: `E2E_AGENT_BIN` (default `.sea/easylab-agent`),
+Environment: `E2E_AGENT_BIN` (default `.sea/abcp-agent`),
 `ABC_NATS_SERVER_BIN` (nats-server binary; defaults to PATH lookup),
 `ABC_NATS_URL` (reuse an external NATS), `E2E_KEEP=1`, `E2E_DEBUG=1`.
 
@@ -89,5 +89,5 @@ provider API keys are stored server-side and returned **masked**.
 
 `build-image.sh` builds the SEA binary in buildkit and pushes to the internal
 registry; the standalone deployment manifest lives at
-`easylab/k8s/standalone-agent.yaml` (agent + embedded NATS sidecar, hostPath
+`abcp/k8s/standalone-agent.yaml` (agent + embedded NATS sidecar, hostPath
 sqlite).

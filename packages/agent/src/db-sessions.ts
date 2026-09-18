@@ -1,4 +1,4 @@
-import type { SessionRow } from '@easylab-agent/schema'
+import type { SessionRow } from '@abcp-agent/schema'
 import { and, sql as dsql, eq } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import { DEFAULT_PRESET } from './config.js'

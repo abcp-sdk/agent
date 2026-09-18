@@ -1,19 +1,19 @@
 {
-  "name": "easylab-agent",
+  "name": "abcp-agent",
   "private": true,
   "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace=@easylab-agent/schema && npm run build --workspace=@easylab-agent/agent && npm run build --workspace=@easylab-agent/server && node scripts/build-sea.mjs",
+    "build": "npm run build --workspace=@abcp-agent/schema && npm run build --workspace=@abcp-agent/agent && npm run build --workspace=@abcp-agent/server && node scripts/build-sea.mjs",
     "check": "biome check .",
     "check:fix": "biome check --fix .",
     "dev": "tsx watch packages/server/src/index.ts",
     "dev:server": "tsx watch packages/server/src/index.ts",
     "format": "biome format --write .",
     "lint": "biome lint .",
-    "start": "node .sea/easylab-agent",
+    "start": "node .sea/abcp-agent",
     "test": "npm test --workspaces --if-present",
     "e2e": "tsx scripts/e2e.mts",
     "e2e:build": "npm run build && tsx scripts/e2e.mts",
@@ -31,7 +31,7 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
-    "@easylab/client-sdk@0.1.1": true
+    "@abcp/client-sdk@0.1.1": true
   },
   "overrides": {
     "@ai-sdk/gateway": "4.0.78",

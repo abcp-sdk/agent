@@ -49,7 +49,7 @@ import {
   SetExtensionConfigRequestSchema,
   TestProviderRequestSchema,
   UpdateTenantRequestSchema,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 
 const BASE = process.env['E2E_AGENT_BASE'] ?? 'https://standalone-agent.temp.10.199.64.20.nip.io'
 const ADMIN_TOKEN = process.env['E2E_ADMIN_TOKEN'] ?? 'dev-admin-token'

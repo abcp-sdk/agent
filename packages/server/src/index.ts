@@ -34,7 +34,7 @@ import {
   tenantKVKey,
   upsertFile,
   watchMailboxWake,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 import { getRequestListener } from '@hono/node-server'
 import { Hono } from 'hono'
 import { buildAdminRoutes } from './admin.js'

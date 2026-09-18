@@ -1,4 +1,4 @@
-import type { PartRow } from '@easylab-agent/schema'
+import type { PartRow } from '@abcp-agent/schema'
 import { and, eq, inArray } from 'drizzle-orm'
 import { ResultAsync } from 'neverthrow'
 import type { Db } from './db-client.js'

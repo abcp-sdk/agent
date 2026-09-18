@@ -58,7 +58,7 @@ import {
   validateApiType,
   variantsForApiType,
   writeMessageFact,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 import {
   type AgentService,
   GetAgentConfigResponseSchema,
@@ -69,7 +69,7 @@ import {
   WatchSessionResponseSchema,
   type WatchSessionsResponse,
   WatchSessionsResponseSchema,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 import { EidDedup } from '../context.js'
 import {
   fieldString,
@@ -101,7 +101,7 @@ export function sessionsHandlers(
 ): Partial<ServiceImpl<typeof AgentService>> {
   return {
     async health() {
-      return { ok: true, name: 'easylab-agent' }
+      return { ok: true, name: 'abcp-agent' }
     },
 
     async listSessions(_req, ctx: HandlerContext) {

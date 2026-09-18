@@ -30,7 +30,7 @@ import {
   RegisterProviderRequestSchema,
   ProviderModelSchema,
   ProviderSchema,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 
 const TOKEN = 'sub-tenant-token'
 const TENANT = 'sub'
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
 
   const httpPort = mockPort + 2000
   const alog: string[] = []
-  const agent: ChildProcess = spawn('.sea/easylab-agent', [], {
+  const agent: ChildProcess = spawn('.sea/abcp-agent', [], {
     env: {
       ...process.env,
       PORT: String(httpPort),
@@ -278,7 +278,7 @@ async function main(): Promise<void> {
 
   // 2. Child exists, with group = parent and inherited model.
   console.log('\nsubsession fork')
-  let child: import('@easylab-agent/schema').Session | undefined
+  let child: import('@abcp-agent/schema').Session | undefined
   for (let i = 0; i < 80; i++) {
     try {
       const g = await client.getSession(create(GetSessionRequestSchema, { id: CHILD }))

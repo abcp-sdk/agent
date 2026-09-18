@@ -1,14 +1,14 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AgentDeps, Bus, LlmRegistry } from '@easylab-agent/agent'
+import type { AgentDeps, Bus, LlmRegistry } from '@abcp-agent/agent'
 import {
   CONFIG_DEFAULT_MODEL,
   CONFIG_DEFAULT_PRESET,
   connectDb,
   DEFAULT_PRESET,
   Presets,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 import { err, ok } from 'neverthrow'
 import { describe, expect, it } from 'vitest'
 import { resolveSessionDefaults } from '../src/connect.js'
@@ -88,7 +88,7 @@ async function fixture(opts: {
   }
   // Seed config keys.
   for (const [k, v] of Object.entries(opts.config ?? {})) {
-    await bus.kvPut('abc-agent-config', `t.${T}.${k}`, v)
+    await bus.kvPut('abcp-agent-config', `t.${T}.${k}`, v)
   }
   return deps
 }

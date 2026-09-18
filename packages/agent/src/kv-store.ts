@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import type { PresetRow } from '@easylab-agent/schema'
+import type { PresetRow } from '@abcp-agent/schema'
 import { ResultAsync } from 'neverthrow'
 import type { Bus } from './bus.js'
 import { BUCKET_CONFIG, BUCKET_PRESETS, tenantKVKey } from './bus.js'
@@ -266,7 +266,7 @@ export const Presets = {
    * Seed the immutable system presets at boot. The built-in `default` preset
    * is always seeded; host-specific presets are loaded from the environment
    * (`SYSTEM_PRESETS_FILE`: a JSON file containing an array) so a deployment
-   * (e.g. easylab) can register its own immutable presets without baking them
+   * (e.g. abcp) can register its own immutable presets without baking them
    * into the generic agent. All injected presets are marked `is_system`.
    * Content drift is refreshed in place; retired ids are pruned.
    */

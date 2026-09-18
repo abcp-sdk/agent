@@ -12,7 +12,7 @@ import {
   TextPartDataSchema,
   upsertFile,
   writeMessageFact,
-} from '@easylab-agent/agent'
+} from '@abcp-agent/agent'
 
 /**
  * Helpers shared by the Connect handler modules (they operate on AgentDeps,

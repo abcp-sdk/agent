@@ -1,6 +1,6 @@
 import type { ConnectRouter, ServiceImpl } from '@connectrpc/connect'
-import type { AgentDeps } from '@easylab-agent/agent'
-import { AgentService } from '@easylab-agent/schema'
+import type { AgentDeps } from '@abcp-agent/agent'
+import { AgentService } from '@abcp-agent/schema'
 import { configHandlers } from './handlers/config.js'
 import { filesHandlers } from './handlers/files.js'
 import { messagesHandlers } from './handlers/messages.js'

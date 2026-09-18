@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# agent Connect-RPC smoke: drives the live agent over the easylab gateway's
+# agent Connect-RPC smoke: drives the live agent over the abcp gateway's
 # /agent.v1.* Connect endpoints (h2c/h1 dual-stack). Uses the Connect JSON
 # codec (application/json, unary) so curl needs no protobuf.
 #
-#   AGENT_BASE=http://easylab.temp.svc.cluster.local:80 bash smoke.sh
+#   AGENT_BASE=http://abcp.temp.svc.cluster.local:80 bash smoke.sh
 set -uo pipefail
-AGENT_BASE="${AGENT_BASE:-http://easylab.temp.svc.cluster.local:80}"
+AGENT_BASE="${AGENT_BASE:-http://abcp.temp.svc.cluster.local:80}"
 TOKEN="${TOKEN:-devtoken}"
 SID="smoke-$(date +%s)$RANDOM"
 PASS=0; FAIL=0

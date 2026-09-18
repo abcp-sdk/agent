@@ -22,7 +22,7 @@ import {
   ProviderModelSchema,
   ProviderSchema,
   UpdateSettingsRequestSchema,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 
 const TOKEN = 'i18n-token'
 const TENANT = 'i18n'
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   await new Promise<void>(r => mock.listen(mockPort, '127.0.0.1', () => r()))
 
   const httpPort = mockPort + 1000
-  const agent: ChildProcess = spawn('.sea/easylab-agent', [], {
+  const agent: ChildProcess = spawn('.sea/abcp-agent', [], {
     env: {
       ...process.env,
       PORT: String(httpPort),

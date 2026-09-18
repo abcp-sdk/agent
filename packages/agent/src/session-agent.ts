@@ -6,7 +6,7 @@ import {
   renewSession,
   setSessionVariable,
 } from '@abc-protocol/sdk'
-import type { PartRow, PresetRow } from '@easylab-agent/schema'
+import type { PartRow, PresetRow } from '@abcp-agent/schema'
 import type { ModelMessage, Tool } from 'ai'
 import { streamText } from 'ai'
 import { err, ok, type Result } from 'neverthrow'

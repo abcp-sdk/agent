@@ -28,7 +28,7 @@ import {
   ProviderModelSchema,
   ProviderSchema,
   RegisterProviderRequestSchema as _R,
-} from '@easylab-agent/schema'
+} from '@abcp-agent/schema'
 
 const ADMIN = 'item-admin-token'
 const TENANT = 'item'
@@ -131,7 +131,7 @@ async function main(): Promise<void> {
   // --- agent (SEA binary) ---
   const httpPort = mockPort + 1
   const agentLog: string[] = []
-  const agent: ChildProcess = spawn('.sea/easylab-agent', [], {
+  const agent: ChildProcess = spawn('.sea/abcp-agent', [], {
     env: {
       ...process.env,
       PORT: String(httpPort),

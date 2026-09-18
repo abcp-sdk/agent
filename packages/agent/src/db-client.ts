@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS tenant_tokens (
 CREATE INDEX IF NOT EXISTS idx_tenant_tokens_tenant ON tenant_tokens (tenant_id);
 
 -- presets / config / files-meta moved to NATS KV buckets (abc-presets,
--- abc-agent-config, abc-files-meta). The legacy PG tables are intentionally
+-- abcp-agent-config, abc-files-meta). The legacy PG tables are intentionally
 -- NOT dropped: existing deployments keep them as the one-time backfill
 -- source (see kv-backfill.ts); fresh installs never create them.
 `

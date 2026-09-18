@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["packages/**/*.{ts,js,json}"]
+    "includes": ["packages/**/*.{ts,js,json}", "!packages/schema/src/gen"]
   },
   "formatter": {
     "enabled": true,
