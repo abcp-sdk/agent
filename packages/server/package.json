@@ -12,7 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@abc-protocol/bundled-extension": "github:abcp-sdk/bundled-extension#8553b9147abd8190cd04e8b224e33ab20162f299",
+    "@abc-protocol/bundled-extension": "github:abcp-sdk/bundled-extension#9c987a66534997a1fc990781d31c060c4fc96dfb",
     "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#9bdc70d75415548f0ace37b1b187b1112c46f25e",
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",

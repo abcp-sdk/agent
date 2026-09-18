@@ -32,6 +32,7 @@ import { Sessions } from './db-sessions.js'
 import { clearActiveRun, events, markActiveRun, pushEvent } from './events.js'
 import { renderTemplate } from './extensions.js'
 import type { BlobStore } from './files.js'
+import { randomCode, sha256Hex, upsertFile } from './files.js'
 import { rebuildHistory } from './history.js'
 import { pickLocalized, resolveLocale } from './i18n.js'
 import { clearRun, getAbortController, interruptRun } from './interrupt.js'
@@ -48,6 +49,7 @@ import { Config, Presets } from './kv-store.js'
 import { type LlmRegistry, parseProviderModelRef } from './llm.js'
 import { logger } from './logger.js'
 import { factFromPersist, projectMessageFact } from './session-state.js'
+import { sanitizeStreamPart, type SanitizeDeps } from './stream-parts.js'
 import {
   appendSessionId,
   getModelsDev,
@@ -328,6 +330,18 @@ async function runTurnOnce(
   markActiveRun(deps.bus, tenant, sid, runId, runStartedAtMs)
   pushEvent(deps.bus, tenant, sid, 'status', { type: 'busy' }, runId)
 
+  // JSON sanitizer for verbatim stream-part pass-through: large media is
+  // stored in the blob store (not inlined into the event bus frame).
+  const sanitizeDeps: SanitizeDeps = {
+    files: deps.files,
+    bus: deps.bus,
+    tenant,
+    session: sid,
+    mintCode: randomCode,
+    sha256Hex,
+    upsertFile: (bus, t, record) => upsertFile(bus as Bus, t, record),
+  }
+
   // Cross-replica mid-stream interrupt: watch the mailbox wake subject. The
   // HTTP interrupt route publishes directly to this subject (never enqueued
   // in the mailbox), so whichever replica is running the session aborts
@@ -399,177 +413,90 @@ async function runTurnOnce(
         let usage: { inputTokens: number; outputTokens: number } | null = null
 
         for await (const part of result.fullStream) {
-          switch (part.type) {
-            case 'start-step':
-              pushEvent(deps.bus, tenant, sid, 'step-start', {}, runId)
-              break
-            case 'text-start':
-              pushEvent(
-                deps.bus,
-                tenant,
-                sid,
-                'text-start',
-                { id: 't0' },
-                runId,
-              )
-              break
-            case 'text-delta':
-              text += part.text
-              pushEvent(
-                deps.bus,
-                tenant,
-                sid,
-                'text-delta',
-                {
-                  id: 't0',
-                  text: part.text,
-                },
-                runId,
-              )
-              break
-            case 'text-end':
-              pushEvent(deps.bus, tenant, sid, 'text-end', { id: 't0' }, runId)
-              break
-            case 'reasoning-start':
-              pushEvent(
-                deps.bus,
-                tenant,
-                sid,
-                'reasoning-start',
-                { id: 'r0' },
-                runId,
-              )
-              break
-            case 'reasoning-delta':
-              reasoning += part.text
-              pushEvent(
-                deps.bus,
-                tenant,
-                sid,
-                'reasoning-delta',
-                {
-                  id: 'r0',
-                  text: part.text,
-                },
-                runId,
-              )
-              break
-            case 'reasoning-end':
-              pushEvent(
-                deps.bus,
-                tenant,
-                sid,
-                'reasoning-end',
-                { id: 'r0' },
-                runId,
-              )
-              break
-            case 'tool-call':
-              toolCalls.push({
-                id: part.toolCallId,
-                name: part.toolName,
-                input: part.input,
-              })
-              pushEvent(
-                deps.bus,
-                tenant,
-                sid,
-                'tool-call',
-                {
-                  toolCallId: part.toolCallId,
-                  toolName: part.toolName,
-                  input: part.input,
-                },
-                runId,
-              )
-              break
-            case 'tool-result':
-              toolResults.push({
-                id: part.toolCallId,
-                name: part.toolName,
-                result: part.output,
-              })
-              pushEvent(
-                deps.bus,
-                tenant,
-                sid,
-                'tool-result',
-                {
-                  toolCallId: part.toolCallId,
-                  toolName: part.toolName,
-                  formatted: part.output.content,
-                  // Structured result data (opaque to the agent): media tools put
-                  // their fixed fields (images/videos/audio file refs) here so a
-                  // client can render them without re-deriving from the text.
-                  data: part.output.metadata ?? null,
-                  change_id:
-                    typeof part.output.metadata?.change_id === 'string'
-                      ? part.output.metadata.change_id
-                      : undefined,
-                },
-                runId,
-              )
-              break
-            case 'tool-error':
-              // A tool that failed/aborted still pairs with its call id so the
-              // provider never sees a dangling tool-call.
-              toolResults.push({
-                id: part.toolCallId,
-                name: part.toolName,
-                result: { content: String(part.error), metadata: null },
-              })
-              pushEvent(
-                deps.bus,
-                tenant,
-                sid,
-                'tool-error',
-                {
-                  toolCallId: part.toolCallId,
-                  error: String(part.error),
-                },
-                runId,
-              )
-              break
-            case 'tool-output-denied':
-              toolResults.push({
-                id: part.toolCallId,
-                name: part.toolName,
-                result: { content: 'denied', metadata: null },
-              })
-              break
-            case 'finish-step':
-              usage = {
-                inputTokens: part.usage.inputTokens ?? 0,
-                outputTokens: part.usage.outputTokens ?? 0,
-              }
-              break
-            case 'finish':
-              finished = true
-              break
-            case 'error': {
-              const error = part.error
-              if (isContextOverflowFailure(error)) {
-                // Context overflow: compact and retry once with the trimmed
-                // context — transparent to the caller.
-                const compacted = await compactSession(
-                  deps,
-                  tenant,
-                  sid,
-                  'overflow',
-                )
-                if (compacted.isOk() && compacted.value) {
-                  stepMessages = await loadHistory(deps, tenant, sid)
-                  return 'retry'
-                }
-              }
-              return `turn failed: ${String(error)}`
+          // ---- bookkeeping (never changes what is published) ----
+          if (part.type === 'text-delta') text += part.text
+          else if (part.type === 'reasoning-delta') reasoning += part.text
+          else if (part.type === 'tool-call') {
+            toolCalls.push({
+              id: part.toolCallId,
+              name: part.toolName,
+              input: part.input,
+            })
+          } else if (part.type === 'tool-result') {
+            toolResults.push({
+              id: part.toolCallId,
+              name: part.toolName,
+              result: part.output,
+            })
+          } else if (part.type === 'tool-error') {
+            // A tool that failed/aborted still pairs with its call id so the
+            // provider never sees a dangling tool-call.
+            toolResults.push({
+              id: part.toolCallId,
+              name: part.toolName,
+              result: { content: String(part.error), metadata: null },
+            })
+          } else if (part.type === 'tool-output-denied') {
+            toolResults.push({
+              id: part.toolCallId,
+              name: part.toolName,
+              result: { content: 'denied', metadata: null },
+            })
+          } else if (part.type === 'finish-step') {
+            usage = {
+              inputTokens: part.usage.inputTokens ?? 0,
+              outputTokens: part.usage.outputTokens ?? 0,
             }
-            case 'abort':
-              interrupted = true
-              break
-            default:
-              break
+          } else if (part.type === 'finish') {
+            finished = true
+          } else if (part.type === 'abort') {
+            interrupted = true
           }
+
+          // The error part keeps its special control-flow handling: a context
+          // overflow is compacted and the step retried ONCE (transparent to
+          // the caller); any other error still ends the turn. It is published
+          // verbatim (sanitized) before the turn unwinds.
+          if (part.type === 'error') {
+            const error = part.error
+            pushEvent(deps.bus, tenant, sid, 'error', {
+              error: String(error),
+              message: String(error),
+            }, runId)
+            if (isContextOverflowFailure(error)) {
+              // Context overflow: compact and retry once with the trimmed
+              // context — transparent to the caller.
+              const compacted = await compactSession(
+                deps,
+                tenant,
+                sid,
+                'overflow',
+              )
+              if (compacted.isOk() && compacted.value) {
+                stepMessages = await loadHistory(deps, tenant, sid)
+                return 'retry'
+              }
+            }
+            return `turn failed: ${String(error)}`
+          }
+
+          // ---- verbatim pass-through ----
+          // EVERY other AI SDK fullStream part is published under its OWN
+          // event name (start-step, tool-input-start/delta/end, source, file,
+          // custom, finish, abort, raw, tool-approval-*, ...), sanitized to be
+          // JSON-safe. This is the "fully transparent" contract: the event
+          // vocabulary is the AI SDK's, not a hand-maintained subset.
+          pushEvent(
+            deps.bus,
+            tenant,
+            sid,
+            part.type,
+            await sanitizeStreamPart(
+              part as { type: string } & Record<string, unknown>,
+              sanitizeDeps,
+            ),
+            runId,
+          )
         }
         return { text, reasoning, toolCalls, toolResults, usage }
       }
