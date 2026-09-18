@@ -12,8 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@abc-protocol/bundled-extension": "github:abcp-sdk/bundled-extension#46daac8",
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#faa81f02653f4f114e5faa664c354c9b58e2de58",
+    "@abc-protocol/bundled-extension": "file:../../../bundled-extension",
+    "@abc-protocol/sdk": "file:../../../abc-protocol-typescript",
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",
     "@abcp-agent/agent": "*",

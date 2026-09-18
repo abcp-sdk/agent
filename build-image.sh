@@ -20,10 +20,15 @@ DOCKERFILE="Dockerfile"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
+# Build context is the abcp-sdk root (the Dockerfile COPYs the sibling SDK repos
+# abc-protocol-typescript/ bundled-extension/ agent-sdk-typescript/), while the
+# dockerfile stays in this directory.
+CTX="$(cd "${DIR}/.." && pwd)"
+
 echo "Building agent image -> ${DEST} (buildkitd=${BUILDKIT})"
 buildctl --addr "${BUILDKIT}" build \
   --frontend dockerfile.v0 \
-  --local "context=${DIR}" \
+  --local "context=${CTX}" \
   --local "dockerfile=${DIR}" \
   --opt "filename=${DOCKERFILE}" \
   --opt "build-arg:REGISTRY=${REGISTRY}" \
