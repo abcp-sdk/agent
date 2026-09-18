@@ -124,6 +124,7 @@ const KNOBS: [string, string][] = [
   ['model.image_edit', 'image'],
   ['model.video', 'video'],
   ['model.speech', 'speech'],
+  ['model.speech_clone', 'speech'],
   ['model.transcription', 'transcription'],
 ]
 const DEFAULT_TEXT_CONTEXT = 262144

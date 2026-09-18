@@ -1404,7 +1404,7 @@ async function run(
     'brave-search requires config',
     (brave?.requiredConfig ?? []).includes('brave_api_key'),
   )
-  for (const gen of ['image-generate', 'image-edit', 'video-generate', 'tts-generate']) {
+  for (const gen of ['image-generate', 'image-edit', 'video-generate', 'tts-generate', 'tts-clone']) {
     const t = toolsEn.tools.find(t => t.name === gen)
     check(`${gen} discovered`, t !== undefined, toolNames)
   }
