@@ -102,7 +102,7 @@ export async function upsertFile(
   if (metaBackend === 'db') {
     const db = metaDb
     if (db === null) return err('file meta db not configured')
-    const r = await FilesDb.upsert(db, record)
+    const r = await FilesDb.upsert(db, tenant, record)
     return r.isErr() ? err(r.error) : ok(r.value)
   }
   return ra(
@@ -148,7 +148,7 @@ export async function fileBySha(
   if (metaBackend === 'db') {
     const db = metaDb
     if (db === null || sha256 === '') return ok(null)
-    const r = await FilesDb.bySha(db, sha256)
+    const r = await FilesDb.bySha(db, tenant, sha256)
     return r.isErr() ? err(r.error) : ok(r.value)
   }
   return ra(
@@ -183,7 +183,7 @@ export async function fileByCode(
   if (metaBackend === 'db') {
     const db = metaDb
     if (db === null) return ok(null)
-    const r = await FilesDb.byCode(db, code)
+    const r = await FilesDb.byCode(db, tenant, code)
     return r.isErr() ? err(r.error) : ok(r.value)
   }
   return ra(

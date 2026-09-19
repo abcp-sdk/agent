@@ -146,18 +146,20 @@ CREATE INDEX IF NOT EXISTS idx_tenant_tokens_tenant ON tenant_tokens (tenant_id)
 -- source (see kv-backfill.ts); fresh installs never create them.
 
 -- File metadata + sha dedup live HERE (not NATS KV) so durable file state can
--- leave NATS for an external object store. Tenant-free: a file is content-
--- addressed by sha256 and shared across all tenants; code is global.
+-- leave NATS for an external object store. Tenant-SCOPED: the same bytes under
+-- two tenants resolve to two independent codes (dedup is per (tenant, sha256)),
+-- so a cross-tenant upload can never resolve to another tenant's bytes.
 CREATE TABLE IF NOT EXISTS agent_files (
     code TEXT PRIMARY KEY,
-    sha256 TEXT NOT NULL UNIQUE,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    sha256 TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     mime TEXT NOT NULL DEFAULT '',
     size BIGINT NOT NULL DEFAULT 0,
     uploader_session TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (NOW()::text)
 );
-CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (sha256);
+CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (tenant, sha256);
 `
 
 // SQLite has no `NOW()::text`, supports table creation with the full column
@@ -249,17 +251,19 @@ CREATE TABLE IF NOT EXISTS tenant_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_tenant_tokens_tenant ON tenant_tokens (tenant_id);
 
--- File metadata + sha dedup (see DDL above): content-addressed, tenant-free.
+-- File metadata + sha dedup (see DDL above): tenant-scoped content addressing.
 CREATE TABLE IF NOT EXISTS agent_files (
     code TEXT PRIMARY KEY,
-    sha256 TEXT NOT NULL UNIQUE,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    sha256 TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     mime TEXT NOT NULL DEFAULT '',
     size INTEGER NOT NULL DEFAULT 0,
     uploader_session TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (tenant, sha256)
 );
-CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (sha256);
+CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (tenant, sha256);
 `
 
 // PG-specific additive migrations (safe to re-run; destructive-free). Kept as
@@ -299,6 +303,21 @@ const PG_TENANT_PK_MIGRATIONS = `
     ALTER TABLE providers DROP CONSTRAINT IF EXISTS providers_pkey;
     ALTER TABLE providers ADD PRIMARY KEY (tenant, provider_id);
     ALTER TABLE mailbox DROP CONSTRAINT IF EXISTS mailbox_session_name_fkey;
+`
+
+// agent_files: global (sha256 UNIQUE) -> tenant-scoped (tenant, sha256). Adds
+// the tenant column (backfilling 'default'), drops the old global unique
+// constraint, and installs the composite one. Guarded so it is a no-op once
+// applied (the DROP CONSTRAINT IF EXISTS / ADD COLUMN IF NOT EXISTS are
+// idempotent; the composite UNIQUE is created by the v2 DDL for fresh installs
+// and by this statement for upgrades — the DROP/ADD pair below tolerates both).
+const PG_AGENT_FILES_TENANT_MIGRATION = `
+    ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    UPDATE agent_files SET tenant = 'default' WHERE tenant = '';
+    ALTER TABLE agent_files DROP CONSTRAINT IF EXISTS agent_files_sha256_key;
+    DROP INDEX IF EXISTS idx_agent_files_sha;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_files_tenant_sha ON agent_files (tenant, sha256);
+    CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (tenant, sha256);
 `
 
 // SQLite: feature detection for columns we never create (they are all in the
@@ -503,10 +522,16 @@ async function migrateSchema(
     // any FK action on mailbox fails with "foreign key mismatch". SQLite cannot
     // DROP a constraint, so rebuild the table with the FK-free v2 DDL.
     rebuildMailboxIfLegacyFk(driver)
+    // agent_files moved from a global (sha256 UNIQUE) to a tenant-scoped
+    // (tenant, sha256) uniqueness. SQLite cannot change a constraint in place,
+    // so rebuild when the tenant column is absent; pre-existing rows are
+    // backfilled with tenant='default'.
+    rebuildAgentFilesIfLegacy(driver)
   } else {
     await (driver as Sql).unsafe(ddl)
     await (driver as Sql).unsafe(PG_MIGRATIONS)
     await (driver as Sql).unsafe(PG_TENANT_PK_MIGRATIONS)
+    await (driver as Sql).unsafe(PG_AGENT_FILES_TENANT_MIGRATION)
   }
 }
 
@@ -580,9 +605,38 @@ function rebuildMailboxIfLegacyFk(raw: DatabaseSync): void {
   }
 }
 
+/**
+ * Rebuild the sqlite `agent_files` table when it still lacks the `tenant`
+ * column (pre-multi-tenant S3 deployment). The old table had a global
+ * `sha256 UNIQUE`; the v2 table is tenant-scoped with `UNIQUE (tenant, sha256)`.
+ * SQLite cannot alter a constraint in place, so rename+recreate+copy+drop;
+ * existing rows are backfilled with tenant='default' (they predate tenancy).
+ * No-op on fresh (already tenant-scoped) databases.
+ */
+function rebuildAgentFilesIfLegacy(raw: DatabaseSync): void {
+  const cols = raw
+    .prepare('PRAGMA table_info(agent_files)')
+    .all() as Array<{ name: string }>
+  if (cols.length === 0) return // table absent (nats mode / fresh)
+  if (cols.some(c => String(c.name) === 'tenant')) return
+  raw.exec('PRAGMA foreign_keys = OFF')
+  raw.exec('PRAGMA legacy_alter_table = ON')
+  try {
+    raw.exec('ALTER TABLE agent_files RENAME TO _agent_files_v1')
+    raw.exec(SQLITE_TABLE_DDL['agent_files'] ?? '')
+    raw.exec(`INSERT INTO agent_files
+      (code, tenant, sha256, name, mime, size, uploader_session, created_at)
+      SELECT code, 'default', sha256, name, mime, size, uploader_session, created_at
+      FROM _agent_files_v1`)
+    raw.exec('DROP TABLE _agent_files_v1')
+  } finally {
+    raw.exec('PRAGMA legacy_alter_table = OFF')
+    raw.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
 /** The v2 CREATE TABLE statement for a table that may require a PK rebuild. */
-const SQLITE_TABLE_DDL: Record<string, string> = {
-  sessions: `CREATE TABLE IF NOT EXISTS sessions (
+const SQLITE_TABLE_DDL: Record<string, string> = {  sessions: `CREATE TABLE IF NOT EXISTS sessions (
     tenant TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT '',
@@ -627,6 +681,17 @@ const SQLITE_TABLE_DDL: Record<string, string> = {
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     consumed_at TEXT,
     seq INTEGER
+  )`,
+  agent_files: `CREATE TABLE IF NOT EXISTS agent_files (
+    code TEXT PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    sha256 TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    uploader_session TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (tenant, sha256)
   )`,
 }
 

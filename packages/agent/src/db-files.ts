@@ -7,9 +7,11 @@ import type { FileRecord } from './files.js'
  * File metadata + sha256 dedup index, stored in the `agent_files` TABLE.
  *
  * Chosen over NATS KV so durable file state (the metadata mapping) leaves NATS
- * together with the bytes. TENANT-FREE on purpose: a file is content-addressed
- * by sha256 and shared across every tenant, so identical bytes are stored once
- * and all tenants resolve to the same code (code itself is a global random id).
+ * together with the bytes. TENANT-SCOPED: a file is content-addressed within a
+ * tenant, so the same bytes under two tenants resolve to two independent codes
+ * (dedup is per `(tenant, sha256)`). This keeps the s3 mode semantics identical
+ * to the NATS mode (whose object names and KV keys are already tenant-scoped)
+ * and means a cross-tenant upload can never resolve to another tenant's bytes.
  *
  * Used by the `s3` blob backend; the `nats` backend keeps using the
  * `abc-files-meta` KV bucket (see files.ts).
@@ -28,17 +30,22 @@ function toRecord(r: Record<string, unknown>): FileRecord {
 }
 
 export const FilesDb = {
-  /** Insert metadata if absent (dedup by sha). Returns the STORED record (the
-   *  existing one when the sha was already present). */
-  upsert(db: Db, record: FileRecord): ResultAsync<FileRecord, string> {
+  /** Insert metadata if absent (dedup by (tenant, sha)). Returns the STORED
+   *  record (the existing one when the sha was already present for the tenant). */
+  upsert(
+    db: Db,
+    tenant: string,
+    record: FileRecord,
+  ): ResultAsync<FileRecord, string> {
     const pg = dbBackend(db) === 'pg'
     const insert = pg
-      ? `INSERT INTO agent_files (code, sha256, name, mime, size, uploader_session, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (sha256) DO NOTHING`
-      : `INSERT OR IGNORE INTO agent_files (code, sha256, name, mime, size, uploader_session, created_at)
-         VALUES (?,?,?,?,?,?,?)`
+      ? `INSERT INTO agent_files (code, tenant, sha256, name, mime, size, uploader_session, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (tenant, sha256) DO NOTHING`
+      : `INSERT OR IGNORE INTO agent_files (code, tenant, sha256, name, mime, size, uploader_session, created_at)
+         VALUES (?,?,?,?,?,?,?,?)`
     const params = [
       record.code,
+      tenant,
       record.sha256,
       record.name,
       record.mime,
@@ -47,44 +54,53 @@ export const FilesDb = {
       record.created_at || nowStr(),
     ]
     const bySha = pg
-      ? 'SELECT * FROM agent_files WHERE sha256 = $1'
-      : 'SELECT * FROM agent_files WHERE sha256 = ?'
+      ? 'SELECT * FROM agent_files WHERE tenant = $1 AND sha256 = $2'
+      : 'SELECT * FROM agent_files WHERE tenant = ? AND sha256 = ?'
     return q(
       async () => {
         await rawRun(db, insert, params)
-        // Re-read: on a sha collision the ORIGINAL row wins (the insert was a
-        // no-op), so callers always get the canonical code for these bytes.
-        const rows = await rawAll(db, bySha, [record.sha256])
+        // Re-read: on a (tenant, sha) collision the ORIGINAL row wins (the
+        // insert was a no-op), so callers always get the canonical code for
+        // these bytes within the tenant.
+        const rows = await rawAll(db, bySha, [tenant, record.sha256])
         return rows[0] === undefined ? record : toRecord(rows[0])
       },
       'file upsert',
     )
   },
 
-  /** Look up a record by code (tenant-free). */
-  byCode(db: Db, code: string): ResultAsync<FileRecord | null, string> {
+  /** Look up a record by code within a tenant. */
+  byCode(
+    db: Db,
+    tenant: string,
+    code: string,
+  ): ResultAsync<FileRecord | null, string> {
     const sql =
       dbBackend(db) === 'pg'
-        ? 'SELECT * FROM agent_files WHERE code = $1'
-        : 'SELECT * FROM agent_files WHERE code = ?'
+        ? 'SELECT * FROM agent_files WHERE tenant = $1 AND code = $2'
+        : 'SELECT * FROM agent_files WHERE tenant = ? AND code = ?'
     return q(
       () =>
-        rawAll(db, sql, [code]).then(rows =>
+        rawAll(db, sql, [tenant, code]).then(rows =>
           rows[0] === undefined ? null : toRecord(rows[0]),
         ),
       'file by code',
     )
   },
 
-  /** Look up a record by sha256 (dedup). */
-  bySha(db: Db, sha256: string): ResultAsync<FileRecord | null, string> {
+  /** Look up a record by sha256 within a tenant (dedup). */
+  bySha(
+    db: Db,
+    tenant: string,
+    sha256: string,
+  ): ResultAsync<FileRecord | null, string> {
     const sql =
       dbBackend(db) === 'pg'
-        ? 'SELECT * FROM agent_files WHERE sha256 = $1'
-        : 'SELECT * FROM agent_files WHERE sha256 = ?'
+        ? 'SELECT * FROM agent_files WHERE tenant = $1 AND sha256 = $2'
+        : 'SELECT * FROM agent_files WHERE tenant = ? AND sha256 = ?'
     return q(
       () =>
-        rawAll(db, sql, [sha256]).then(rows =>
+        rawAll(db, sql, [tenant, sha256]).then(rows =>
           rows[0] === undefined ? null : toRecord(rows[0]),
         ),
       'file by sha',

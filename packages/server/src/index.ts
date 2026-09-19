@@ -31,6 +31,7 @@ import {
   runSessionTurn,
   S3ObjectStore,
   type ServerConfig,
+  serveFileRpc,
   sha256Hex,
   Tenants,
   tenantKVKey,
@@ -146,6 +147,10 @@ async function main(): Promise<void> {
 
   const llm = new LlmRegistry()
   const files = makeBlobStore(bus)
+  // Agent-served file RPCs (`abc.<tenant>.file.ingest`/`.get`): let a DB-less,
+  // store-less extension (e.g. the playwright extension) persist bytes + mint a
+  // canonical file:<code> through the agent, regardless of blob backend.
+  const stopFileRpc = serveFileRpc({ bus, files })
   // ONE long-lived abc agent role: it owns the extension-manifest cache and
   // the config authority. `serveConfig()` must run before any config write,
   // otherwise SetExtensionConfig fails with an opaque internal error (the
