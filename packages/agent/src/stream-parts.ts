@@ -19,7 +19,9 @@
  * `reasoning-file` bytes are NEVER inlined — every such part is stored in the
  * blob store and the event carries `file:<code>` (see `sanitizeStreamPart`).
  */
+import type { Bus } from './bus.js'
 import type { BlobStore, FileRecord } from './files.js'
+import { scheduleMediaProbe } from './media.js'
 
 export interface SanitizeDeps {
   files: BlobStore
@@ -103,6 +105,11 @@ export async function sanitizeStreamPart(
     }
     await deps.files.put(deps.tenant, code, record, bytes)
     await deps.upsertFile(deps.bus, deps.tenant, record)
+    scheduleMediaProbe(
+      { bus: deps.bus as Bus, files: deps.files },
+      deps.tenant,
+      record,
+    )
     return {
       type: part.type,
       mediaType,

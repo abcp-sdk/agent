@@ -61,6 +61,7 @@ import {
 } from '@abcp-agent/agent'
 import {
   type AgentService,
+  FileChunkSchema,
   GetAgentConfigResponseSchema,
   GetFileResponseSchema,
   IngestFileResponseSchema,
@@ -172,10 +173,48 @@ export function filesHandlers(
       const row = await fileByCode(deps.bus, tenant, code)
       if (row.isErr()) throw new Error(row.error)
       if (row.value === null) throw new Error('file not found')
+      const r = row.value
       return {
-        name: row.value.name ?? '',
-        mime: row.value.mime ?? '',
-        size: row.value.size ?? 0,
+        name: r.name ?? '',
+        mime: r.mime ?? '',
+        size: r.size ?? 0,
+        ...(r.width != null ? { width: r.width } : {}),
+        ...(r.height != null ? { height: r.height } : {}),
+        ...(r.duration_ms != null ? { durationMs: BigInt(r.duration_ms) } : {}),
+        ...(r.thumb_code != null ? { thumbCode: r.thumb_code } : {}),
+        ...(r.thumbhash != null ? { thumbhash: r.thumbhash } : {}),
+      }
+    },
+
+    // Streaming counterpart of getFile: forward-only chunks. A Connect
+    // server-streaming handler is an async generator; yielding the chunks in
+    // order delivers them progressively without buffering the whole file.
+    async *getFileStream(req, ctx: HandlerContext) {
+      const tenant = tenantOf(ctx)
+      const code = req.code
+      const row = await fileByCode(deps.bus, tenant, code)
+      if (row.isErr()) throw new Error(row.error)
+      if (row.value === null) throw new Error('file not found')
+      const total = row.value.size ?? 0
+      let offset = 0
+      for await (const chunk of deps.files.getStream(tenant, code)) {
+        const last = offset + chunk.length >= total && total > 0
+        yield create(FileChunkSchema, {
+          data: chunk,
+          offset: BigInt(offset),
+          total: BigInt(total),
+          last,
+        })
+        offset += chunk.length
+      }
+      // Empty file: still terminate the stream with a single last chunk.
+      if (offset === 0) {
+        yield create(FileChunkSchema, {
+          data: new Uint8Array(0),
+          offset: 0n,
+          total: 0n,
+          last: true,
+        })
       }
     },
   }

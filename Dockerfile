@@ -22,10 +22,14 @@ RUN --mount=type=cache,target=/root/.npm \
     && npm run build
 
 # The binary embeds Node + all JS dependencies; the runtime stage needs only
-# libc + CA certs.
+# libc + CA certs + the standalone ffmpeg/ffprobe binaries. The agent derives
+# media metadata (dimensions / duration / thumbnail / thumbhash) by spawning
+# ffmpeg/ffprobe — native `.node` addons (sharp &c.) cannot load inside a Node
+# SEA single executable, but a separate binary can. One toolchain covers
+# image + video + audio.
 FROM ${REGISTRY}/root/alpine:3.24
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
-    && apk add --no-cache ca-certificates libstdc++
+    && apk add --no-cache ca-certificates libstdc++ ffmpeg
 COPY --from=build /build/.sea/abcp-agent /usr/local/bin/abcp-agent
 EXPOSE 8080
 ENTRYPOINT ["abcp-agent"]

@@ -8,6 +8,7 @@ import {
   Parts,
   parse,
   randomCode,
+  scheduleMediaProbe,
   Sessions,
   TextPartDataSchema,
   upsertFile,
@@ -95,5 +96,8 @@ export async function storeBytes(
   }
   await deps.files.put(tenant, code, record, data)
   await upsertFile(deps.bus, tenant, record)
+  // Derive media metadata (dimensions / duration / thumbnail / thumbhash)
+  // asynchronously so the store call itself never blocks on a decode.
+  scheduleMediaProbe({ bus: deps.bus, files: deps.files }, tenant, record)
   return record
 }

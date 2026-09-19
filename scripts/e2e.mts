@@ -124,6 +124,33 @@ function section(title: string): void {
 }
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
+/** True when an ffmpeg binary answers on PATH (the media probe needs it). */
+async function hasFfmpeg(): Promise<boolean> {
+  try {
+    const { execFileSync } = await import('node:child_process')
+    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Generate a tiny 8x6 PNG via ffmpeg, for the media-probe assertions. */
+async function ffmpegPngFromBytes(): Promise<Buffer> {
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'e2e-media-'))
+  const out = join(dir, 'x.png')
+  execFileSync('ffmpeg', [
+    '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=8x6', '-frames:v', '1', out,
+  ])
+  const { readFileSync } = await import('node:fs')
+  return readFileSync(out)
+}
+
+
 async function freePort(): Promise<number> {
   return new Promise((res, rej) => {
     const s = createNetServer()
@@ -2129,6 +2156,61 @@ async function run(
     create(GetFileMetaRequestSchema, { code }),
   )
   check('getFileMeta size', meta.size === fileBytes.length, meta.size)
+
+  // GetFileStream: the bytes arrive as ordered chunks that reassemble to the
+  // original. Use a payload larger than one chunk to exercise chunking.
+  const bigBytes = Buffer.alloc(600 * 1024)
+  for (let i = 0; i < bigBytes.length; i++) bigBytes[i] = i % 251
+  const bigUp = await client.uploadFile(
+    create(UploadFileRequestSchema, {
+      file: create(FileRefSchema, { name: 'big.bin', mime: 'application/octet-stream', size: bigBytes.length }),
+      data: bigBytes.toString('base64'),
+    }),
+  )
+  const streamed: Buffer[] = []
+  let sawLast = false
+  for await (const chunk of client.getFileStream(
+    create(GetFileRequestSchema, { code: bigUp.code }),
+  )) {
+    streamed.push(Buffer.from(chunk.data))
+    if (chunk.last) sawLast = true
+  }
+  const joined = Buffer.concat(streamed)
+  check(
+    'getFileStream reassembles bytes exactly',
+    joined.length === bigBytes.length && joined.equals(bigBytes),
+    `${joined.length}/${bigBytes.length}`,
+  )
+  check('getFileStream terminates with last=true', sawLast)
+
+  // Media probe (width/height/thumbnail/thumbhash) runs asynchronously after
+  // the store. Only assert when ffmpeg is on PATH (the image ships it; a bare
+  // dev box may not), otherwise the fields legitimately stay unset.
+  if (await hasFfmpeg()) {
+    const png = await ffmpegPngFromBytes()
+    const imgUp = await client.uploadFile(
+      create(UploadFileRequestSchema, {
+        file: create(FileRefSchema, { name: 'shot.png', mime: 'image/png', size: png.length }),
+        data: png.toString('base64'),
+      }),
+    )
+    // The probe is fire-and-forget; poll briefly for the derived fields.
+    let im = await client.getFileMeta(create(GetFileMetaRequestSchema, { code: imgUp.code }))
+    for (let i = 0; i < 40 && im.thumbCode === undefined; i++) {
+      await sleep(150)
+      im = await client.getFileMeta(create(GetFileMetaRequestSchema, { code: imgUp.code }))
+    }
+    check('media probe sets width', im.width === 8, im.width)
+    check('media probe sets height', im.height === 6, im.height)
+    check('media probe sets thumb_code', (im.thumbCode ?? '').length > 0, im.thumbCode)
+    check('media probe sets thumbhash', (im.thumbhash ?? '').length > 0, im.thumbhash)
+    if (im.thumbCode) {
+      const thumbBytes = await client.getFile(create(GetFileRequestSchema, { code: im.thumbCode }))
+      check('thumbnail is a retrievable webp', thumbBytes.mime === 'image/webp' && thumbBytes.data.length > 0, thumbBytes.mime)
+    }
+  } else {
+    console.log('  (skip media probe asserts: ffmpeg not on PATH)')
+  }
 
   const ingest = await client.ingestFile(
     create(IngestFileRequestSchema, {

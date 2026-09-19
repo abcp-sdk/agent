@@ -21,7 +21,7 @@
     "typecheck": "tsc -p packages/agent/tsconfig.json --noEmit && tsc -p packages/server/tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.1.1",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.2.0",
     "@biomejs/biome": "^2.5.9",
     "@types/node": "^26.2.0",
     "postject": "^1.0.0-alpha.6",
@@ -33,7 +33,7 @@
   "allowScripts": {
     "esbuild@0.28.2": true,
     "@abcp/client-sdk@0.1.1": true,
-    "@abcp/agent-sdk@0.16.0": true
+    "@abcp/agent-sdk@0.17.0": true
   },
   "overrides": {
     "@ai-sdk/gateway": "4.0.78",

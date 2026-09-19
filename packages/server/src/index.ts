@@ -101,10 +101,18 @@ async function main(): Promise<void> {
   // because turns must not run against un-migrated refs.
   await backfillModelRefs(db, tenants)
 
+  // One S3 store instance when the S3 blob backend is selected; it both
+  // supplies durable objects to the bus and (via its native GetObject stream)
+  // powers true streaming file reads.
+  const s3Store =
+    config.blobBackend === 's3'
+      ? new S3ObjectStore({
+          ...config.s3,
+          forcePathStyle: config.s3.forcePathStyle,
+        })
+      : undefined
   const busRes = await connectBus(config.natsUrl, {
-    ...(config.blobBackend === 's3'
-      ? { durableObjects: new S3ObjectStore({ ...config.s3, forcePathStyle: config.s3.forcePathStyle }) }
-      : {}),
+    ...(s3Store !== undefined ? { durableObjects: s3Store } : {}),
   })
   if (busRes.isErr()) {
     logger.error({ err: busRes.error }, 'event bus connect failed (required)')
@@ -146,7 +154,7 @@ async function main(): Promise<void> {
   }
 
   const llm = new LlmRegistry()
-  const files = makeBlobStore(bus)
+  const files = makeBlobStore(bus, s3Store)
   // Agent-served file RPCs (`abc.<tenant>.file.ingest`/`.get`): let a DB-less,
   // store-less extension (e.g. the playwright extension) persist bytes + mint a
   // canonical file:<code> through the agent, regardless of blob backend.

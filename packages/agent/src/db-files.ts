@@ -26,7 +26,20 @@ function toRecord(r: Record<string, unknown>): FileRecord {
     size: Number(r['size'] ?? 0),
     uploader_session: String(r['uploader_session'] ?? ''),
     created_at: String(r['created_at'] ?? ''),
+    width: optNum(r['width']),
+    height: optNum(r['height']),
+    duration_ms: optNum(r['duration_ms']),
+    thumb_code: optStr(r['thumb_code']),
+    thumbhash: optStr(r['thumbhash']),
   }
+}
+
+function optNum(v: unknown): number | null {
+  return v === undefined || v === null || v === '' ? null : Number(v)
+}
+
+function optStr(v: unknown): string | null {
+  return v === undefined || v === null ? null : String(v)
 }
 
 export const FilesDb = {
@@ -104,6 +117,49 @@ export const FilesDb = {
           rows[0] === undefined ? null : toRecord(rows[0]),
         ),
       'file by sha',
+    )
+  },
+
+  /** Patch the DERIVED media columns of a stored file. Only the provided
+   *  (non-`undefined`) keys are written in one UPDATE, so a probe that only
+   *  learned dimensions never clobbers a previously-stored thumbnail. */
+  updateMedia(
+    db: Db,
+    tenant: string,
+    code: string,
+    patch: Partial<
+      Pick<
+        FileRecord,
+        'width' | 'height' | 'duration_ms' | 'thumb_code' | 'thumbhash'
+      >
+    >,
+  ): ResultAsync<void, string> {
+    const pg = dbBackend(db) === 'pg'
+    const cols: string[] = []
+    const vals: unknown[] = []
+    for (const key of [
+      'width',
+      'height',
+      'duration_ms',
+      'thumb_code',
+      'thumbhash',
+    ] as const) {
+      const v = patch[key]
+      if (v === undefined) continue
+      cols.push(key)
+      vals.push(v)
+    }
+    if (cols.length === 0) {
+      return q(async () => undefined, 'file update media')
+    }
+    const assigns = cols
+      .map((c, i) => `${c} = ${pg ? `$${i + 1}` : '?'}`)
+      .join(', ')
+    const where = pg ? `tenant = $${cols.length + 1} AND code = $${cols.length + 2}` : 'tenant = ? AND code = ?'
+    const sql = `UPDATE agent_files SET ${assigns} WHERE ${where}`
+    return q(
+      () => rawRun(db, sql, [...vals, tenant, code]),
+      'file update media',
     )
   },
 }

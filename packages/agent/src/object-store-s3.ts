@@ -76,6 +76,58 @@ export class S3ObjectStore implements ObjectStore {
     return this.objectGetPersistent(name)
   }
 
+  /**
+   * Stream a durable object's bytes in order, without buffering the whole
+   * body. S3's `GetObject` returns an async iterable body, so a large media
+   * file is delivered chunk by chunk to the agent's `GetFileStream` RPC.
+   * Returns `null` when the key is absent.
+   */
+  async objectGetStream(
+    name: string,
+  ): Promise<AsyncIterable<Uint8Array> | null> {
+    try {
+      const out = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: this.key(name) }),
+      )
+      const body = out.Body as
+        | { transformToWebStream?: () => ReadableStream<Uint8Array> }
+        | undefined
+      if (body === undefined) return null
+      if (typeof body.transformToWebStream === 'function') {
+        const reader = body.transformToWebStream().getReader()
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                const { done, value } = await reader.read()
+                return done
+                  ? { done: true, value: undefined }
+                  : { done: false, value }
+              },
+              async return() {
+                await reader.cancel().catch(() => {})
+                return { done: true, value: undefined }
+              },
+            }
+          },
+        }
+      }
+      // Fallback: no web-stream bridge on this SDK build — buffer.
+      const bytes = new Uint8Array(await out.Body!.transformToByteArray())
+      return (async function* () {
+        yield bytes
+      })()
+    } catch (e) {
+      const name_ = (e as { name?: string }).name
+      const status = (e as { $metadata?: { httpStatusCode?: number } })
+        .$metadata?.httpStatusCode
+      if (name_ === 'NoSuchKey' || name_ === 'NotFound' || status === 404) {
+        return null
+      }
+      throw e
+    }
+  }
+
   async objectGetPersistent(name: string): Promise<Uint8Array | null> {
     try {
       const out = await this.client.send(

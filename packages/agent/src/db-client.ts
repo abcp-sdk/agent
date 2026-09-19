@@ -157,7 +157,12 @@ CREATE TABLE IF NOT EXISTS agent_files (
     mime TEXT NOT NULL DEFAULT '',
     size BIGINT NOT NULL DEFAULT 0,
     uploader_session TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (NOW()::text)
+    created_at TEXT NOT NULL DEFAULT (NOW()::text),
+    width INTEGER,
+    height INTEGER,
+    duration_ms BIGINT,
+    thumb_code TEXT,
+    thumbhash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (tenant, sha256);
 `
@@ -261,6 +266,11 @@ CREATE TABLE IF NOT EXISTS agent_files (
     size INTEGER NOT NULL DEFAULT 0,
     uploader_session TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    width INTEGER,
+    height INTEGER,
+    duration_ms INTEGER,
+    thumb_code TEXT,
+    thumbhash TEXT,
     UNIQUE (tenant, sha256)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (tenant, sha256);
@@ -281,6 +291,11 @@ const PG_MIGRATIONS = `
     ALTER TABLE mailbox ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE providers ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE providers ADD COLUMN IF NOT EXISTS capability TEXT NOT NULL DEFAULT 'text';
+    ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS width INTEGER;
+    ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS height INTEGER;
+    ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS duration_ms BIGINT;
+    ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS thumb_code TEXT;
+    ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS thumbhash TEXT;
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_name;
     ALTER TABLE messages DROP COLUMN IF EXISTS tool_call_id;
     ALTER TABLE sessions DROP COLUMN IF EXISTS last_read_at;
@@ -336,6 +351,11 @@ const SQLITE_MIGRATIONS = [
   `ALTER TABLE mailbox ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE providers ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE providers ADD COLUMN capability TEXT NOT NULL DEFAULT 'text'`,
+  `ALTER TABLE agent_files ADD COLUMN width INTEGER`,
+  `ALTER TABLE agent_files ADD COLUMN height INTEGER`,
+  `ALTER TABLE agent_files ADD COLUMN duration_ms INTEGER`,
+  `ALTER TABLE agent_files ADD COLUMN thumb_code TEXT`,
+  `ALTER TABLE agent_files ADD COLUMN thumbhash TEXT`,
   `ALTER TABLE messages DROP COLUMN tool_name`,
   `ALTER TABLE messages DROP COLUMN tool_call_id`,
   `ALTER TABLE sessions DROP COLUMN last_read_at`,
@@ -691,6 +711,11 @@ const SQLITE_TABLE_DDL: Record<string, string> = {  sessions: `CREATE TABLE IF N
     size INTEGER NOT NULL DEFAULT 0,
     uploader_session TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    width INTEGER,
+    height INTEGER,
+    duration_ms INTEGER,
+    thumb_code TEXT,
+    thumbhash TEXT,
     UNIQUE (tenant, sha256)
   )`,
 }

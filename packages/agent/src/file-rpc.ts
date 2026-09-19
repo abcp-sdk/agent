@@ -12,6 +12,7 @@ import {
   upsertFile,
 } from './files.js'
 import { logger } from './logger.js'
+import { scheduleMediaProbe } from './media.js'
 import { parse } from './json.js'
 
 /**
@@ -137,6 +138,7 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
           }
           await files.put(tenant, code, record, bytes)
           await upsertFile(bus, tenant, record)
+          scheduleMediaProbe({ bus, files }, tenant, record)
           await bus.publish(replyTo, { ok: true, code }, { tenant })
         } catch (e) {
           logger.warn({ err: String(e), tenant }, 'file.ingest failed')
@@ -186,6 +188,17 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
                 size: got.meta.size,
                 uploader_session: got.meta.uploader_session,
                 created_at: got.meta.created_at,
+                ...(got.meta.width != null ? { width: got.meta.width } : {}),
+                ...(got.meta.height != null ? { height: got.meta.height } : {}),
+                ...(got.meta.duration_ms != null
+                  ? { duration_ms: got.meta.duration_ms }
+                  : {}),
+                ...(got.meta.thumb_code != null
+                  ? { thumb_code: got.meta.thumb_code }
+                  : {}),
+                ...(got.meta.thumbhash != null
+                  ? { thumbhash: got.meta.thumbhash }
+                  : {}),
               },
               object,
             },

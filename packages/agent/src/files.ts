@@ -6,7 +6,15 @@ import type { Db } from './db-client.js'
 import { FilesDb } from './db-files.js'
 
 /** Metadata for a stored file; the NATS KV bucket is the single source of
- *  truth, colocated with the bytes in the persistent object store. */
+ *  truth, colocated with the bytes in the persistent object store.
+ *
+ *  The optional media fields are DERIVED, server-side, by the media probe
+ *  (ffprobe/ffmpeg) when the mime is a supported image/video/audio type. They
+ *  are filled in asynchronously after the bytes land (so an upload is never
+ *  blocked on decoding) and are absent for non-media files or files probed
+ *  before the feature existed. `thumb_code` is itself a canonical file code:
+ *  the thumbnail is a content-addressed file stored like any other, so a
+ *  client fetches it through the normal GetFile/GetFileStream path. */
 export interface FileRecord {
   code: string
   sha256: string
@@ -15,6 +23,11 @@ export interface FileRecord {
   size: number
   uploader_session: string
   created_at: string
+  width?: number | null
+  height?: number | null
+  duration_ms?: number | null
+  thumb_code?: string | null
+  thumbhash?: string | null
 }
 
 const NO_TTL = 0
@@ -79,10 +92,23 @@ function parseMeta(raw: string): FileRecord | null {
       size: Number(v.size ?? 0),
       uploader_session: String(v.uploader_session ?? ''),
       created_at: String(v.created_at ?? ''),
+      width: optNum(v.width),
+      height: optNum(v.height),
+      duration_ms: optNum(v.duration_ms),
+      thumb_code: optStr(v.thumb_code),
+      thumbhash: optStr(v.thumbhash),
     }
   } catch {
     return null
   }
+}
+
+function optNum(v: unknown): number | null {
+  return v === undefined || v === null || v === '' ? null : Number(v)
+}
+
+function optStr(v: unknown): string | null {
+  return v === undefined || v === null ? null : String(v)
 }
 
 function ra<T>(op: Promise<T>, context: string): ResultAsync<T, string> {
@@ -200,6 +226,39 @@ export async function fileByCode(
   )
 }
 
+/** Patch a file record's derived media fields in place. Only the provided
+ *  keys are written; `undefined` keys are left untouched so a probe that only
+ *  learned dimensions never clobbers an earlier thumbnail. Best-effort: a
+ *  failure here must never surface to the caller that stored the bytes. */
+export async function updateFileMedia(
+  bus: Bus,
+  tenant: string,
+  code: string,
+  patch: Pick<
+    FileRecord,
+    'width' | 'height' | 'duration_ms' | 'thumb_code' | 'thumbhash'
+  >,
+): Promise<void> {
+  if (metaBackend === 'db') {
+    const db = metaDb
+    if (db !== null) await FilesDb.updateMedia(db, tenant, code, patch)
+    return
+  }
+  const existing = await fileByCode(bus, tenant, code)
+  if (existing.isErr() || existing.value === null) return
+  const merged: FileRecord = { ...existing.value }
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== undefined) (merged as unknown as Record<string, unknown>)[k] = v
+  }
+  cachePut(tenant, merged)
+  await bus.kvPut(
+    BUCKET_FILES_META,
+    fileMetaKey(tenant, code),
+    JSON.stringify(merged),
+    NO_TTL,
+  )
+}
+
 export function sha256Hex(data: Uint8Array): string {
   return createHash('sha256').update(data).digest('hex')
 }
@@ -227,6 +286,18 @@ export interface BlobStore {
     code: string,
   ): Promise<{ meta: FileRecord; data: Uint8Array }>
   stat(tenant: string, code: string): Promise<FileRecord | null>
+  /**
+   * Yield a file's bytes in order as chunks. The streaming counterpart of
+   * [get]: callers can start rendering before the whole object has been read.
+   * Implementations may read the object whole and slice it (the NATS object
+   * store exposes no forward reader, so this is the portable behaviour) — the
+   * wire contract is identical either way.
+   */
+  getStream(
+    tenant: string,
+    code: string,
+    chunkSize?: number,
+  ): AsyncGenerator<Uint8Array>
 }
 
 /**
@@ -250,6 +321,9 @@ export function configureFileMetaStore(
   metaBackend = backend
   metaDb = backend === 'db' ? (db ?? null) : null
 }
+
+/** Default chunk size for [BlobStore.getStream] (bytes). */
+export const FILE_STREAM_CHUNK = 256 * 1024
 
 /** NATS JetStream backend: bytes → persistent object bucket, meta → KV. */
 function makeNatsStore(bus: Bus): BlobStore {
@@ -280,11 +354,85 @@ function makeNatsStore(bus: Bus): BlobStore {
         ? meta.value
         : ({ code } as FileRecord)
     },
+    async *getStream(tenant, code, chunkSize = FILE_STREAM_CHUNK) {
+      // The NATS object store has no forward reader exposed by the SDK, so
+      // read the object whole and slice it. The S3 backend streams natively;
+      // this path is the documented fallback.
+      const data = await bus.objectGetPersistent(tenantObjectName(tenant, code))
+      if (data === null) return
+      const bytes = Uint8Array.from(data)
+      for (let off = 0; off < bytes.length; off += chunkSize) {
+        yield bytes.subarray(off, Math.min(off + chunkSize, bytes.length))
+      }
+    },
   }
 }
 
+/** Optional durable-stream reader. The bus's object store (NATS) has no
+ *  forward reader, so when an S3 backend is configured its native streaming
+ *  reader is passed here and used by [BlobStore.getStream]; otherwise the
+ *  whole-object fallback in [makeNatsStore] applies. */
+export interface DurableStreamReader {
+  objectGetStream(name: string): Promise<AsyncIterable<Uint8Array> | null>
+}
+
 /** Build the file blob backend (durable bytes via the bus's object store;
- *  metadata via the configured meta backend — see [configureFileMetaStore]). */
-export function makeBlobStore(bus: Bus): BlobStore {
-  return makeNatsStore(bus)
+ *  metadata via the configured meta backend — see [configureFileMetaStore]).
+ *  `streamer`, when provided, enables true streaming reads (S3); otherwise
+ *  [BlobStore.getStream] reads whole and slices. */
+export function makeBlobStore(
+  bus: Bus,
+  streamer?: DurableStreamReader,
+): BlobStore {
+  const base = makeNatsStore(bus)
+  if (streamer === undefined) return base
+  const fallback = base.getStream.bind(base)
+  return {
+    ...base,
+    async *getStream(tenant, code, chunkSize = FILE_STREAM_CHUNK) {
+      const source = await streamer.objectGetStream(
+        tenantObjectName(tenant, code),
+      )
+      if (source === null) {
+        // Missing from the stream reader: fall back (also covers a transient
+        // S3 error surfacing as null).
+        yield* fallback(tenant, code, chunkSize)
+        return
+      }
+      let acc: Uint8Array[] = []
+      let accLen = 0
+      for await (const part of source) {
+        let chunk = part
+        // Re-chunk to the requested size so the wire chunking is stable even
+        // when S3 hands back larger/smaller pieces.
+        while (chunk.length > 0) {
+          const want = chunkSize - accLen
+          if (chunk.length >= want) {
+            acc.push(chunk.subarray(0, want))
+            accLen += want
+            chunk = chunk.subarray(want)
+            yield joinChunks(acc, accLen)
+            acc = []
+            accLen = 0
+          } else {
+            acc.push(chunk)
+            accLen += chunk.length
+            chunk = chunk.subarray(chunk.length)
+          }
+        }
+      }
+      if (accLen > 0) yield joinChunks(acc, accLen)
+    },
+  }
+}
+
+function joinChunks(parts: Uint8Array[], total: number): Uint8Array {
+  if (parts.length === 1) return parts[0]!
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const p of parts) {
+    out.set(p, off)
+    off += p.length
+  }
+  return out
 }

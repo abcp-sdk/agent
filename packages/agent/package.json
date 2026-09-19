@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.1.1",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.2.0",
     "@abcp-agent/schema": "*",
     "@ai-sdk/anthropic": "^4.0.40",
     "@ai-sdk/cohere": "^3.0.61",
@@ -30,6 +30,7 @@
     "neverthrow": "^8.2.0",
     "pino": "^10.3.1",
     "postgres": "^3.4.9",
+    "thumbhash": "^0.1.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
