@@ -44,15 +44,23 @@ agent:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "1", memory: 1Gi }
 
-# ---- NATS (JetStream KV/objects; sidecar to the agent) ----
+# ---- NATS (JetStream KV/objects; a SEPARATE Deployment) ----
+# Its own Pod so a NATS restart never takes the agent down with it and the
+# broker's lifecycle (and JetStream storage) is independent of the agent.
 nats:
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/easylab/nats
     tag: latest
     pullPolicy: IfNotPresent
+  # Service other workloads address (agent, extensions) by DNS:
+  # nats://<name>.<ns>.svc.cluster.local:4222
   service:
     name: standalone-agent-nats
     type: ClusterIP
+  port: 4222
+  monitorPort: 8222
+  # hostPath subdirectory (under persistence.hostPath) backing JetStream.
+  dataSubPath: nats
   resources:
     requests: { cpu: 100m, memory: 64Mi }
     limits: { cpu: 500m, memory: 512Mi }

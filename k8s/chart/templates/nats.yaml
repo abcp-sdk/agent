@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.nats.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: {{ .Values.nats.service.name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.nats.service.name }}
+  strategy:
+    # Recreate: JetStream storage is a single hostPath; two pods must never
+    # mount it at once.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "abcp-agent.labels" . | nindent 8 }}
+        app: {{ .Values.nats.service.name }}
+    spec:
+      containers:
+        - name: nats
+          image: {{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}
+          imagePullPolicy: {{ .Values.nats.image.pullPolicy }}
+          args: ["-js", "-p", "4222", "-m", "8222", "-sd", "/data/nats"]
+          ports:
+            - { containerPort: 4222, protocol: TCP }
+            - { containerPort: 8222, protocol: TCP }
+          resources:
+            {{- toYaml .Values.nats.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8222 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8222 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - { mountPath: /data/nats, name: data, subPath: {{ .Values.nats.dataSubPath }} }
+      volumes:
+        - name: data
+          hostPath:
+            path: {{ .Values.persistence.hostPath }}
+            type: {{ .Values.persistence.type }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.nats.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.nats.service.type }}
+  selector:
+    app: {{ .Values.nats.service.name }}
+  ports:
+    - name: client
+      port: 4222
+      targetPort: 4222
+    - name: monitor
+      port: 8222
+      targetPort: 8222

@@ -18,6 +18,11 @@ default
 {{- end -}}
 {{- end -}}
 
+{{/* In-cluster NATS URL (the standalone broker Deployment). */}}
+{{- define "abcp-agent.natsUrl" -}}
+{{- printf "nats://%s.%s.svc.cluster.local:4222" .Values.nats.service.name (include "abcp-agent.namespace" .) -}}
+{{- end -}}
+
 {{/* S3 object-store env (durable file bytes leave NATS). */}}
 {{- define "abcp-agent.objectStoreEnv" -}}
 {{- if .Values.objectStore.enabled }}

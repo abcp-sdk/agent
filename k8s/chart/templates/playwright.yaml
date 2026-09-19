@@ -28,7 +28,7 @@ spec:
           imagePullPolicy: {{ .Values.playwright.image.pullPolicy }}
           env:
             - name: NATS_URL
-              value: {{ printf "nats://%s.%s.svc.cluster.local:4222" .Values.nats.service.name (include "abcp-agent.namespace" .) | quote }}
+              value: {{ include "abcp-agent.natsUrl" . | quote }}
             - name: PLAYWRIGHT_SELENIUM_URL
               value: {{ .Values.playwright.seleniumUrl | quote }}
             - name: PLAYWRIGHT_BROWSER

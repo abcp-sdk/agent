@@ -20,25 +20,13 @@ spec:
       serviceAccountName: {{ include "abcp-agent.saName" . }}
       securityContext: {}
       containers:
-        # ---- NATS (JetStream KV for presets / config / coordination) ----
-        - name: nats
-          image: {{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}
-          imagePullPolicy: {{ .Values.nats.image.pullPolicy }}
-          args: ["-js", "-p", "4222", "-m", "8222", "-sd", "/data/nats"]
-          ports:
-            - { containerPort: 4222, protocol: TCP }
-          resources:
-            {{- toYaml .Values.nats.resources | nindent 12 }}
-          volumeMounts:
-            - { mountPath: /data/nats, name: data, subPath: nats }
-
         # ---- abcp agent (session/model/turn engine; h2c only) ----
         - name: agent
           image: {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
           imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
           env:
             - name: NATS_URL
-              value: nats://127.0.0.1:4222
+              value: {{ include "abcp-agent.natsUrl" . | quote }}
             - name: DB_BACKEND
               value: sqlite
             - name: DATABASE_URL
@@ -106,22 +94,3 @@ spec:
       # Signal to an L7 proxy/ingress that this backend speaks cleartext
       # HTTP/2 (h2c), so it must NOT downgrade the upstream to HTTP/1.1.
       appProtocol: kubernetes.io/h2c
----
-# Expose the in-pod NATS broker so a separate extension server (playwright) can
-# register/discover and answer tool calls. The agent and NATS share the pod
-# netns; this Service only makes the broker reachable from another pod.
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Values.nats.service.name }}
-  namespace: {{ include "abcp-agent.namespace" . }}
-  labels:
-    {{- include "abcp-agent.labels" . | nindent 4 }}
-spec:
-  type: {{ .Values.nats.service.type }}
-  selector:
-    app: {{ .Values.agent.service.name }}
-  ports:
-    - name: nats
-      port: 4222
-      targetPort: 4222
