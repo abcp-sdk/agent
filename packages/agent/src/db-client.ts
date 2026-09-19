@@ -144,6 +144,20 @@ CREATE INDEX IF NOT EXISTS idx_tenant_tokens_tenant ON tenant_tokens (tenant_id)
 -- abcp-agent-config, abc-files-meta). The legacy PG tables are intentionally
 -- NOT dropped: existing deployments keep them as the one-time backfill
 -- source (see kv-backfill.ts); fresh installs never create them.
+
+-- File metadata + sha dedup live HERE (not NATS KV) so durable file state can
+-- leave NATS for an external object store. Tenant-free: a file is content-
+-- addressed by sha256 and shared across all tenants; code is global.
+CREATE TABLE IF NOT EXISTS agent_files (
+    code TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL DEFAULT '',
+    size BIGINT NOT NULL DEFAULT 0,
+    uploader_session TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (NOW()::text)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (sha256);
 `
 
 // SQLite has no `NOW()::text`, supports table creation with the full column
@@ -234,6 +248,18 @@ CREATE TABLE IF NOT EXISTS tenant_tokens (
     revoked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tenant_tokens_tenant ON tenant_tokens (tenant_id);
+
+-- File metadata + sha dedup (see DDL above): content-addressed, tenant-free.
+CREATE TABLE IF NOT EXISTS agent_files (
+    code TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    uploader_session TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (sha256);
 `
 
 // PG-specific additive migrations (safe to re-run; destructive-free). Kept as

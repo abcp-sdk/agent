@@ -14,7 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#a7e6f1719690a8a9be3076df9d92accc421d2678",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#45912047618fb599639ea46a9af92404de43ce73",
+    "@abcp-agent/schema": "*",
     "@ai-sdk/anthropic": "^4.0.40",
     "@ai-sdk/cohere": "^3.0.61",
     "@ai-sdk/deepseek": "^3.0.29",
@@ -22,7 +23,7 @@
     "@ai-sdk/google": "^4.0.49",
     "@ai-sdk/openai": "^4.0.45",
     "@ai-sdk/openai-compatible": "^3.0.34",
-    "@abcp-agent/schema": "*",
+    "@aws-sdk/client-s3": "^3.1136.0",
     "@opencode-ai/models": "^0.0.50",
     "ai": "^7.0.73",
     "drizzle-orm": "^1.0.0-rc.4",

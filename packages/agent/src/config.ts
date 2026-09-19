@@ -40,6 +40,26 @@ export interface ServerConfig {
    * create/blank a preset). Set via env `DISABLED_TOOLS` (comma-separated).
    */
   disabledTools: string[]
+  /**
+   * Blob backend for DURABLE file bytes (and, when `s3`, their metadata):
+   *   - `nats` (default): JetStream object store + KV metadata.
+   *   - `s3`: S3-compatible object store for the bytes, `agent_files` table
+   *     for metadata. Transient objects (tool payloads, catalog caches) stay
+   *     on NATS. No read fallback between the two.
+   */
+  blobBackend: 'nats' | 's3'
+  /** S3 settings (used only when blobBackend='s3'). */
+  s3: S3Settings
+}
+
+export interface S3Settings {
+  bucket: string
+  region: string
+  endpoint: string
+  accessKeyId: string
+  secretAccessKey: string
+  forcePathStyle: boolean
+  prefix: string
 }
 
 export type DbBackend = 'pg' | 'sqlite'
@@ -122,6 +142,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     bootstrapTenant: or('AGENT_BOOTSTRAP_TENANT', ''),
     bootstrapToken: or('AGENT_BOOTSTRAP_TOKEN', ''),
     disabledTools: parseDisabledTools(or('DISABLED_TOOLS', '')),
+    blobBackend: or('AGENT_BLOB_BACKEND', 'nats').toLowerCase() === 's3'
+      ? 's3'
+      : 'nats',
+    s3: {
+      bucket: or('S3_BUCKET', ''),
+      region: or('S3_REGION', 'us-east-1'),
+      endpoint: or('S3_ENDPOINT', ''),
+      accessKeyId: or('S3_ACCESS_KEY', ''),
+      secretAccessKey: or('S3_SECRET_KEY', ''),
+      forcePathStyle: or('S3_PATH_STYLE', 'true') !== 'false',
+      prefix: or('S3_PREFIX', 'abcp'),
+    },
   }
 }
 

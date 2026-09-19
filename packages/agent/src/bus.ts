@@ -3,6 +3,7 @@ import type {
   Bus as AbcBus,
   Envelope as AbcEnvelope,
   InboxMsg as AbcInboxMsg,
+  ObjectStore as AbcObjectStore,
   Subscription as AbcSubscription,
 } from '@abc-protocol/sdk'
 import {
@@ -28,9 +29,10 @@ export type InboxMsg = AbcInboxMsg
 
 export async function connectBus(
   natsUrl: string,
+  opts: { durableObjects?: AbcObjectStore } = {},
 ): Promise<ResultAsync<Bus, string>> {
   return ResultAsync.fromPromise(
-    connectNatsBus(natsUrl),
+    connectNatsBus(natsUrl, opts),
     e => `abc connect: ${String(e)}`,
   )
 }

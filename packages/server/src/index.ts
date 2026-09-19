@@ -13,6 +13,7 @@ import {
   calibrateMessageFacts,
   connectBus,
   connectDb,
+  configureFileMetaStore,
   type Db,
   type FileRecord,
   knownTenants,
@@ -28,6 +29,7 @@ import {
   rawRun,
   refreshModelsDev,
   runSessionTurn,
+  S3ObjectStore,
   type ServerConfig,
   sha256Hex,
   Tenants,
@@ -98,12 +100,21 @@ async function main(): Promise<void> {
   // because turns must not run against un-migrated refs.
   await backfillModelRefs(db, tenants)
 
-  const busRes = await connectBus(config.natsUrl)
+  const busRes = await connectBus(config.natsUrl, {
+    ...(config.blobBackend === 's3'
+      ? { durableObjects: new S3ObjectStore({ ...config.s3, forcePathStyle: config.s3.forcePathStyle }) }
+      : {}),
+  })
   if (busRes.isErr()) {
     logger.error({ err: busRes.error }, 'event bus connect failed (required)')
     process.exit(1)
   }
   const bus: Bus = busRes.value
+
+  // File metadata backend follows the blob backend: `nats` keeps it in the
+  // abc-files-meta KV; `s3` puts it in the `agent_files` DB table so file
+  // state (bytes + metadata) leaves NATS together.
+  configureFileMetaStore(config.blobBackend === 's3' ? 'db' : 'nats', db)
 
   // One-time message-fact calibration: refresh the abc-session-state KV
   // projection from PG so chat-list previews are correct even for sessions

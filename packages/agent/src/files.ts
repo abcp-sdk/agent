@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { type Result, ResultAsync } from 'neverthrow'
+import { err, ok, type Result, ResultAsync } from 'neverthrow'
 import type { Bus } from './bus.js'
 import { BUCKET_FILES_META, tenantKVKey, tenantObjectName } from './bus.js'
+import type { Db } from './db-client.js'
+import { FilesDb } from './db-files.js'
 
 /** Metadata for a stored file; the NATS KV bucket is the single source of
  *  truth, colocated with the bytes in the persistent object store. */
@@ -97,6 +99,12 @@ export async function upsertFile(
   tenant: string,
   record: FileRecord,
 ): Promise<Result<FileRecord, string>> {
+  if (metaBackend === 'db') {
+    const db = metaDb
+    if (db === null) return err('file meta db not configured')
+    const r = await FilesDb.upsert(db, record)
+    return r.isErr() ? err(r.error) : ok(r.value)
+  }
   return ra(
     (async () => {
       await bus.kvPut(
@@ -137,6 +145,12 @@ export async function fileBySha(
   tenant: string,
   sha256: string,
 ): Promise<Result<FileRecord | null, string>> {
+  if (metaBackend === 'db') {
+    const db = metaDb
+    if (db === null || sha256 === '') return ok(null)
+    const r = await FilesDb.bySha(db, sha256)
+    return r.isErr() ? err(r.error) : ok(r.value)
+  }
   return ra(
     (async () => {
       if (sha256 === '') return null
@@ -166,6 +180,12 @@ export async function fileByCode(
   tenant: string,
   code: string,
 ): Promise<Result<FileRecord | null, string>> {
+  if (metaBackend === 'db') {
+    const db = metaDb
+    if (db === null) return ok(null)
+    const r = await FilesDb.byCode(db, code)
+    return r.isErr() ? err(r.error) : ok(r.value)
+  }
   return ra(
     (async () => {
       const cached = metaCache.get(metaCacheKey(tenant, code))
@@ -210,8 +230,28 @@ export interface BlobStore {
 }
 
 /**
- * NATS JetStream backend: bytes → persistent object bucket, meta → KV.
+ * File-metadata backend. `nats` = KV buckets (default); `db` = the
+ * `agent_files` table (used with the S3 object backend so file state leaves
+ * NATS). Selected once at boot via [configureFileMetaStore].
  */
+export type FileMetaBackend = 'nats' | 'db'
+
+let metaBackend: FileMetaBackend = 'nats'
+let metaDb: Db | null = null
+
+/**
+ * Select the metadata backend. `db` requires the database handle (the
+ * `agent_files` table). Must be called before any file operation.
+ */
+export function configureFileMetaStore(
+  backend: FileMetaBackend,
+  db?: Db,
+): void {
+  metaBackend = backend
+  metaDb = backend === 'db' ? (db ?? null) : null
+}
+
+/** NATS JetStream backend: bytes → persistent object bucket, meta → KV. */
 function makeNatsStore(bus: Bus): BlobStore {
   return {
     async put(tenant, code, _meta, data) {
@@ -243,7 +283,8 @@ function makeNatsStore(bus: Bus): BlobStore {
   }
 }
 
-/** Build the file blob backend (NATS object store + KV metadata). */
+/** Build the file blob backend (durable bytes via the bus's object store;
+ *  metadata via the configured meta backend — see [configureFileMetaStore]). */
 export function makeBlobStore(bus: Bus): BlobStore {
   return makeNatsStore(bus)
 }
