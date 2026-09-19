@@ -226,17 +226,21 @@ export async function fileByCode(
   )
 }
 
-/** Patch a file record's derived media fields in place. Only the provided
- *  keys are written; `undefined` keys are left untouched so a probe that only
- *  learned dimensions never clobbers an earlier thumbnail. Best-effort: a
- *  failure here must never surface to the caller that stored the bytes. */
+/** Patch a file record's derived fields in place. Only the provided keys are
+ *  written; `undefined` keys are left untouched so a probe that only learned
+ *  dimensions never clobbers an earlier thumbnail. Includes `mime` so the
+ *  media probe can REFINE an inconclusive magic-byte result once ffprobe has
+ *  identified the container/codec. Best-effort: a failure here must never
+ *  surface to the caller that stored the bytes. */
 export async function updateFileMedia(
   bus: Bus,
   tenant: string,
   code: string,
-  patch: Pick<
-    FileRecord,
-    'width' | 'height' | 'duration_ms' | 'thumb_code' | 'thumbhash'
+  patch: Partial<
+    Pick<
+      FileRecord,
+      'width' | 'height' | 'duration_ms' | 'thumb_code' | 'thumbhash' | 'mime'
+    >
   >,
 ): Promise<void> {
   if (metaBackend === 'db') {

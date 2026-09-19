@@ -191,29 +191,21 @@ export function messagesHandlers(
             Code.InvalidArgument,
           )
         }
-        // The client sends ONLY the code; name/mime/size are resolved from
-        // the stored blob. proto3 gives ''/0 (not undefined) for omitted
-        // fields, so treat empty as missing. There is NO silent fallback: a
+        // The client sends ONLY the code: name / mime / size are resolved
+        // from the stored record, whose mime the agent DERIVED at ingest. A
         // file part must carry a real name, mime and size, otherwise the
-        // prompt is refused (a blank metadata file part can't be rendered).
-        let name = att.name
-        let mime = att.mime
-        let size = att.size
-        const missing =
-          (name ?? '') === '' || (mime ?? '') === '' || (size ?? 0) <= 0
-        if (missing) {
-          const rec = await fileByCode(deps.bus, tenant, att.code)
-          if (rec.isErr()) throw new Error(rec.error)
-          if (rec.value === null) {
-            throw new ConnectError(
-              `attachment not found: file:${att.code}`,
-              Code.InvalidArgument,
-            )
-          }
-          name = rec.value.name
-          mime = rec.value.mime
-          size = rec.value.size
+        // prompt is refused (a blank metadata file part cannot be rendered).
+        const rec = await fileByCode(deps.bus, tenant, att.code)
+        if (rec.isErr()) throw new Error(rec.error)
+        if (rec.value === null) {
+          throw new ConnectError(
+            `attachment not found: file:${att.code}`,
+            Code.InvalidArgument,
+          )
         }
+        const name = rec.value.name
+        const mime = rec.value.mime
+        const size = rec.value.size
         if ((name ?? '') === '' || (mime ?? '') === '' || (size ?? 0) <= 0) {
           throw new ConnectError(
             `attachment file:${att.code} has incomplete metadata ` +

@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.2.0",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.3.0",
     "@abcp-agent/schema": "*",
     "@ai-sdk/anthropic": "^4.0.40",
     "@ai-sdk/cohere": "^3.0.61",
@@ -27,6 +27,7 @@
     "@opencode-ai/models": "^0.0.50",
     "ai": "^7.0.73",
     "drizzle-orm": "^1.0.0-rc.4",
+    "file-type": "^22.1.1",
     "neverthrow": "^8.2.0",
     "pino": "^10.3.1",
     "postgres": "^3.4.9",

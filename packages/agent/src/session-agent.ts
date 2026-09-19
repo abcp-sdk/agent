@@ -32,7 +32,6 @@ import { Sessions } from './db-sessions.js'
 import { clearActiveRun, events, markActiveRun, pushEvent } from './events.js'
 import { renderTemplate } from './extensions.js'
 import type { BlobStore } from './files.js'
-import { randomCode, sha256Hex, upsertFile } from './files.js'
 import { rebuildHistory } from './history.js'
 import { pickLocalized, resolveLocale } from './i18n.js'
 import { clearRun, getAbortController, interruptRun } from './interrupt.js'
@@ -337,9 +336,6 @@ async function runTurnOnce(
     bus: deps.bus,
     tenant,
     session: sid,
-    mintCode: randomCode,
-    sha256Hex,
-    upsertFile: (bus, t, record) => upsertFile(bus as Bus, t, record),
   }
 
   // Cross-replica mid-stream interrupt: watch the mailbox wake subject. The

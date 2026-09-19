@@ -20,22 +20,15 @@
  * blob store and the event carries `file:<code>` (see `sanitizeStreamPart`).
  */
 import type { Bus } from './bus.js'
-import type { BlobStore, FileRecord } from './files.js'
-import { scheduleMediaProbe } from './media.js'
+import type { BlobStore } from './files.js'
+import { extForMime } from './mime.js'
+import { storeFile } from './store-file.js'
 
 export interface SanitizeDeps {
   files: BlobStore
   bus: unknown
   tenant: string
   session: string
-  /** Injected so this module never imports the code generator directly. */
-  mintCode: () => string
-  sha256Hex: (data: Uint8Array) => string
-  upsertFile: (
-    bus: unknown,
-    tenant: string,
-    record: FileRecord,
-  ) => Promise<unknown>
 }
 
 /** Recursively coerce an unknown value into a JSON-safe one. */
@@ -85,38 +78,31 @@ export async function sanitizeStreamPart(
       | { base64?: string; mediaType?: string; uint8Array?: Uint8Array }
       | undefined
     const base64 = typeof file?.base64 === 'string' ? file.base64 : ''
-    const mediaType = file?.mediaType ?? 'application/octet-stream'
     const bytes =
       file?.uint8Array !== undefined
         ? file.uint8Array
         : base64.length > 0
           ? Buffer.from(base64, 'base64')
           : Buffer.alloc(0)
-    const code = deps.mintCode()
-    const name = `model-${part.type}-${Date.now()}`
-    const record: FileRecord = {
-      code,
-      sha256: deps.sha256Hex(bytes),
-      name,
-      mime: mediaType,
-      size: bytes.length,
-      uploader_session: deps.session,
-      created_at: new Date().toISOString(),
-    }
-    await deps.files.put(deps.tenant, code, record, bytes)
-    await deps.upsertFile(deps.bus, deps.tenant, record)
-    scheduleMediaProbe(
+    // Content type is derived server-side from the bytes (the model's
+    // `mediaType` is only a name hint, never trusted as the stored type).
+    const hint = file?.mediaType ?? ''
+    const record = await storeFile(
       { bus: deps.bus as Bus, files: deps.files },
-      deps.tenant,
-      record,
+      {
+        tenant: deps.tenant,
+        data: bytes,
+        name: `model-${part.type}-${Date.now()}${hint !== '' ? `.${extForMime(hint)}` : ''}`,
+        uploaderSession: deps.session,
+      },
     )
     return {
       type: part.type,
-      mediaType,
-      file: `file:${code}`,
-      code,
-      name,
-      size: bytes.length,
+      mediaType: record.mime,
+      file: `file:${record.code}`,
+      code: record.code,
+      name: record.name,
+      size: record.size,
       ...(part.providerMetadata !== undefined
         ? { providerMetadata: jsonSafe(part.providerMetadata) }
         : {}),

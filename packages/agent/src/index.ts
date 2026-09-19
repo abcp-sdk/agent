@@ -26,10 +26,12 @@ export * from './kv-store.js'
 export * from './llm.js'
 export * from './logger.js'
 export * from './media.js'
+export * from './mime.js'
 export * from './model-ref-backfill.js'
 export * from './models-dev.js'
 export * from './object-store-s3.js'
 export * from './session-agent.js'
+export * from './store-file.js'
 export {
   calibrateMessageFacts,
   factFromPersist,

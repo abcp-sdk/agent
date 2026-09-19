@@ -115,42 +115,33 @@ export function filesHandlers(
         tenant,
         bytes,
         file?.name ?? 'artifact',
-        file?.mime ?? 'application/octet-stream',
         '',
       )
-      return { ok: true, code: record.code }
+      return { ok: true, code: record.code, mime: record.mime }
     },
 
     async ingestFile(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
-      const { data: raw, name, mime } = req
+      const { data: raw, name } = req
       if (raw === undefined) throw new Error('data required')
       const bytes = new Uint8Array(raw)
       if (bytes.length === 0) {
         throw new ConnectError('file data is empty', Code.InvalidArgument)
       }
-      // A stored blob MUST carry a usable name + a non-empty mime so history
-      // can render it (image thumbnail / audio player). A concrete
-      // `application/octet-stream` is allowed (unknown extension); an EMPTY
-      // name/mime is not — reject the upload rather than store an
-      // unrenderable record.
+      // Only the NAME is caller-supplied; the mime is DERIVED from the bytes
+      // (storeFile → sniffMime). An empty name is still rejected — history
+      // renders the name — but a name-less upload is completed from the
+      // sniffed extension when possible.
       const cleanName = (name ?? '').trim()
-      const cleanMime = (mime ?? '').trim()
       if (cleanName === '') {
         throw new ConnectError('file name is required', Code.InvalidArgument)
       }
-      if (cleanMime === '') {
-        throw new ConnectError('file mime is required', Code.InvalidArgument)
-      }
-      const record = await storeBytes(
-        deps,
-        tenant,
-        bytes,
-        cleanName,
-        cleanMime,
-        '',
-      )
-      return create(IngestFileResponseSchema, { ok: true, code: record.code })
+      const record = await storeBytes(deps, tenant, bytes, cleanName, '')
+      return create(IngestFileResponseSchema, {
+        ok: true,
+        code: record.code,
+        mime: record.mime,
+      })
     },
 
     async getFile(req, ctx: HandlerContext) {

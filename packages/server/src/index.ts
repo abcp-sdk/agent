@@ -15,7 +15,6 @@ import {
   connectDb,
   configureFileMetaStore,
   type Db,
-  type FileRecord,
   knownTenants,
   LlmRegistry,
   loadConfig,
@@ -24,7 +23,6 @@ import {
   makeBlobStore,
   natsToken,
   Presets,
-  randomCode,
   rawAll,
   rawRun,
   refreshModelsDev,
@@ -32,10 +30,9 @@ import {
   S3ObjectStore,
   type ServerConfig,
   serveFileRpc,
-  sha256Hex,
+  storeFile,
   Tenants,
   tenantKVKey,
-  upsertFile,
   watchMailboxWake,
 } from '@abcp-agent/agent'
 import { getRequestListener } from '@hono/node-server'
@@ -199,22 +196,17 @@ async function main(): Promise<void> {
         data: r.data,
       })),
     // Generated media (images/videos/audio) land in the same blob store as
-    // uploaded files so they can be referenced as file:<code> afterwards.
-    ingestBlob: async ({ bytes, name, mime, session, tenant }) => {
+    // uploaded files so they can be referenced as file:<code> afterwards. The
+    // content type is DERIVED from the bytes (the generator's mediaType is not
+    // trusted); the derived mime is returned to the caller.
+    ingestBlob: async ({ bytes, name, session, tenant }) => {
       const t = tenant ?? fallbackTenant
       const data = new Uint8Array(Buffer.from(bytes, 'base64'))
-      const record: FileRecord = {
-        code: randomCode(),
-        sha256: sha256Hex(data),
-        name,
-        mime,
-        size: data.length,
-        uploader_session: session,
-        created_at: new Date().toISOString(),
-      }
-      await files.put(t, record.code, record, data)
-      await upsertFile(bus, t, record)
-      return { code: record.code, mime }
+      const record = await storeFile(
+        { bus, files },
+        { tenant: t, data, name, uploaderSession: session },
+      )
+      return { code: record.code, mime: record.mime, name: record.name }
     },
     // ---- Narrow data access for the bundled extension ----
     // The extension never speaks SQL: the HOST owns the schema and serves

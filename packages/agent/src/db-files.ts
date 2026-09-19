@@ -130,7 +130,7 @@ export const FilesDb = {
     patch: Partial<
       Pick<
         FileRecord,
-        'width' | 'height' | 'duration_ms' | 'thumb_code' | 'thumbhash'
+        'width' | 'height' | 'duration_ms' | 'thumb_code' | 'thumbhash' | 'mime'
       >
     >,
   ): ResultAsync<void, string> {
@@ -143,6 +143,7 @@ export const FilesDb = {
       'duration_ms',
       'thumb_code',
       'thumbhash',
+      'mime',
     ] as const) {
       const v = patch[key]
       if (v === undefined) continue

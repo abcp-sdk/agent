@@ -3,16 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { Bus } from './bus.js'
 import { tenantObjectName } from './bus.js'
-import {
-  type BlobStore,
-  type FileRecord,
-  fileBySha,
-  randomCode,
-  sha256Hex,
-  upsertFile,
-} from './files.js'
+import type { BlobStore } from './files.js'
 import { logger } from './logger.js'
-import { scheduleMediaProbe } from './media.js'
+import { storeFile } from './store-file.js'
 import { parse } from './json.js'
 
 /**
@@ -30,6 +23,10 @@ import { parse } from './json.js'
  * sends only the object reference. Symmetrically, `file.get` writes the bytes
  * to the transient object store and returns the reference.
  *
+ * NO MIME ON THE WIRE: the agent DERIVES the content type from the bytes, so
+ * the caller cannot mislabel a file (nor needs a content-type library). The
+ * derived mime is returned in the reply.
+ *
  * This mirrors the HTTP `IngestFile` / `GetFile` handlers but over the bus, so
  * remote extension servers use one code path regardless of blob backend
  * (`nats` object store or `s3`).
@@ -38,7 +35,6 @@ import { parse } from './json.js'
 const IngestRequestSchema = z.object({
   code: z.string().optional(),
   name: z.string(),
-  mime: z.string(),
   object: z.string(),
   session_name: z.string().optional(),
 })
@@ -80,7 +76,7 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
           continue
         }
         try {
-          const { name, mime, session_name, object } = parsed.data
+          const { name, session_name, object } = parsed.data
           const raw = await bus.objectGet(tenantObjectName(tenant, object))
           if (raw === null) {
             await bus.publish(
@@ -100,46 +96,34 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
             continue
           }
           const cleanName = name.trim()
-          const cleanMime = mime.trim()
-          if (cleanName === '' || cleanMime === '') {
+          if (cleanName === '') {
             await bus.publish(
               replyTo,
               {
                 ok: false,
-                error: {
-                  code: 'invalid_argument',
-                  message: 'file name and mime are required',
-                },
+                error: { code: 'invalid_argument', message: 'file name is required' },
               },
               { tenant },
             )
             continue
           }
-          const sha = sha256Hex(bytes)
-          // Dedup within the tenant (same semantics as an upload).
-          const existing = await fileBySha(bus, tenant, sha)
-          if (existing.isOk() && existing.value !== null) {
-            await bus.publish(
-              replyTo,
-              { ok: true, code: existing.value.code },
-              { tenant },
-            )
-            continue
-          }
-          const code = parsed.data.code?.trim() || randomCode()
-          const record: FileRecord = {
-            code,
-            sha256: sha,
-            name: cleanName,
-            mime: cleanMime,
-            size: bytes.length,
-            uploader_session: session_name ?? '',
-            created_at: new Date().toISOString(),
-          }
-          await files.put(tenant, code, record, bytes)
-          await upsertFile(bus, tenant, record)
-          scheduleMediaProbe({ bus, files }, tenant, record)
-          await bus.publish(replyTo, { ok: true, code }, { tenant })
+          // Single canonical store path: the agent derives the mime from the
+          // bytes (the caller sends none), dedups by (tenant, sha) and probes.
+          const record = await storeFile(
+            { bus, files },
+            {
+              tenant,
+              data: bytes,
+              name: cleanName,
+              uploaderSession: session_name ?? '',
+              ...(parsed.data.code !== undefined ? { code: parsed.data.code } : {}),
+            },
+          )
+          await bus.publish(
+            replyTo,
+            { ok: true, code: record.code, mime: record.mime },
+            { tenant },
+          )
         } catch (e) {
           logger.warn({ err: String(e), tenant }, 'file.ingest failed')
           await bus.publish(

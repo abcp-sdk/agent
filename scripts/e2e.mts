@@ -124,6 +124,18 @@ function section(title: string): void {
 }
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
+/** A minimal valid 3x2 PNG (content-sniffable, and ffmpeg-decodable). */
+const PNG_1PX = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAD0lEQVR4nGNgqGcAIQgFAA3yAf0TIoIjAAAAAElFTkSuQmCC',
+  'base64',
+)
+
+/** A second, DISTINCT 4x4 PNG (so dedup does not collapse two uploads). */
+const PNG_4PX = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAEElEQVR4nGOoZ6iDIwbiOACbcw/RAQZw7wAAAABJRU5ErkJggg==',
+  'base64',
+)
+
 /** True when an ffmpeg binary answers on PATH (the media probe needs it). */
 async function hasFfmpeg(): Promise<boolean> {
   try {
@@ -2132,7 +2144,6 @@ async function run(
       file: create(FileRefSchema, {
         code: clientCode,
         name: 'hello.txt',
-        mime: 'text/plain',
         size: fileBytes.length,
       }),
       data: fileBytes.toString('base64'),
@@ -2146,12 +2157,20 @@ async function run(
     upFile.ok && /^[0-9a-f]{16}$/.test(code) && code !== clientCode,
     code,
   )
+  // No mime is sent: the agent DERIVES text/plain from the `.txt` name hint
+  // (there is no magic-byte signature for plain text).
+  check(
+    'uploadFile derives mime from name (txt -> text/plain)',
+    upFile.mime === 'text/plain',
+    upFile.mime,
+  )
   const gotFile = await client.getFile(create(GetFileRequestSchema, { code }))
   check(
     'getFile round-trips bytes',
     Buffer.from(gotFile.data).toString('utf8') === 'hello e2e file',
   )
   check('getFile name', gotFile.name === 'hello.txt', gotFile.name)
+  check('getFile serves the derived mime', gotFile.mime === 'text/plain', gotFile.mime)
   const meta = await client.getFileMeta(
     create(GetFileMetaRequestSchema, { code }),
   )
@@ -2163,7 +2182,7 @@ async function run(
   for (let i = 0; i < bigBytes.length; i++) bigBytes[i] = i % 251
   const bigUp = await client.uploadFile(
     create(UploadFileRequestSchema, {
-      file: create(FileRefSchema, { name: 'big.bin', mime: 'application/octet-stream', size: bigBytes.length }),
+      file: create(FileRefSchema, { name: 'big.bin', size: bigBytes.length }),
       data: bigBytes.toString('base64'),
     }),
   )
@@ -2183,6 +2202,47 @@ async function run(
   )
   check('getFileStream terminates with last=true', sawLast)
 
+  // Magic-byte sniffing: a PNG payload is recognized by CONTENT even when the
+  // name says nothing, and a deliberately WRONG name hint is ignored. This is
+  // the core guarantee that a caller can no longer mislabel a file.
+  const sniffPng = PNG_1PX
+  const sniffUp = await client.uploadFile(
+    create(UploadFileRequestSchema, {
+      file: create(FileRefSchema, { name: 'mystery.dat', size: sniffPng.length }),
+      data: sniffPng.toString('base64'),
+    }),
+  )
+  check(
+    'sniff: PNG content typed image/png despite a .dat name',
+    sniffUp.mime === 'image/png',
+    sniffUp.mime,
+  )
+  // A name that carries NO extension is completed from the derived type; a
+  // caller-supplied extension is preserved (never rename the user's file) —
+  // the derived mime remains authoritative either way.
+  const extlessUp = await client.uploadFile(
+    create(UploadFileRequestSchema, {
+      file: create(FileRefSchema, { name: 'mystery', size: PNG_4PX.length }),
+      data: PNG_4PX.toString('base64'),
+    }),
+  )
+  const extlessMeta = await client.getFileMeta(
+    create(GetFileMetaRequestSchema, { code: extlessUp.code }),
+  )
+  check(
+    'sniff: a missing extension is completed from the derived type',
+    /\.png$/.test(extlessMeta.name) && extlessMeta.mime === 'image/png',
+    `${extlessMeta.name} / ${extlessMeta.mime}`,
+  )
+  const mismatchedMeta = await client.getFileMeta(
+    create(GetFileMetaRequestSchema, { code: sniffUp.code }),
+  )
+  check(
+    'sniff: a caller extension is preserved (mime authoritative)',
+    mismatchedMeta.name === 'mystery.dat' && mismatchedMeta.mime === 'image/png',
+    `${mismatchedMeta.name} / ${mismatchedMeta.mime}`,
+  )
+
   // Media probe (width/height/thumbnail/thumbhash) runs asynchronously after
   // the store. Only assert when ffmpeg is on PATH (the image ships it; a bare
   // dev box may not), otherwise the fields legitimately stay unset.
@@ -2190,10 +2250,11 @@ async function run(
     const png = await ffmpegPngFromBytes()
     const imgUp = await client.uploadFile(
       create(UploadFileRequestSchema, {
-        file: create(FileRefSchema, { name: 'shot.png', mime: 'image/png', size: png.length }),
+        file: create(FileRefSchema, { name: 'shot.png', size: png.length }),
         data: png.toString('base64'),
       }),
     )
+    check('sniff: PNG content typed image/png (no mime sent)', imgUp.mime === 'image/png', imgUp.mime)
     // The probe is fire-and-forget; poll briefly for the derived fields.
     let im = await client.getFileMeta(create(GetFileMetaRequestSchema, { code: imgUp.code }))
     for (let i = 0; i < 40 && im.thumbCode === undefined; i++) {
@@ -2212,17 +2273,18 @@ async function run(
     console.log('  (skip media probe asserts: ffmpeg not on PATH)')
   }
 
+  // Ingest with NO mime and a name carrying no recognizable extension: the
+  // agent must still derive text/plain (extension table) and return it.
   const ingest = await client.ingestFile(
     create(IngestFileRequestSchema, {
       data: new Uint8Array(Buffer.from('ingested body')),
       name: 'ingested.txt',
-      mime: 'text/plain',
     }),
   )
   check(
-    'ingestFile returns code',
-    ingest.ok && ingest.code.length > 0,
-    ingest.code,
+    'ingestFile returns code + derived mime',
+    ingest.ok && ingest.code.length > 0 && ingest.mime === 'text/plain',
+    `${ingest.code} / ${ingest.mime}`,
   )
   const ingested = await client.getFile(
     create(GetFileRequestSchema, { code: ingest.code }),

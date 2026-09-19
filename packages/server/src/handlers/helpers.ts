@@ -1,17 +1,13 @@
-import { createHash } from 'node:crypto'
 import {
   type AgentDeps,
   type FileRecord,
   factFromPersist,
-  fileBySha,
   Messages,
   Parts,
   parse,
-  randomCode,
-  scheduleMediaProbe,
   Sessions,
+  storeFile,
   TextPartDataSchema,
-  upsertFile,
   writeMessageFact,
 } from '@abcp-agent/agent'
 
@@ -66,38 +62,20 @@ export async function refreshMessageFactFromTip(
   )
 }
 
-function getSha(data: Uint8Array): string {
-  return createHash('sha256').update(data).digest('hex')
-}
-
-/** Dedup + store a single file. Shared by ingest/upload in the Connect surface. */
+/**
+ * Store one file through the single canonical path ([storeFile]): the mime is
+ * DERIVED from the bytes, never accepted from the caller. Kept as a thin
+ * wrapper so the Connect handlers keep their existing call shape.
+ */
 export async function storeBytes(
   deps: AgentDeps,
   tenant: string,
   data: Uint8Array,
   name: string,
-  mime: string,
   uploader: string,
 ): Promise<FileRecord> {
-  const sha = getSha(data)
-  const existing = await fileBySha(deps.bus, tenant, sha)
-  if (existing.isOk() && existing.value !== null) {
-    return existing.value
-  }
-  const code = randomCode()
-  const record: FileRecord = {
-    code,
-    sha256: sha,
-    name,
-    mime,
-    size: data.length,
-    uploader_session: uploader,
-    created_at: new Date().toISOString(),
-  }
-  await deps.files.put(tenant, code, record, data)
-  await upsertFile(deps.bus, tenant, record)
-  // Derive media metadata (dimensions / duration / thumbnail / thumbhash)
-  // asynchronously so the store call itself never blocks on a decode.
-  scheduleMediaProbe({ bus: deps.bus, files: deps.files }, tenant, record)
-  return record
+  return storeFile(
+    { bus: deps.bus, files: deps.files },
+    { tenant, data, name, uploaderSession: uploader },
+  )
 }
