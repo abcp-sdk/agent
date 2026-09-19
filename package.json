@@ -21,7 +21,7 @@
     "typecheck": "tsc -p packages/agent/tsconfig.json --noEmit && tsc -p packages/server/tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.5.0",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.5.1",
     "@biomejs/biome": "^2.5.9",
     "@types/node": "^26.2.0",
     "postject": "^1.0.0-alpha.6",
