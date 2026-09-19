@@ -11,6 +11,13 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
     HTTPS_PROXY=${HTTPS_PROXY} \
     NO_PROXY=localhost,127.0.0.1,.svc.cluster.local,.svc
 WORKDIR /build
+# git is required by npm to fetch the `github:` git dependencies below (the
+# SDK/extension packages are not published to a registry). The repos are
+# public, so rewrite npm's git+ssh URL shape to https: no SSH key is needed in
+# the build sandbox.
+RUN apk add --no-cache git \
+    && git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" \
+    && git config --global url."https://github.com/".insteadOf "git+ssh://git@github.com/"
 COPY package.json package-lock.json tsconfig.base.json .npmrc ./
 COPY scripts scripts
 COPY packages packages
