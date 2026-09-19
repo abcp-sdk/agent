@@ -11,8 +11,6 @@ spec:
   selector:
     matchLabels:
       app: {{ .Values.agent.service.name }}
-  strategy:
-    type: Recreate
   template:
     metadata:
       labels:
