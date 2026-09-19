@@ -291,6 +291,7 @@ const PG_MIGRATIONS = `
     ALTER TABLE mailbox ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE providers ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE providers ADD COLUMN IF NOT EXISTS capability TEXT NOT NULL DEFAULT 'text';
+    DROP TABLE IF EXISTS worksheets;
     ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS width INTEGER;
     ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS height INTEGER;
     ALTER TABLE agent_files ADD COLUMN IF NOT EXISTS duration_ms BIGINT;
@@ -506,6 +507,11 @@ async function migrateSchema(
         // duplicate column on an already-migrated file: best-effort
       }
     }
+    // Drop the dead `worksheets` table FIRST: its now-invalid FK
+    // (`session_name REFERENCES sessions(name)` vs the composite sessions PK)
+    // makes SQLite reject sessions rebuilds, forks, deletes and PK-renames at
+    // prepare time. See [dropLegacyWorksheets].
+    dropLegacyWorksheets(driver)
     rebuildIfPkLacksTenant(driver, 'sessions', [
       'tenant',
       'name',
@@ -655,8 +661,34 @@ function rebuildAgentFilesIfLegacy(raw: DatabaseSync): void {
   }
 }
 
+/**
+ * Drop the legacy `worksheets` table from a pre-removal database.
+ *
+ * The worksheet feature was deleted from the schema (it moved to easylab), but
+ * the table survives on databases created before that. Its
+ * `session_name REFERENCES sessions(name)` FK now points at a NON-unique parent
+ * key (the sessions PK is `(tenant, name)`), which makes SQLite reject — at
+ * PREPARE time — every statement that touches that FK: session fork
+ * (`INSERT … SELECT`), `DELETE FROM sessions`, and primary-key renames all fail
+ * with `foreign key mismatch - "worksheets" referencing "sessions"`. The table
+ * is dead (no code reads it), so dropping it is the fix. No-op on fresh DBs.
+ */
+function dropLegacyWorksheets(raw: DatabaseSync): void {
+  const cols = raw.prepare('PRAGMA table_info(worksheets)').all() as Array<{
+    name: string
+  }>
+  if (cols.length === 0) return // table absent (fresh / already migrated)
+  raw.exec('PRAGMA foreign_keys = OFF')
+  try {
+    raw.exec('DROP TABLE worksheets')
+  } finally {
+    raw.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
 /** The v2 CREATE TABLE statement for a table that may require a PK rebuild. */
-const SQLITE_TABLE_DDL: Record<string, string> = {  sessions: `CREATE TABLE IF NOT EXISTS sessions (
+const SQLITE_TABLE_DDL: Record<string, string> = {
+  sessions: `CREATE TABLE IF NOT EXISTS sessions (
     tenant TEXT NOT NULL DEFAULT 'default',
     name TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT '',
