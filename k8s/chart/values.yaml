@@ -62,7 +62,7 @@ webui:
   image:
     # Caddy with the webui static build baked into /srv.
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent-webui
-    tag: "latest"
+    tag: "20260919115036"
     pullPolicy: IfNotPresent
   port: 8080
   service:
