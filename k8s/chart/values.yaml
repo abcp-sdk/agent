@@ -21,7 +21,7 @@ namespaceOverride: ""
 agent:
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent
-    tag: "20260919141107"
+    tag: "20260919142512"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -98,7 +98,7 @@ playwright:
   enabled: true
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/playwright-extension
-    tag: "20260919141148"
+    tag: "20260919142822"
     pullPolicy: IfNotPresent
   # Selenium WebDriver endpoint the extension drives over CDP.
   seleniumUrl: "http://selenium:4444"
