@@ -21,7 +21,7 @@ namespaceOverride: ""
 agent:
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent
-    tag: "20260919164034"
+    tag: "20260919173920"
     pullPolicy: IfNotPresent
   port: 8080
   service:
