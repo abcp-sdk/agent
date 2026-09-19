@@ -14,7 +14,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#9bdc70d75415548f0ace37b1b187b1112c46f25e",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#a7e6f1719690a8a9be3076df9d92accc421d2678",
     "@ai-sdk/anthropic": "^4.0.40",
     "@ai-sdk/cohere": "^3.0.61",
     "@ai-sdk/deepseek": "^3.0.29",

@@ -160,6 +160,12 @@ export function watchHandlers(
      */
     async *watchSessions(_req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
+      // Snapshot anchor: the DB snapshot below reflects all state committed by
+      // this instant, and the two ordered-stream watchers below replay from it.
+      // Any lifecycle / settings event published while the snapshot queries run
+      // is therefore delivered exactly once (bounded replay), closing the
+      // core-subscribe gap that used to drop nudges on a transient hiccup.
+      const anchorMs = Date.now()
       // Build one Session snapshot (facts + row) for a name; null if gone.
       const snapshotOf = async (name: string) => {
         const r = await Sessions.get(deps.db, tenant, name)
@@ -207,9 +213,12 @@ export function watchHandlers(
         }
       })()
 
-      // 2) structural lifecycle changes.
+      // 2) structural lifecycle changes. Ordered-stream consumer replayed from
+      //    the snapshot anchor: no nudge is lost between the snapshot and live.
       const lcSub = await deps.bus
-        .subscribe(`abc.${tenant}.session.lifecycle.>`)
+        .subscribeStream(`abc.${tenant}.session.lifecycle.>`, {
+          startTimeMs: anchorMs,
+        })
         .catch(() => null)
       const lcTask = (async () => {
         if (lcSub === null) return
@@ -235,9 +244,12 @@ export function watchHandlers(
         }
       })()
 
-      // 3) settings-change nudges (setModel / updateSettings).
+      // 3) settings-change nudges (setModel / updateSettings). Also replayed
+      //    from the anchor (durable `inboxPublish` on the same ABC_EVENTS stream).
       const chSub = await deps.bus
-        .subscribe(`abc.${tenant}.session.changed`)
+        .subscribeStream(`abc.${tenant}.session.changed`, {
+          startTimeMs: anchorMs,
+        })
         .catch(() => null)
       const chTask = (async () => {
         if (chSub === null) return

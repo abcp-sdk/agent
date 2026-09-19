@@ -155,9 +155,13 @@ export type LifecycleEvent = 'created' | 'forked' | 'renamed' | 'deleted'
 
 /**
  * Announce that a session's mutable state changed (a message landed or its
- * settings were edited) so list watchers can refetch that one session. A live
- * `pub` (not durable): a watcher that connects later gets current state from
- * its initial snapshot, so only connected watchers need the nudge.
+ * settings were edited) so list watchers can refetch that one session.
+ *
+ * Durable (`inboxPublish`, same as lifecycle): the list watcher replays recent
+ * events from a snapshot anchor on connect, so a nudge dropped by a transient
+ * core-NATS hiccup is recovered rather than only on the next full snapshot.
+ * A watcher that connects much later still gets current state from its initial
+ * DB snapshot, so replay is bounded to the anchor window.
  */
 export function publishSessionChanged(
   bus: Bus,
@@ -165,7 +169,11 @@ export function publishSessionChanged(
   sid: string,
 ): void {
   void bus
-    .publish(`abc.${tenant}.session.changed`, { session_name: sid }, { tenant })
+    .inboxPublish(
+      `abc.${tenant}.session.changed`,
+      { session_name: sid },
+      { id: randomUUID(), tenant },
+    )
     .catch(err => {
       logger.warn(
         { tenant, sid, err: String(err) },
