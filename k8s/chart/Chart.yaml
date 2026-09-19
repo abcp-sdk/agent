@@ -1,0 +1,6 @@
+apiVersion: v2
+name: abcp-agent
+description: ABCP agent stack — agent (h2c) + NATS + webui (Caddy same-origin aggregator) + playwright extension + Selenium
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

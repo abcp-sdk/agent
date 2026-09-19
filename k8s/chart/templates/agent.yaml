@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.agent.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: {{ .Values.agent.service.name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.agent.service.name }}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "abcp-agent.labels" . | nindent 8 }}
+        app: {{ .Values.agent.service.name }}
+    spec:
+      serviceAccountName: {{ include "abcp-agent.saName" . }}
+      securityContext: {}
+      containers:
+        # ---- NATS (JetStream KV for presets / config / coordination) ----
+        - name: nats
+          image: {{ .Values.nats.image.repository }}:{{ .Values.nats.image.tag }}
+          imagePullPolicy: {{ .Values.nats.image.pullPolicy }}
+          args: ["-js", "-p", "4222", "-m", "8222", "-sd", "/data/nats"]
+          ports:
+            - { containerPort: 4222, protocol: TCP }
+          resources:
+            {{- toYaml .Values.nats.resources | nindent 12 }}
+          volumeMounts:
+            - { mountPath: /data/nats, name: data, subPath: nats }
+
+        # ---- abcp agent (session/model/turn engine; h2c only) ----
+        - name: agent
+          image: {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          env:
+            - name: NATS_URL
+              value: nats://127.0.0.1:4222
+            - name: DB_BACKEND
+              value: sqlite
+            - name: DATABASE_URL
+              value: sqlite:///data/agent.db
+            - name: PORT
+              value: {{ .Values.agent.port | quote }}
+            # h2c: in-cluster clients (extensions, gateways, the Caddy
+            # aggregator) speak cleartext HTTP/2 prior-knowledge.
+            - name: HTTP_PROTOCOL
+              value: h2c
+            {{- if .Values.agent.caConfigMap }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/ssl/certs/dev-ca.crt
+            {{- end }}
+            - name: AGENT_CORS_ORIGIN
+              value: {{ .Values.agent.corsOrigin | quote }}
+            - name: AGENT_AUTH_MODE
+              value: "required"
+            - name: AGENT_ADMIN_TOKEN
+              value: {{ .Values.agent.auth.adminToken | quote }}
+            - name: AGENT_BOOTSTRAP_TENANT
+              value: {{ .Values.agent.auth.bootstrapTenant | quote }}
+            - name: AGENT_BOOTSTRAP_TOKEN
+              value: {{ .Values.agent.auth.bootstrapToken | quote }}
+            {{- if .Values.agent.disabledTools }}
+            - name: DISABLED_TOOLS
+              value: {{ .Values.agent.disabledTools | quote }}
+            {{- end }}
+            {{- include "abcp-agent.objectStoreEnv" . | nindent 12 }}
+          ports:
+            - { containerPort: {{ .Values.agent.port }}, protocol: TCP }
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - { mountPath: /data, name: data, subPath: agent-data }
+            {{- if .Values.agent.caConfigMap }}
+            - { mountPath: /etc/ssl/certs/dev-ca.crt, name: ca, subPath: ca.crt, readOnly: true }
+            {{- end }}
+      volumes:
+        - name: data
+          hostPath:
+            path: {{ .Values.persistence.hostPath }}
+            type: {{ .Values.persistence.type }}
+        {{- if .Values.agent.caConfigMap }}
+        - name: ca
+          configMap:
+            name: {{ .Values.agent.caConfigMap }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.agent.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.agent.service.type }}
+  selector:
+    app: {{ .Values.agent.service.name }}
+  ports:
+    - name: h2c
+      port: 80
+      targetPort: {{ .Values.agent.port }}
+---
+# Expose the in-pod NATS broker so a separate extension server (playwright) can
+# register/discover and answer tool calls. The agent and NATS share the pod
+# netns; this Service only makes the broker reachable from another pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.nats.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.nats.service.type }}
+  selector:
+    app: {{ .Values.agent.service.name }}
+  ports:
+    - name: nats
+      port: 4222
+      targetPort: 4222

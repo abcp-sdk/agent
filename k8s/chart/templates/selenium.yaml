@@ -1,0 +1,76 @@
+{{- if .Values.selenium.enabled }}
+# Selenium standalone-chrome: a single Chrome node exposing the WebDriver +
+# se:cdp endpoints the playwright extension attaches to. /dev/shm is backed by
+# a memory emptyDir (the 64Mi container default crashes Chrome on real pages)
+# and idle WebDriver sessions are reaped so a leaked context cannot pin a slot.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.selenium.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: {{ .Values.selenium.service.name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.selenium.service.name }}
+  template:
+    metadata:
+      labels:
+        {{- include "abcp-agent.labels" . | nindent 8 }}
+        app: {{ .Values.selenium.service.name }}
+    spec:
+      containers:
+        - name: selenium
+          image: {{ .Values.selenium.image.repository }}:{{ .Values.selenium.image.tag }}
+          imagePullPolicy: {{ .Values.selenium.image.pullPolicy }}
+          env:
+            - name: SE_NODE_MAX_SESSIONS
+              value: {{ .Values.selenium.maxSessions | quote }}
+            - name: SE_NODE_OVERRIDE_MAX_SESSIONS
+              value: "true"
+            - name: SE_NODE_SESSION_TIMEOUT
+              value: {{ .Values.selenium.sessionTimeoutSecs | quote }}
+            - name: SE_ENABLE_MANAGED_DOWNLOADS
+              value: "false"
+          ports:
+            - name: http
+              containerPort: {{ .Values.selenium.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.selenium.resources | nindent 12 }}
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+          livenessProbe:
+            httpGet: { path: /status, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /status, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.selenium.shmSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.selenium.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.selenium.service.type }}
+  selector:
+    app: {{ .Values.selenium.service.name }}
+  ports:
+    - name: http
+      port: {{ .Values.selenium.port }}
+      targetPort: {{ .Values.selenium.port }}
+{{- end }}

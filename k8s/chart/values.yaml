@@ -1,0 +1,131 @@
+# Values for the standalone ABCP agent stack.
+#
+# Topology (one namespace):
+#   - `standalone-agent` Pod: NATS sidecar + agent (h2c only). Exposed by the
+#     `standalone-agent` Service; in-cluster clients (extensions, gateways)
+#     connect over h2c.
+#   - `agent-web` Pod: a Caddy aggregator (h1 only). Serves the webui static
+#     build and reverse-proxies `/agent.v1.*` to the agent over h2c, so the
+#     browser is SAME-ORIGIN with the API (no CORS, no domain entry). Exposed by
+#     the `agent` Service.
+#   - `playwright-extension` Pod: browser tool server over NATS.
+#   - `selenium` Pod: standalone-chrome the playwright extension drives.
+#
+# The public domains are owned by the cluster edge (outside this chart):
+#   standalone-agent.<suffix> -> standalone-agent Service (h2c)
+#   agent.<suffix>            -> agent Service (h1, webui + proxied RPC)
+
+namespaceOverride: ""
+
+# ---- agent (h2c) + NATS sidecar ----
+agent:
+  image:
+    repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent
+    tag: "20260919095441"
+    pullPolicy: IfNotPresent
+  port: 8080
+  service:
+    # In-cluster h2c endpoint. The edge maps the public `standalone-agent` host
+    # here; extensions/other backends dial it over h2c directly.
+    name: standalone-agent
+    type: ClusterIP
+  corsOrigin: "*"
+  # Tools the host hard-disables for every session.
+  disabledTools: ""
+  # Bearer-token auth. `required`, with a static admin token + a bootstrapped
+  # first tenant (token -> tenant).
+  auth:
+    adminToken: "dev-admin-token"
+    bootstrapTenant: "default"
+    bootstrapToken: "devtenanttoken"
+  # Extra CA (PEM in a ConfigMap) trusted for provider TLS (self-signed dev CA).
+  caConfigMap: "standalone-agent-ca"
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+# ---- NATS (JetStream KV/objects; sidecar to the agent) ----
+nats:
+  image:
+    repository: forgejo.develop.10.199.64.20.nip.io/easylab/nats
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    name: standalone-agent-nats
+    type: ClusterIP
+  resources:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+# ---- webui + Caddy aggregator (h1) ----
+webui:
+  image:
+    # Caddy with the webui static build baked into /srv.
+    repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent-webui
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  port: 8080
+  service:
+    name: agent
+    type: ClusterIP
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+# ---- object storage (durable file bytes) ----
+# Enabled: durable file bytes live in an S3-compatible bucket and file metadata
+# in the agent's `agent_files` DB table, so file state leaves NATS.
+objectStore:
+  enabled: true
+  bucket: "abcp"
+  region: "us-east-1"
+  endpoint: "http://minio.develop.svc.cluster.local:9000"
+  accessKey: "root"
+  secretKey: "devpassword"
+  pathStyle: true
+  prefix: "abcp"
+
+# ---- playwright browser-automation extension (separate server) ----
+playwright:
+  enabled: true
+  image:
+    repository: forgejo.develop.10.199.64.20.nip.io/abcp/playwright-extension
+    tag: "20260919103318"
+    pullPolicy: IfNotPresent
+  # Selenium WebDriver endpoint the extension drives over CDP.
+  seleniumUrl: "http://selenium:4444"
+  viewport: "1280x720"
+  idleTimeoutMs: 600000
+  maxContexts: 8
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+# ---- Selenium standalone-chrome (browser host) ----
+selenium:
+  enabled: true
+  image:
+    repository: forgejo.develop.10.199.64.20.nip.io/abcp/selenium-standalone-chrome
+    tag: "4.49.0"
+    pullPolicy: IfNotPresent
+  service:
+    name: selenium
+    type: ClusterIP
+  port: 4444
+  maxSessions: 8
+  sessionTimeoutSecs: 900
+  shmSizeLimit: 1Gi
+  resources:
+    requests: { cpu: 500m, memory: 2Gi }
+    limits: { cpu: "2", memory: 4Gi }
+
+# ---- persistence ----
+persistence:
+  # hostPath root for /data (single-node dev cluster). DirectoryOrCreate.
+  hostPath: /home/develop/.easylab
+  type: DirectoryOrCreate
+
+# ---- RBAC ----
+serviceAccount:
+  create: true
+  name: "abcp-agent"
