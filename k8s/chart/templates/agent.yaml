@@ -103,6 +103,9 @@ spec:
     - name: h2c
       port: 80
       targetPort: {{ .Values.agent.port }}
+      # Signal to an L7 proxy/ingress that this backend speaks cleartext
+      # HTTP/2 (h2c), so it must NOT downgrade the upstream to HTTP/1.1.
+      appProtocol: kubernetes.io/h2c
 ---
 # Expose the in-pod NATS broker so a separate extension server (playwright) can
 # register/discover and answer tool calls. The agent and NATS share the pod
