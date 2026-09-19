@@ -86,8 +86,8 @@ import {
 
 // ---- multi-tenant identity for the e2e run ----
 const E2E_ADMIN_TOKEN = 'e2e-admin-token'
-const E2E_TENANT = 'e2e'
-const E2E_TENANT_TOKEN = 'e2e-tenant-token'
+const E2E_TENANT = 'test1'
+const E2E_TENANT_TOKEN = 'test1'
 
 /** Attach a bearer token to every Connect client call (unary + stream). */
 function bearerInterceptor(token: string = E2E_TENANT_TOKEN) {
@@ -2343,9 +2343,9 @@ async function run(
     t0.tenants.map(t => t.id).join(','),
   )
   const createdT = await admin.createTenant(
-    create(CreateTenantRequestSchema, { id: 'acme', name: 'Acme' }),
+    create(CreateTenantRequestSchema, { id: 'test2', name: 'test2' }),
   )
-  check('createTenant returns tenant', createdT.tenant?.id === 'acme')
+  check('createTenant returns tenant', createdT.tenant?.id === 'test2')
   check(
     'createTenant mints a bootstrap token',
     (createdT.token ?? '').length > 0,
@@ -2363,7 +2363,7 @@ async function run(
     create(ListSessionsRequestSchema, {}),
   )
   check(
-    'tenant token is isolated (no e2e sessions)',
+    'tenant token is isolated (no test1 sessions)',
     acmeSessions.sessions.length === 0,
     String(acmeSessions.sessions.length),
   )
@@ -2373,7 +2373,7 @@ async function run(
   // model from acme must FAIL.
   const acmeCreate = await acmeClient.createSession(
     create(CreateSessionRequestSchema, {
-      name: 'acme-only',
+      name: 'test2-only',
       preset: 'default',
     }),
   )
@@ -2382,7 +2382,7 @@ async function run(
   try {
     await acmeClient.createSession(
       create(CreateSessionRequestSchema, {
-        name: 'acme-cross',
+        name: 'test2-cross',
         model: 'openai/gpt-5.4',
         preset: 'default',
       }),
@@ -2394,14 +2394,14 @@ async function run(
 
   // Issue + revoke a token: the issued one works, then fails after revocation.
   const issued = await admin.issueTenantToken(
-    create(IssueTenantTokenRequestSchema, { tenantId: 'acme', label: 'extra' }),
+    create(IssueTenantTokenRequestSchema, { tenantId: 'test2', label: 'extra' }),
   )
   check('issueTenantToken returns plaintext', (issued.plaintext ?? '').length > 0)
   const before = await admin.listTenantTokens(
-    create(ListTenantTokensRequestSchema, { tenantId: 'acme' }),
+    create(ListTenantTokensRequestSchema, { tenantId: 'test2' }),
   )
   check(
-    'acme has 2 active tokens',
+    'test2 has 2 active tokens',
     before.tokens.filter(t => !t.revoked).length === 2,
     String(before.tokens.length),
   )
@@ -2426,7 +2426,7 @@ async function run(
   check('revoked token is rejected', revokedRejected)
 
   // Disable the tenant (soft): its live token stops working.
-  await admin.deleteTenant(create(DeleteTenantRequestSchema, { id: 'acme' }))
+  await admin.deleteTenant(create(DeleteTenantRequestSchema, { id: 'test2' }))
   let disabledRejected = false
   try {
     await acmeClient.listSessions(create(ListSessionsRequestSchema, {}))
@@ -2438,7 +2438,7 @@ async function run(
   const t1 = await admin.listTenants(create(ListTenantsRequestSchema, {}))
   check(
     'tenant is disabled not deleted (data kept)',
-    t1.tenants.find(t => t.id === 'acme')?.disabled === true,
+    t1.tenants.find(t => t.id === 'test2')?.disabled === true,
   )
 
   // A tenant token can never reach the admin surface. listTenants moved to

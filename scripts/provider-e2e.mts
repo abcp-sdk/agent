@@ -53,7 +53,7 @@ import {
 
 const BASE = process.env['E2E_AGENT_BASE'] ?? 'https://standalone-agent.temp.10.199.64.20.nip.io'
 const ADMIN_TOKEN = process.env['E2E_ADMIN_TOKEN'] ?? 'dev-admin-token'
-const TENANT = process.env['E2E_PROVIDER_TENANT'] ?? 'e2e-providers'
+const TENANT = process.env['E2E_PROVIDER_TENANT'] ?? 'test1'
 const GW_URL = process.env['E2E_GATEWAY_URL'] ?? 'https://ai-gateway-dev004.develop.10.199.64.20.nip.io/v4/ai'
 const GW_KEY = process.env['E2E_GATEWAY_KEY'] ?? 'gw-0c53f638b62edf7275d9443a7282123d3a9a7f7a96ce9ee0'
 const INSECURE = process.env['E2E_TLS_INSECURE'] !== '0'

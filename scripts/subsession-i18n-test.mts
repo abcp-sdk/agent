@@ -24,8 +24,8 @@ import {
   UpdateSettingsRequestSchema,
 } from '@abcp-agent/schema'
 
-const TOKEN = 'i18n-token'
-const TENANT = 'i18n'
+const TOKEN = 'test2'
+const TENANT = 'test2'
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 interface Case {

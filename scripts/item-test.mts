@@ -31,8 +31,8 @@ import {
 } from '@abcp-agent/schema'
 
 const ADMIN = 'item-admin-token'
-const TENANT = 'item'
-const TOKEN = 'item-tenant-token'
+const TENANT = 'test2'
+const TOKEN = 'test2'
 let pass = 0
 let fail = 0
 const failures: string[] = []

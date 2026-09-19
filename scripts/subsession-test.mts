@@ -32,8 +32,8 @@ import {
   ProviderSchema,
 } from '@abcp-agent/schema'
 
-const TOKEN = 'sub-tenant-token'
-const TENANT = 'sub'
+const TOKEN = 'test3'
+const TENANT = 'test3'
 const PARENT = 'sub-parent'
 const CHILD = 'sub-child'
 let pass = 0
