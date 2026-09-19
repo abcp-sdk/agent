@@ -382,6 +382,7 @@ async function runTurnOnce(
             reasoning: string
             toolCalls: ToolCallRec[]
             toolResults: ToolResultRec[]
+            fileParts: FilePartRec[]
             usage: { inputTokens: number; outputTokens: number } | null
           }
         | 'retry'
@@ -409,6 +410,15 @@ async function runTurnOnce(
           id: string
           name: string
           result: ToolResult
+        }> = []
+        /** Streamed `file` / `reasoning-file` parts (already offloaded to the
+         *  blob store by sanitizeStreamPart), persisted as `file` parts. */
+        const fileParts: Array<{
+          type: string
+          code: string
+          name: string
+          mime: string
+          size: number
         }> = []
         let usage: { inputTokens: number; outputTokens: number } | null = null
 
@@ -486,19 +496,28 @@ async function runTurnOnce(
           // custom, finish, abort, raw, tool-approval-*, ...), sanitized to be
           // JSON-safe. This is the "fully transparent" contract: the event
           // vocabulary is the AI SDK's, not a hand-maintained subset.
-          pushEvent(
-            deps.bus,
-            tenant,
-            sid,
-            part.type,
-            await sanitizeStreamPart(
-              part as { type: string } & Record<string, unknown>,
-              sanitizeDeps,
-            ),
-            runId,
+          const sanitized = await sanitizeStreamPart(
+            part as { type: string } & Record<string, unknown>,
+            sanitizeDeps,
           )
+          // A streamed media part is already in the blob store; record its
+          // `file:<code>` so it is also persisted into the message history.
+          if (
+            (part.type === 'file' || part.type === 'reasoning-file') &&
+            typeof sanitized['code'] === 'string' &&
+            sanitized['code'] !== ''
+          ) {
+            fileParts.push({
+              type: part.type,
+              code: sanitized['code'],
+              name: sanitized['name'] as string | undefined ?? `model-${part.type}`,
+              mime: (sanitized['mediaType'] as string | undefined) ?? 'application/octet-stream',
+              size: Number(sanitized['size'] ?? 0),
+            })
+          }
+          pushEvent(deps.bus, tenant, sid, part.type, sanitized, runId)
         }
-        return { text, reasoning, toolCalls, toolResults, usage }
+        return { text, reasoning, toolCalls, toolResults, fileParts, usage }
       }
 
       let stepResult = await attempt()
@@ -510,9 +529,11 @@ async function runTurnOnce(
         return stepResult === 'retry' ? null : stepResult
       }
 
-      // Persist this step (reasoning + text + fully-paired tool calls/results)
-      // and advance the chain tip before considering the next iteration.
-      const { text, reasoning, toolCalls, toolResults, usage } = stepResult
+      // Persist this step (reasoning + text + fully-paired tool calls/results
+      // + streamed files) and advance the chain tip before considering the
+      // next iteration.
+      const { text, reasoning, toolCalls, toolResults, fileParts, usage } =
+        stepResult
       await persistStep(
         deps,
         tenant,
@@ -521,6 +542,7 @@ async function runTurnOnce(
         text,
         toolCalls,
         toolResults,
+        fileParts,
       )
       if (usage !== null) {
         await Sessions.addUsage(
@@ -755,13 +777,24 @@ interface ToolCallRec {
   name: string
   input: unknown
 }
+/** A streamed media part to persist as a `file` part (already in the blob
+ *  store; only its reference is carried here). */
+interface FilePartRec {
+  type: string
+  code: string
+  name: string
+  mime: string
+  size: number
+}
+
 interface ToolResultRec {
   id: string
   name: string
   result: ToolResult
 }
 
-/** Persist one step: chained assistant message + text/tool/tool_result parts. */
+/** Persist one step: chained assistant message + file/text/tool/tool_result
+ *  parts. */
 async function persistStep(
   deps: AgentDeps,
   tenant: string,
@@ -770,8 +803,16 @@ async function persistStep(
   text: string,
   toolCalls: ToolCallRec[],
   toolResults: ToolResultRec[],
+  fileParts: FilePartRec[] = [],
 ): Promise<void> {
-  if (reasoning === '' && text === '' && toolCalls.length === 0) return
+  if (
+    reasoning === '' &&
+    text === '' &&
+    toolCalls.length === 0 &&
+    fileParts.length === 0
+  ) {
+    return
+  }
 
   const tipRes = await Sessions.tip(deps.db, tenant, sid)
   const prevId = tipRes.isErr() ? null : tipRes.value
@@ -812,6 +853,15 @@ async function persistStep(
       tool_use_id: tc.id,
       content,
       metadata,
+    })
+  }
+  // Streamed media parts (model-produced files) → `file` parts.
+  for (const f of fileParts) {
+    await Parts.insert(deps.db, tenant, messageId, 'file', seq++, {
+      code: f.code,
+      name: f.name,
+      mime: f.mime,
+      size: f.size,
     })
   }
   await Sessions.setTip(deps.db, tenant, sid, messageId)

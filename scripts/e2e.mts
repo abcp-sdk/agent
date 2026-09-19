@@ -1591,11 +1591,11 @@ async function run(
   // The live tool-result event carries the structured `data` (media refs) so a
   // client can render generated images/audio/video directly.
   const imgData = imgResult?.params['data'] as
-    | { images?: Array<{ code?: string }> }
+    | { files?: Array<{ code?: string }> }
     | undefined
-  const imgCode = imgData?.images?.[0]?.code ?? ''
+  const imgCode = imgData?.files?.[0]?.code ?? ''
   check(
-    'image tool-result carries data.images[].code',
+    'image tool-result carries data.files[].code',
     /^[0-9a-f]{16}$/.test(imgCode),
     imgCode,
   )

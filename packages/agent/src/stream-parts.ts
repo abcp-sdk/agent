@@ -15,14 +15,11 @@
  *     bodies (base64 images, full messages).
  *
  * The policy is: pass the AI SDK event name and its payload through VERBATIM
- * for anything JSON-safe, and normalise the few unsafe fields. Large binary
- * media is NOT inlined — it is stored in the blob store and the event carries
- * `file:<code>` instead (see `sanitizeStreamPart`'s `storeFile` callback).
+ * for anything JSON-safe, and normalise the few unsafe fields. `file` /
+ * `reasoning-file` bytes are NEVER inlined — every such part is stored in the
+ * blob store and the event carries `file:<code>` (see `sanitizeStreamPart`).
  */
 import type { BlobStore, FileRecord } from './files.js'
-
-/** Inline up to this many bytes; larger media is stored and referenced. */
-export const INLINE_MEDIA_MAX_BYTES = 256 * 1024
 
 export interface SanitizeDeps {
   files: BlobStore
@@ -79,30 +76,26 @@ export async function sanitizeStreamPart(
   part: { type: string } & Record<string, unknown>,
   deps: SanitizeDeps,
 ): Promise<Record<string, unknown>> {
-  // Media parts: never inline a large binary; store it and reference it.
+  // Media parts: bytes NEVER ride the event. Store every `file` /
+  // `reasoning-file` in the blob store (any size) and emit `file:<code>`.
   if (part.type === 'file' || part.type === 'reasoning-file') {
     const file = part.file as
       | { base64?: string; mediaType?: string; uint8Array?: Uint8Array }
       | undefined
     const base64 = typeof file?.base64 === 'string' ? file.base64 : ''
     const mediaType = file?.mediaType ?? 'application/octet-stream'
-    const bytes = base64.length > 0 ? Buffer.from(base64, 'base64') : Buffer.alloc(0)
-    if (bytes.length <= INLINE_MEDIA_MAX_BYTES) {
-      return {
-        type: part.type,
-        mediaType,
-        base64,
-        size: bytes.length,
-        ...(part.providerMetadata !== undefined
-          ? { providerMetadata: jsonSafe(part.providerMetadata) }
-          : {}),
-      }
-    }
+    const bytes =
+      file?.uint8Array !== undefined
+        ? file.uint8Array
+        : base64.length > 0
+          ? Buffer.from(base64, 'base64')
+          : Buffer.alloc(0)
     const code = deps.mintCode()
+    const name = `model-${part.type}-${Date.now()}`
     const record: FileRecord = {
       code,
       sha256: deps.sha256Hex(bytes),
-      name: `model-${part.type}-${Date.now()}`,
+      name,
       mime: mediaType,
       size: bytes.length,
       uploader_session: deps.session,
@@ -115,6 +108,7 @@ export async function sanitizeStreamPart(
       mediaType,
       file: `file:${code}`,
       code,
+      name,
       size: bytes.length,
       ...(part.providerMetadata !== undefined
         ? { providerMetadata: jsonSafe(part.providerMetadata) }

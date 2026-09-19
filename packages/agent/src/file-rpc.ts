@@ -1,6 +1,8 @@
 import { CH, FILE_GET_WILDCARD, FILE_INGEST_WILDCARD } from '@abc-protocol/sdk'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { Bus } from './bus.js'
+import { tenantObjectName } from './bus.js'
 import {
   type BlobStore,
   type FileRecord,
@@ -21,6 +23,12 @@ import { parse } from './json.js'
  * request subject (and envelope), so no separate credential is introduced —
  * the extension is a trusted bus peer that already serves every tenant.
  *
+ * BYTES NEVER RIDE THE MESSAGE. The extension first puts the bytes in the
+ * transient object store (`tenantObjectName(tenant, object)`; the transport
+ * chunks them, so any size works and the broker max_payload is irrelevant) and
+ * sends only the object reference. Symmetrically, `file.get` writes the bytes
+ * to the transient object store and returns the reference.
+ *
  * This mirrors the HTTP `IngestFile` / `GetFile` handlers but over the bus, so
  * remote extension servers use one code path regardless of blob backend
  * (`nats` object store or `s3`).
@@ -30,7 +38,7 @@ const IngestRequestSchema = z.object({
   code: z.string().optional(),
   name: z.string(),
   mime: z.string(),
-  data: z.string(),
+  object: z.string(),
   session_name: z.string().optional(),
 })
 
@@ -71,8 +79,17 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
           continue
         }
         try {
-          const { name, mime, session_name } = parsed.data
-          const bytes = new Uint8Array(Buffer.from(parsed.data.data, 'base64'))
+          const { name, mime, session_name, object } = parsed.data
+          const raw = await bus.objectGet(tenantObjectName(tenant, object))
+          if (raw === null) {
+            await bus.publish(
+              replyTo,
+              { ok: false, error: { code: 'not_found', message: 'ingest object missing' } },
+              { tenant },
+            )
+            continue
+          }
+          const bytes = new Uint8Array(raw)
           if (bytes.length === 0) {
             await bus.publish(
               replyTo,
@@ -153,6 +170,10 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
         }
         try {
           const got = await files.get(tenant, parsed.data.code)
+          // Bytes go to the transient object store; only the reference rides
+          // the reply (arbitrary size, no broker max_payload concern).
+          const object = `${randomUUID()}.get`
+          await bus.objectPut(tenantObjectName(tenant, object), got.data)
           await bus.publish(
             replyTo,
             {
@@ -166,7 +187,7 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
                 uploader_session: got.meta.uploader_session,
                 created_at: got.meta.created_at,
               },
-              data: Buffer.from(got.data).toString('base64'),
+              object,
             },
             { tenant },
           )

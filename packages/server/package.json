@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@abc-protocol/bundled-extension": "github:abcp-sdk/bundled-extension#v0.7.0",
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#b5e810f03228e44aee2f90445c451348d8e3847c",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.1.0",
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",
     "@abcp-agent/agent": "*",
