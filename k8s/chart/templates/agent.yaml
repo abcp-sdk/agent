@@ -63,6 +63,10 @@ spec:
               value: {{ list
                 (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "worker-url" "value" (include "abcp-agent.easyworkerUrl" .))
                 (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "worker-token" "value" (.Values.workspace.workerToken | default .Values.easyworker.token))
+                (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "forgejo-url" "value" .Values.workspace.forgejoUrl)
+                (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "forgejo-token" "value" .Values.workspace.forgejoToken)
+                (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "forgejo-user" "value" .Values.workspace.forgejoUser)
+                (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "forgejo-password" "value" .Values.workspace.forgejoPassword)
                 (dict "tenant" .Values.playwright.seedTenant "extId" "playwright" "name" "selenium-url" "value" .Values.playwright.seleniumUrl)
                 | toJson | quote }}
             {{- end }}

@@ -81,15 +81,17 @@ webui:
     limits: { cpu: 200m, memory: 128Mi }
 
 # ---- object storage (durable file bytes) ----
-# Enabled: durable file bytes live in an S3-compatible bucket and file metadata
+# Enabled: durable file bytes live in a Garage S3 bucket and file metadata
 # in the agent's `agent_files` DB table, so file state leaves NATS.
+# Garage at s3.agent.fenjin.org presents a public Let's Encrypt cert, so no
+# extra CA / insecure flag is needed (the node runtime trusts the system store).
 objectStore:
   enabled: true
-  bucket: "abcp"
-  region: "us-east-1"
-  endpoint: "http://minio.develop.svc.cluster.local:9000"
-  accessKey: "root"
-  secretKey: "devpassword"
+  bucket: "agent"
+  region: "garage"
+  endpoint: "https://s3.agent.fenjin.org"
+  accessKey: "GK137c914b4dda23e829499026"
+  secretKey: "baf816e7cc68df84a1dcf6194bba26c99e032a02f277dea91136c8102e6a8cb6"
   pathStyle: true
   prefix: "abcp"
 
@@ -173,10 +175,11 @@ workspace:
   # Default `worker-token` seeded likewise (empty when the worker has auth off).
   workerToken: ""
   # Default `forgejo-url` / auth seeded into the cfg KV for the bootstrap
-  # tenant (create-if-absent; a UI-set value always wins). Empty = repo-* tools
-  # stay disabled until configured in the UI.
-  forgejoUrl: ""
-  forgejoToken: ""
+  # tenant (create-if-absent; a UI-set value always wins). Points at the shared
+  # Forgejo (git.agent.fenjin.org, public Let's Encrypt cert). A PAT is the
+  # preferred credential; the token below is `root`'s `abcp-agent` PAT.
+  forgejoUrl: "https://git.agent.fenjin.org"
+  forgejoToken: "304f2b3ccdd85c6eb970806859489a4fcca6b86c"
   forgejoUser: ""
   forgejoPassword: ""
   # Tenant the defaults are seeded for. `"*"` (default) seeds EVERY known
