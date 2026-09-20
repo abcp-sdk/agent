@@ -208,6 +208,9 @@ export function providersHandlers(
         models,
       })
       if (r.isErr()) throw new Error(r.error)
+      // Drop cached clients: a changed base_url/api_key must take effect on
+      // the very next turn, not after a process restart.
+      deps.llm.invalidate()
       return { ok: true }
     },
 
@@ -216,6 +219,7 @@ export function providersHandlers(
       const id = req.providerId
       const r = await Providers.delete(deps.db, tenant, id)
       if (r.isErr()) throw new Error(r.error)
+      deps.llm.invalidate()
       return { ok: true }
     },
 
