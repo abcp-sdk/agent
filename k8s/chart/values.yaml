@@ -133,63 +133,6 @@ selenium:
     requests: { cpu: 500m, memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
 
-# ---- easyworker (sandbox command/file backend) ----
-# The worker the `workspace` extension drives over Connect RPC. Deployed here so
-# the standalone stack is self-contained; its URL is seeded as the default
-# `workspace.worker-url` (below) so the workspace tools work out of the box.
-easyworker:
-  enabled: true
-  image:
-    repository: forgejo.develop.10.199.64.20.nip.io/easylab/easyworker
-    # Auth-capable build (WORKER_TOKEN/WORKER_REQUIRE_AUTH honored); the chart
-    # sets WORKER_TOKEN => preauthorized, no enrollment.
-    tag: "20260912153224"
-    pullPolicy: IfNotPresent
-  service:
-    name: easyworker
-    type: ClusterIP
-  # Container port the worker listens on. 48080 is the worker convention (the
-  # injected/in-cluster easyworker always listens on 48080); the Service still
-  # exposes 80 -> 48080 so `worker-url` can use the plain :80 address.
-  port: 48080
-  workspace: /workspace
-  # Bearer token the worker requires for every call. Non-empty => preauthorized
-  # (no enrollment). The workspace extension is seeded with the SAME token so
-  # the tools work out of the box. Set to "" to run with auth disabled (dev).
-  token: "devworker-token"
-  resources:
-    requests: { cpu: 100m, memory: 128Mi }
-    limits: { cpu: "1", memory: 1Gi }
-
-# ---- workspace extension (run commands / read-write files via easyworker) ----
-workspace:
-  enabled: true
-  image:
-    repository: forgejo.develop.10.199.64.20.nip.io/abcp/workspace-extension
-    tag: "20260920015730"
-    pullPolicy: IfNotPresent
-  # Default `worker-url` seeded into the agent's `cfg` KV for the bootstrap
-  # tenant (create-if-absent; a UI-set value always wins). Empty = derive from
-  # the in-cluster easyworker Service DNS.
-  workerUrl: ""
-  # Default `worker-token` seeded likewise (empty when the worker has auth off).
-  workerToken: ""
-  # Default `forgejo-url` / auth seeded into the cfg KV for the bootstrap
-  # tenant (create-if-absent; a UI-set value always wins). Points at the shared
-  # Forgejo (git.agent.fenjin.org, public Let's Encrypt cert). A PAT is the
-  # preferred credential; the token below is `root`'s `abcp-agent` PAT.
-  forgejoUrl: "https://git.agent.fenjin.org"
-  forgejoToken: "304f2b3ccdd85c6eb970806859489a4fcca6b86c"
-  forgejoUser: ""
-  forgejoPassword: ""
-  # Tenant the defaults are seeded for. `"*"` (default) seeds EVERY known
-  # tenant, so all tenants get a working workspace worker out of the box;
-  # a UI-set value always wins.
-  seedTenant: "*"
-  resources:
-    requests: { cpu: 50m, memory: 64Mi }
-    limits: { cpu: 500m, memory: 256Mi }
-
 # ---- persistence ----
 persistence:
   # hostPath root for /data (single-node dev cluster). DirectoryOrCreate.
