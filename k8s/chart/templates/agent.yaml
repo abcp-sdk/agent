@@ -55,12 +55,16 @@ spec:
             - name: DISABLED_TOOLS
               value: {{ .Values.agent.disabledTools | quote }}
             {{- end }}
-            {{- if .Values.workspace.enabled }}
-            # Seed the workspace extension's default worker endpoint into the
-            # `cfg` KV (create-if-absent; a UI-set value always wins) so the
-            # workspace tools work out of the box.
+            {{- if or .Values.workspace.enabled .Values.playwright.enabled }}
+            # Seed deployment-pinned extension config into the `cfg` KV
+            # (create-if-absent; a UI-set value always wins) so the tools work
+            # out of the box. `tenant: "*"` fans out to every known tenant.
             - name: AGENT_EXT_CONFIG_SEED
-              value: {{ list (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "worker-url" "value" (include "abcp-agent.easyworkerUrl" .)) (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "worker-token" "value" (.Values.workspace.workerToken | default .Values.easyworker.token)) | toJson | quote }}
+              value: {{ list
+                (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "worker-url" "value" (include "abcp-agent.easyworkerUrl" .))
+                (dict "tenant" .Values.workspace.seedTenant "extId" "workspace" "name" "worker-token" "value" (.Values.workspace.workerToken | default .Values.easyworker.token))
+                (dict "tenant" .Values.playwright.seedTenant "extId" "playwright" "name" "selenium-url" "value" .Values.playwright.seleniumUrl)
+                | toJson | quote }}
             {{- end }}
             {{- include "abcp-agent.objectStoreEnv" . | nindent 12 }}
           ports:

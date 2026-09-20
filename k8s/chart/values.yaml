@@ -98,10 +98,14 @@ playwright:
   enabled: true
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/playwright-extension
-    tag: "20260919164124"
+    tag: "20260920031518"
     pullPolicy: IfNotPresent
-  # Selenium WebDriver endpoint the extension drives over CDP.
+  # Selenium WebDriver endpoint the extension drives over CDP. Also seeded as
+  # the default `playwright.selenium-url` (create-if-absent; a UI-set value
+  # always wins) so the browser tools work out of the box.
   seleniumUrl: "http://selenium:4444"
+  # Tenant the default is seeded for. `"*"` (default) seeds EVERY known tenant.
+  seedTenant: "*"
   viewport: "1280x720"
   idleTimeoutMs: 600000
   maxContexts: 8
@@ -135,7 +139,9 @@ easyworker:
   enabled: true
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/easylab/easyworker
-    tag: "20260909052734"
+    # Auth-capable build (WORKER_TOKEN/WORKER_REQUIRE_AUTH honored); the chart
+    # sets WORKER_TOKEN => preauthorized, no enrollment.
+    tag: "20260912153224"
     pullPolicy: IfNotPresent
   service:
     name: easyworker
