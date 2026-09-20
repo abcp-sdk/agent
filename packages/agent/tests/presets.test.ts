@@ -54,9 +54,13 @@ describe('built-in system preset set', () => {
     expect(JSON.parse(def.tools)).toEqual([])
     expect(def.isSystem).toBe(true)
     const i18n = JSON.parse(def.systemPromptI18n)
-    expect(i18n.zh).toBe('你是一个有用的助手。')
-    expect(i18n.en).toBe('You are a helpful assistant.')
-    expect(def.systemPrompt).toBe('You are a helpful assistant.')
+    // Each locale carries an explicit "answer in this language" emphasis so the
+    // model's body AND reasoning follow the effective agent locale.
+    expect(i18n.zh).toContain('你是一个有用的助手。')
+    expect(i18n.zh).toContain('中文')
+    expect(i18n.en).toContain('You are a helpful assistant.')
+    expect(i18n.en).toContain('English')
+    expect(def.systemPrompt).toBe(i18n.en)
   })
 })
 
