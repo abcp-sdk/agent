@@ -74,7 +74,13 @@ spec:
   selector:
     app: easyworker
   ports:
+    # `http` keeps the plain :80 address (used by the seeded worker-url);
+    # `worker` exposes the raw container port too, matching the other
+    # easyworker services in the cluster.
     - name: http
       port: 80
+      targetPort: {{ .Values.easyworker.port }}
+    - name: worker
+      port: {{ .Values.easyworker.port }}
       targetPort: {{ .Values.easyworker.port }}
 {{- end }}

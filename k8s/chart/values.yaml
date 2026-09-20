@@ -140,7 +140,10 @@ easyworker:
   service:
     name: easyworker
     type: ClusterIP
-  port: 8080
+  # Container port the worker listens on. 48080 is the worker convention (the
+  # injected/in-cluster easyworker always listens on 48080); the Service still
+  # exposes 80 -> 48080 so `worker-url` can use the plain :80 address.
+  port: 48080
   workspace: /workspace
   # Bearer token the worker requires for every call. Non-empty => preauthorized
   # (no enrollment). The workspace extension is seeded with the SAME token so
