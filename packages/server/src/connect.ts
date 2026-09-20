@@ -3,6 +3,7 @@ import type { AgentDeps } from '@abcp-agent/agent'
 import { AgentService } from '@abcp-agent/schema'
 import { configHandlers } from './handlers/config.js'
 import { filesHandlers } from './handlers/files.js'
+import { identityHandlers } from './handlers/identity.js'
 import { messagesHandlers } from './handlers/messages.js'
 import { presetsHandlers } from './handlers/presets.js'
 import { providersHandlers } from './handlers/providers.js'
@@ -30,6 +31,7 @@ export function buildConnectRoutes(
       ...presetsHandlers(deps),
       ...configHandlers(deps),
       ...filesHandlers(deps),
+      ...identityHandlers(deps),
       // Domain slices are individually Partial-typed for contextual inference;
       // the composition is complete (every RPC) and verified by e2e.
     } as ServiceImpl<typeof AgentService>
