@@ -21,7 +21,7 @@ namespaceOverride: ""
 agent:
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent
-    tag: "20260919173920"
+    tag: "20260920015749"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -126,6 +126,48 @@ selenium:
   resources:
     requests: { cpu: 500m, memory: 2Gi }
     limits: { cpu: "2", memory: 4Gi }
+
+# ---- easyworker (sandbox command/file backend) ----
+# The worker the `workspace` extension drives over Connect RPC. Deployed here so
+# the standalone stack is self-contained; its URL is seeded as the default
+# `workspace.worker-url` (below) so the workspace tools work out of the box.
+easyworker:
+  enabled: true
+  image:
+    repository: forgejo.develop.10.199.64.20.nip.io/easylab/easyworker
+    tag: "20260909052734"
+    pullPolicy: IfNotPresent
+  service:
+    name: easyworker
+    type: ClusterIP
+  port: 8080
+  workspace: /workspace
+  # Bearer token the worker requires for every call. Non-empty => preauthorized
+  # (no enrollment). The workspace extension is seeded with the SAME token so
+  # the tools work out of the box. Set to "" to run with auth disabled (dev).
+  token: "devworker-token"
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+# ---- workspace extension (run commands / read-write files via easyworker) ----
+workspace:
+  enabled: true
+  image:
+    repository: forgejo.develop.10.199.64.20.nip.io/abcp/workspace-extension
+    tag: "20260920015730"
+    pullPolicy: IfNotPresent
+  # Default `worker-url` seeded into the agent's `cfg` KV for the bootstrap
+  # tenant (create-if-absent; a UI-set value always wins). Empty = derive from
+  # the in-cluster easyworker Service DNS.
+  workerUrl: ""
+  # Default `worker-token` seeded likewise (empty when the worker has auth off).
+  workerToken: ""
+  # Tenant the defaults are seeded for (must match agent.auth.bootstrapTenant).
+  seedTenant: "default"
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
 
 # ---- persistence ----
 persistence:

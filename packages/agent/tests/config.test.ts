@@ -24,3 +24,46 @@ describe('loadConfig disabledTools', () => {
     expect(cfg.disabledTools).toEqual([])
   })
 })
+
+describe('loadConfig extConfigSeed', () => {
+  it('parses a JSON array of seed entries', () => {
+    const cfg = loadConfig({
+      AGENT_EXT_CONFIG_SEED: JSON.stringify([
+        {
+          tenant: 'default',
+          extId: 'workspace',
+          name: 'worker-url',
+          value: 'http://easyworker.temp.svc.cluster.local:80',
+        },
+      ]),
+    } as NodeJS.ProcessEnv)
+    expect(cfg.extConfigSeed).toEqual([
+      {
+        tenant: 'default',
+        extId: 'workspace',
+        name: 'worker-url',
+        value: 'http://easyworker.temp.svc.cluster.local:80',
+      },
+    ])
+  })
+
+  it('defaults to empty and drops malformed entries', () => {
+    expect(loadConfig({} as NodeJS.ProcessEnv).extConfigSeed).toEqual([])
+    const cfg = loadConfig({
+      AGENT_EXT_CONFIG_SEED: JSON.stringify([
+        { tenant: 'default', extId: 'workspace' }, // missing name/value
+        { tenant: 'default', extId: 'w', name: 'n', value: 3 },
+      ]),
+    } as NodeJS.ProcessEnv)
+    expect(cfg.extConfigSeed).toEqual([
+      { tenant: 'default', extId: 'w', name: 'n', value: '3' },
+    ])
+  })
+
+  it('ignores invalid JSON without throwing', () => {
+    expect(
+      loadConfig({ AGENT_EXT_CONFIG_SEED: '{not json' } as NodeJS.ProcessEnv)
+        .extConfigSeed,
+    ).toEqual([])
+  })
+})

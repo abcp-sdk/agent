@@ -1,0 +1,47 @@
+{{- if .Values.workspace.enabled }}
+# Workspace extension server: runs commands / reads-writes files in the
+# easyworker sandbox, addressed by the configurable worker-url + worker-token.
+# Speaks only the abc protocol over NATS; the worker endpoint is resolved per
+# call from extension config (seeded to the in-cluster easyworker by default).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-extension
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: workspace-extension
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: workspace-extension
+  template:
+    metadata:
+      labels:
+        {{- include "abcp-agent.labels" . | nindent 8 }}
+        app: workspace-extension
+    spec:
+      securityContext: {}
+      containers:
+        - name: workspace-extension
+          image: {{ .Values.workspace.image.repository }}:{{ .Values.workspace.image.tag }}
+          imagePullPolicy: {{ .Values.workspace.image.pullPolicy }}
+          env:
+            - name: NATS_URL
+              value: {{ include "abcp-agent.natsUrl" . | quote }}
+            - name: PORT
+              value: "8080"
+          ports:
+            - { containerPort: 8080, protocol: TCP }
+          resources:
+            {{- toYaml .Values.workspace.resources | nindent 12 }}
+          livenessProbe:
+            httpGet: { path: /api/v1/health, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /api/v1/health, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+{{- end }}

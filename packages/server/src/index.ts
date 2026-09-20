@@ -136,6 +136,11 @@ async function main(): Promise<void> {
   // restore/user already set.
   for (const t of tenants) void Presets.seedDefaults(bus, t)
 
+  // Seed deployment-pinned EXTENSION config (e.g. the default workspace
+  // worker-url) into the `cfg` KV bucket. Create-if-absent: an existing value
+  // (a user set) always wins, so this is safe to run on every boot.
+  seedExtConfig(bus, config)
+
   // Mailbox retention: consumed rows are audit-only, prune past a fixed window.
   const retentionDays = 7
   if (retentionDays > 0) {
@@ -563,6 +568,43 @@ async function main(): Promise<void> {
 }
 
 void main()
+
+/**
+ * Seed deployment-pinned extension config into the `cfg` KV bucket.
+ *
+ * The SDK's ConfigAuthority reads/writes `cfg` keys `t.<tenant>.<extId>.<name>`
+ * with the envelope `{r,v}`. We seed ONLY when the key is absent (kvCreate
+ * fails on an existing key), so a value a user later sets via the UI — or a
+ * value already present from a prior boot — is never clobbered. This gives a
+ * fresh deployment a working default (e.g. the in-cluster easyworker URL)
+ * without any UI round-trip, while keeping the UI authoritative afterwards.
+ */
+function seedExtConfig(bus: Bus, config: ServerConfig): void {
+  for (const s of config.extConfigSeed) {
+    void (async () => {
+      try {
+        const key = tenantKVKey(s.tenant, `${s.extId}.${s.name}`)
+        const created = await bus.kvCreate(
+          'cfg',
+          key,
+          JSON.stringify({ r: 1, v: s.value }),
+          0,
+        )
+        if (created !== null) {
+          logger.info(
+            { tenant: s.tenant, extId: s.extId, name: s.name },
+            'seeded extension config default',
+          )
+        }
+      } catch (e) {
+        logger.warn(
+          { tenant: s.tenant, extId: s.extId, name: s.name, err: String(e) },
+          'extension config seed failed',
+        )
+      }
+    })()
+  }
+}
 
 /**
  * First-boot bootstrap: when the tenant table is empty and both

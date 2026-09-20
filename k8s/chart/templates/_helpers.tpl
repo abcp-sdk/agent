@@ -23,6 +23,15 @@ default
 {{- printf "nats://%s.%s.svc.cluster.local:4222" .Values.nats.service.name (include "abcp-agent.namespace" .) -}}
 {{- end -}}
 
+{{/* In-cluster easyworker URL the workspace extension drives (h1 Connect RPC). */}}
+{{- define "abcp-agent.easyworkerUrl" -}}
+{{- if .Values.workspace.workerUrl -}}
+{{- .Values.workspace.workerUrl -}}
+{{- else -}}
+{{- printf "http://%s.%s.svc.cluster.local:80" .Values.easyworker.service.name (include "abcp-agent.namespace" .) -}}
+{{- end -}}
+{{- end -}}
+
 {{/* S3 object-store env (durable file bytes leave NATS). */}}
 {{- define "abcp-agent.objectStoreEnv" -}}
 {{- if .Values.objectStore.enabled }}

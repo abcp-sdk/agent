@@ -1,0 +1,80 @@
+{{- if .Values.easyworker.enabled }}
+# easyworker: the sandbox command/file backend the `workspace` extension drives
+# over Connect RPC (worker.v1.WorkerService). Self-contained single Go binary.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: easyworker
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: easyworker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: easyworker
+  template:
+    metadata:
+      labels:
+        {{- include "abcp-agent.labels" . | nindent 8 }}
+        app: easyworker
+    spec:
+      securityContext: {}
+      containers:
+        - name: easyworker
+          image: {{ .Values.easyworker.image.repository }}:{{ .Values.easyworker.image.tag }}
+          imagePullPolicy: {{ .Values.easyworker.image.pullPolicy }}
+          env:
+            - name: WORKER_PORT
+              value: {{ .Values.easyworker.port | quote }}
+            - name: WORKER_WORKSPACE
+              value: {{ .Values.easyworker.workspace | quote }}
+            # Ephemeral job history (emptyDir): container restart keeps it, pod
+            # recreation wipes it. The workspace filesystem lives under
+            # WORKER_WORKSPACE, also ephemeral to the pod.
+            - name: WORKER_DB
+              value: /data/jobs.db
+            {{- if .Values.easyworker.token }}
+            # Preauthorized: install the token at boot (no enrollment).
+            - name: WORKER_TOKEN
+              value: {{ .Values.easyworker.token | quote }}
+            {{- else }}
+            # Dev: auth disabled.
+            - name: WORKER_REQUIRE_AUTH
+              value: "0"
+            {{- end }}
+          ports:
+            - { containerPort: {{ .Values.easyworker.port }}, protocol: TCP }
+          resources:
+            {{- toYaml .Values.easyworker.resources | nindent 12 }}
+          volumeMounts:
+            - { mountPath: /data, name: data }
+          livenessProbe:
+            httpGet: { path: /healthz, port: {{ .Values.easyworker.port }} }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /healthz, port: {{ .Values.easyworker.port }} }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.easyworker.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.easyworker.service.type }}
+  selector:
+    app: easyworker
+  ports:
+    - name: http
+      port: 80
+      targetPort: {{ .Values.easyworker.port }}
+{{- end }}

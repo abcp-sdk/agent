@@ -50,6 +50,22 @@ export interface ServerConfig {
   blobBackend: 'nats' | 's3'
   /** S3 settings (used only when blobBackend='s3'). */
   s3: S3Settings
+  /**
+   * One-time, idempotent seed of EXTENSION config values (the `cfg` KV bucket,
+   * key `t.<tenant>.<extId>.<name>`), applied at boot ONLY when a value is
+   * absent. This is how a deployment pins a default for a required extension
+   * knob (e.g. `workspace.worker-url`) without a UI round-trip. Set via env
+   * `AGENT_EXT_CONFIG_SEED` as a JSON array of
+   * `{ "tenant": "...", "extId": "...", "name": "...", "value": "..." }`.
+   * A later user set (or an existing value) always wins — seeding never
+   * overwrites.
+   */
+  extConfigSeed: Array<{
+    tenant: string
+    extId: string
+    name: string
+    value: string
+  }>
 }
 
 export interface S3Settings {
@@ -154,7 +170,43 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       forcePathStyle: or('S3_PATH_STYLE', 'true') !== 'false',
       prefix: or('S3_PREFIX', 'abcp'),
     },
+    extConfigSeed: parseExtConfigSeed(or('AGENT_EXT_CONFIG_SEED', '')),
   }
+}
+
+/**
+ * Parse `AGENT_EXT_CONFIG_SEED` (a JSON array of `{tenant,extId,name,value}`)
+ * into validated entries. A malformed value is DROPPED with a warning rather
+ * than crashing boot — a bad seed must never take the agent down.
+ */
+export function parseExtConfigSeed(raw: string): ServerConfig['extConfigSeed'] {
+  if (raw.trim() === '') return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    logger.warn({ err: String(e) }, 'AGENT_EXT_CONFIG_SEED: invalid JSON; ignored')
+    return []
+  }
+  if (!Array.isArray(parsed)) {
+    logger.warn('AGENT_EXT_CONFIG_SEED: expected a JSON array; ignored')
+    return []
+  }
+  const out: ServerConfig['extConfigSeed'] = []
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const e = entry as Record<string, unknown>
+    const tenant = String(e['tenant'] ?? '').trim()
+    const extId = String(e['extId'] ?? '').trim()
+    const name = String(e['name'] ?? '').trim()
+    const value = e['value']
+    if (tenant === '' || extId === '' || name === '' || value === undefined) {
+      logger.warn({ entry }, 'AGENT_EXT_CONFIG_SEED: entry missing fields; dropped')
+      continue
+    }
+    out.push({ tenant, extId, name, value: String(value) })
+  }
+  return out
 }
 
 /**
