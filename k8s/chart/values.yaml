@@ -21,7 +21,7 @@ namespaceOverride: ""
 agent:
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent
-    tag: "20260920024054"
+    tag: "20260920041356"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -70,7 +70,7 @@ webui:
   image:
     # Caddy with the webui static build baked into /srv.
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent-webui
-    tag: "20260920022747"
+    tag: "20260920041427"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -172,6 +172,13 @@ workspace:
   workerUrl: ""
   # Default `worker-token` seeded likewise (empty when the worker has auth off).
   workerToken: ""
+  # Default `forgejo-url` / auth seeded into the cfg KV for the bootstrap
+  # tenant (create-if-absent; a UI-set value always wins). Empty = repo-* tools
+  # stay disabled until configured in the UI.
+  forgejoUrl: ""
+  forgejoToken: ""
+  forgejoUser: ""
+  forgejoPassword: ""
   # Tenant the defaults are seeded for. `"*"` (default) seeds EVERY known
   # tenant, so all tenants get a working workspace worker out of the box;
   # a UI-set value always wins.
