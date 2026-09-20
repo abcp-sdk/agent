@@ -66,7 +66,7 @@ webui:
   image:
     # Caddy with the webui static build baked into /srv.
     repository: git.agent.fenjin.org/abcp/agent-webui
-    tag: "20260920130915"
+    tag: "20260920133325"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -113,7 +113,7 @@ worker:
   enabled: true
   image:
     repository: git.agent.fenjin.org/root/easyworker
-    tag: "20260912153224"
+    tag: "alpine3.24-v0.5.2-12-ge6e069d"
     pullPolicy: IfNotPresent
   service:
     name: worker
