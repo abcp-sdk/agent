@@ -1,0 +1,81 @@
+{{- if .Values.worker.enabled }}
+# Fixed easyworker sandbox the `worker` extension drives over Connect RPC
+# (worker.v1.WorkerService). Ephemeral (emptyDir): the workspace and job
+# history are wiped when the pod is recreated.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: worker }
+  template:
+    metadata:
+      labels:
+        {{- include "abcp-agent.labels" . | nindent 8 }}
+        app: worker
+    spec:
+      securityContext: {}
+      containers:
+        - name: worker
+          image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          env:
+            - name: WORKER_PORT
+              value: {{ .Values.worker.port | quote }}
+            - name: WORKER_WORKSPACE
+              value: {{ .Values.worker.workspace | quote }}
+            - name: WORKER_DB
+              value: /data/jobs.db
+            {{- if .Values.worker.token }}
+            # Preauthorized: install the token at boot (no enrollment).
+            - name: WORKER_TOKEN
+              value: {{ .Values.worker.token | quote }}
+            {{- else }}
+            # Dev: auth disabled.
+            - name: WORKER_REQUIRE_AUTH
+              value: "0"
+            {{- end }}
+          ports:
+            - { containerPort: {{ .Values.worker.port }}, protocol: TCP }
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - { mountPath: /data, name: data }
+          livenessProbe:
+            httpGet: { path: /healthz, port: {{ .Values.worker.port }} }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /healthz, port: {{ .Values.worker.port }} }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.worker.service.name }}
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.worker.service.type }}
+  selector: { app: worker }
+  ports:
+    # `http` keeps the plain :80 address (used by the seeded worker-url);
+    # `worker` exposes the raw container port too.
+    - name: http
+      port: 80
+      targetPort: {{ .Values.worker.port }}
+    - name: worker
+      port: {{ .Values.worker.port }}
+      targetPort: {{ .Values.worker.port }}
+{{- end }}

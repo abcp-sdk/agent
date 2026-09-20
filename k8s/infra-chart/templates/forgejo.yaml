@@ -1,0 +1,112 @@
+{{- $svc := .Values.forgejo -}}
+{{- $g := .Values.global -}}
+{{- if $svc.enabled }}
+{{- $fenjinHost := "git.agent.fenjin.org" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgejo-config
+  namespace: {{ .Values.namespace }}
+data:
+  app.ini: |
+    APP_NAME = Agent Forgejo
+    RUN_MODE = prod
+    RUN_USER = git
+
+    [server]
+    DOMAIN = {{ $fenjinHost }}
+    HTTP_PORT = {{ $svc.port }}
+    ROOT_URL = https://{{ $fenjinHost }}
+    DISABLE_SSH = true
+    SSH_DOMAIN = {{ $fenjinHost }}
+    SSH_PORT = 22
+    LFS_START_SERVER = true
+
+    [database]
+    DB_TYPE = sqlite3
+    PATH = /data/gitea/gitea.db
+
+    [security]
+    INSTALL_LOCK = true
+    REVERSE_PROXY_TRUSTED_PROXIES = *
+
+    [service]
+    DISABLE_REGISTRATION = true
+
+    [mailer]
+    ENABLED = false
+
+    [packages]
+    ENABLED = true
+
+    [log]
+    MODE = file
+    LEVEL = info
+    ROOT_PATH = /data/gitea/log
+
+    [lfs]
+    PATH = /data/gitea/data/lfs
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forgejo
+  namespace: {{ .Values.namespace }}
+  labels: { app: forgejo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: forgejo } }
+  template:
+    metadata: { labels: { app: forgejo } }
+    spec:
+      initContainers:
+      - name: forgejo-init
+        image: {{ $svc.image }}
+        imagePullPolicy: {{ $g.imagePullPolicy }}
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          mkdir -p /data/gitea/conf /data/gitea/data /data/gitea/log /data/git/gitea-repositories /data/gitea/tmp
+          cp /config/app.ini /data/gitea/conf/app.ini
+          chown -R 1000:1000 /data
+          su git -c "GITEA_WORK_DIR=/data/gitea /usr/local/bin/gitea admin user create --admin --username {{ $svc.admin.username }} --password {{ $svc.admin.password }} --email {{ $svc.admin.email }} --must-change-password=false" 2>/dev/null || true
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: config
+          mountPath: /config
+      containers:
+      - name: forgejo
+        image: {{ $svc.image }}
+        imagePullPolicy: {{ $g.imagePullPolicy }}
+        env:
+        - name: USER
+          value: git
+        - name: GITEA_CUSTOM
+          value: /data/gitea
+        {{- include "agent.proxyEnv" . | nindent 8 }}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        hostPath:
+          path: {{ $svc.dataPath }}
+          type: DirectoryOrCreate
+      - name: config
+        configMap:
+          name: forgejo-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git
+  namespace: {{ .Values.namespace }}
+  labels: { app: forgejo }
+spec:
+  selector: { app: forgejo }
+  ports:
+  - name: http
+    port: 80
+    targetPort: {{ $svc.port }}
+{{- end }}

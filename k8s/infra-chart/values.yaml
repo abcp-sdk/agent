@@ -1,0 +1,76 @@
+namespace: agent
+
+global:
+  domain: 10.199.64.20.nip.io
+  imagePullPolicy: IfNotPresent
+  proxy:
+    http: http://mihomo.develop.svc.cluster.local:7890
+    https: http://mihomo.develop.svc.cluster.local:7890
+    noProxy: localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc.cluster.local,.svc
+  storageRoot: /home/develop/Agent/Volumes
+  credentials:
+    rootUsername: root
+    rootPassword: devpassword
+
+# git (forgejo) — 官方镜像名
+forgejo:
+  enabled: true
+  image: codeberg.org/forgejo/forgejo:16.0.5
+  port: 3000
+  dataPath: /home/develop/Agent/Volumes/FORGEJO
+  admin:
+    username: root
+    password: devpassword
+    email: root@agent.local
+
+# s3 (garage) — 官方镜像名
+garage:
+  enabled: true
+  image: docker.io/dxflrs/garage:v2.4.1
+  dataPath: /home/develop/Agent/Volumes/GARAGE
+  ports:
+    s3: 3900
+    web: 3902
+    admin: 3903
+    rpc: 3901
+  rpcSeed: "789d13f8163771913c733a10643d734d90b3c205f34fc95f0025da14c37717cf"
+  adminToken: "devpassword"
+  metricsToken: "IEM6m6tQ1D4yDnz4CrDLWsOvwgEhKvrTm3DsTfAiq1o="
+  s3Region: "garage"
+  replicationFactor: 1
+
+# nats — 官方镜像名
+nats:
+  enabled: true
+  image: docker.io/library/nats:latest
+  ports:
+    client: 4222
+    monitor: 8222
+  dataPath: /home/develop/Agent/Volumes/NATS
+  # Per-application JetStream account the standalone agent connects as.
+  agent:
+    user: agent
+    password: devpassword
+
+# postgres — 官方镜像名
+postgres:
+  enabled: true
+  image: docker.io/library/postgres:latest
+  port: 5432
+  dataPath: /home/develop/Agent/Volumes/POSTGRES
+  username: root
+  password: devpassword
+
+# selenium — 官方镜像名
+selenium:
+  enabled: true
+  image: docker.io/selenium/standalone-chrome:4.49.0
+  port: 4444
+  dataPath: /home/develop/Agent/Volumes/SELENIUM
+
+# buildkitd — 官方镜像名
+buildkitd:
+  enabled: true
+  image: docker.io/moby/buildkit:v0.32.2-rootless
+  port: 1234
+  dataPath: /home/develop/Agent/Volumes/BUILDKIT

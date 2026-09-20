@@ -1,0 +1,50 @@
+{{- $svc := .Values.postgres -}}
+{{- $g := .Values.global -}}
+{{- if $svc.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Values.namespace }}
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+      - name: postgres
+        image: {{ $svc.image }}
+        imagePullPolicy: {{ $g.imagePullPolicy }}
+        env:
+        - name: POSTGRES_USER
+          value: {{ $svc.username | quote }}
+        - name: POSTGRES_PASSWORD
+          value: {{ $svc.password | quote }}
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        {{- include "agent.proxyEnv" . | nindent 8 }}
+        ports:
+        - { name: pgsql, containerPort: {{ $svc.port }} }
+        volumeMounts:
+        - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+      - name: data
+        hostPath:
+          path: {{ $svc.dataPath }}
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Values.namespace }}
+  labels: { app: postgres }
+spec:
+  selector: { app: postgres }
+  ports:
+  - { name: pgsql, port: {{ $svc.port }}, targetPort: {{ $svc.port }} }
+{{- end }}

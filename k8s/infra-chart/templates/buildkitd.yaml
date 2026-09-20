@@ -1,0 +1,113 @@
+{{- $svc := .Values.buildkitd -}}
+{{- $g := .Values.global -}}
+{{- if $svc.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: {{ .Values.namespace }}
+data:
+  buildkitd.toml: |
+    # docker.io is reached through the HTTPS_PROXY (mihomo); no in-cluster
+    # mirror is used. git.agent.fenjin.org is dialed DIRECTLY (NO_PROXY) and
+    # presents a public Let's Encrypt cert, so it needs no registry stanza.
+    #
+    # Build artifacts + registry cache are pushed to git.agent.fenjin.org/root/.
+    # Auth for the push is provided via DOCKER_CONFIG (buildkitd-docker-config).
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: buildkitd-docker-config
+  namespace: {{ .Values.namespace }}
+stringData:
+  config.json: |
+    {
+      "auths": {
+        "git.agent.fenjin.org": { "auth": "{{ printf "%s:%s" $g.credentials.rootUsername $g.credentials.rootPassword | b64enc }}" }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd
+  namespace: {{ .Values.namespace }}
+  labels: { app: buildkitd }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: buildkitd } }
+  template:
+    metadata: { labels: { app: buildkitd } }
+    spec:
+      containers:
+      - name: buildkitd
+        image: {{ $svc.image }}
+        imagePullPolicy: {{ $g.imagePullPolicy }}
+        args:
+        - "--oci-worker-no-process-sandbox"
+        - "--addr"
+        - "tcp://0.0.0.0:{{ $svc.port }}"
+        - "--config"
+        - /home/user/.config/buildkit/buildkitd.toml
+        env:
+        - name: HOME
+          value: /home/user
+        - name: XDG_RUNTIME_DIR
+          value: /run/user/1000
+        - name: DOCKER_CONFIG
+          value: /home/user/.docker
+        - name: http_proxy
+          value: {{ $g.proxy.http | quote }}
+        - name: https_proxy
+          value: {{ $g.proxy.https | quote }}
+        - name: HTTP_PROXY
+          value: {{ $g.proxy.http | quote }}
+        - name: HTTPS_PROXY
+          value: {{ $g.proxy.https | quote }}
+        - name: no_proxy
+          value: {{ printf "%s,git.agent.fenjin.org,forgejo.develop.10.199.64.20.nip.io" $g.proxy.noProxy | quote }}
+        - name: NO_PROXY
+          value: {{ printf "%s,git.agent.fenjin.org,forgejo.develop.10.199.64.20.nip.io" $g.proxy.noProxy | quote }}
+        ports:
+        - { name: buildkit, containerPort: {{ $svc.port }} }
+        securityContext:
+          # Rootless (moby/buildkit:*-rootless): no privileged required.
+          # Ubuntu sets kernel.apparmor_restrict_unprivileged_userns=1, which
+          # blocks user-namespace creation for the default profile, so the
+          # rootlesskit entrypoint needs an unconfined AppArmor profile.
+          runAsUser: 1000
+          runAsGroup: 1000
+          appArmorProfile:
+            type: Unconfined
+        resources:
+          limits: { cpu: "2", memory: 2Gi }
+          requests: { cpu: 200m, memory: 256Mi }
+        volumeMounts:
+        - { name: cfg, mountPath: /home/user/.config/buildkit/buildkitd.toml, subPath: buildkitd.toml, readOnly: true }
+        - { name: docker, mountPath: /home/user/.docker/config.json, subPath: config.json, readOnly: true }
+        - { name: run, mountPath: /run/user/1000 }
+        - { name: data, mountPath: /home/develop/Agent/Volumes/BUILDKIT }
+      volumes:
+      - name: cfg
+        configMap: { name: buildkitd-config }
+      - name: docker
+        secret: { secretName: buildkitd-docker-config }
+      - name: run
+        emptyDir: {}
+      - name: data
+        hostPath:
+          path: {{ $svc.dataPath }}
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkitd
+  namespace: {{ .Values.namespace }}
+  labels: { app: buildkitd }
+spec:
+  selector: { app: buildkitd }
+  ports:
+  - { name: buildkit, port: {{ $svc.port }}, targetPort: {{ $svc.port }} }
+{{- end }}

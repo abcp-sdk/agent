@@ -1,0 +1,63 @@
+{{- $svc := .Values.selenium -}}
+{{- $g := .Values.global -}}
+{{- if $svc.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: selenium
+  namespace: {{ .Values.namespace }}
+  labels: { app: selenium }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: selenium } }
+  template:
+    metadata: { labels: { app: selenium } }
+    spec:
+      containers:
+      - name: selenium
+        image: {{ $svc.image }}
+        imagePullPolicy: {{ $g.imagePullPolicy }}
+        env:
+        - name: SE_NODE_MAX_SESSIONS
+          value: "8"
+        - name: SE_NODE_OVERRIDE_MAX_SESSIONS
+          value: "true"
+        - name: SE_NODE_SESSION_TIMEOUT
+          value: "900"
+        - name: SE_ENABLE_MANAGED_DOWNLOADS
+          value: "false"
+        {{- include "agent.proxyEnv" . | nindent 8 }}
+        ports:
+        - { name: http, containerPort: {{ $svc.port }} }
+        readinessProbe:
+          httpGet: { path: /status, port: http }
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: { path: /status, port: http }
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        volumeMounts:
+        - { name: dshm, mountPath: /dev/shm }
+        - { name: data, mountPath: /home/seluser/Downloads }
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Gi
+      - name: data
+        hostPath:
+          path: {{ $svc.dataPath }}
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: selenium
+  namespace: {{ .Values.namespace }}
+  labels: { app: selenium }
+spec:
+  selector: { app: selenium }
+  ports:
+  - { name: http, port: {{ $svc.port }}, targetPort: {{ $svc.port }} }
+{{- end }}

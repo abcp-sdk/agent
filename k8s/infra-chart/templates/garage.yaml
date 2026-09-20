@@ -1,0 +1,96 @@
+{{- $svc := .Values.garage -}}
+{{- $g := .Values.global -}}
+{{- if $svc.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: {{ .Values.namespace }}
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "sqlite"
+
+    replication_factor = {{ $svc.replicationFactor }}
+
+    rpc_bind_addr = "[::]:{{ $svc.ports.rpc }}"
+    rpc_secret = "{{ $svc.rpcSeed }}"
+
+    [s3_api]
+    s3_region = "{{ $svc.s3Region }}"
+    api_bind_addr = "[::]:{{ $svc.ports.s3 }}"
+    root_domain = ".s3.agent.fenjin.org"
+
+    [s3_web]
+    bind_addr = "[::]:{{ $svc.ports.web }}"
+    root_domain = ".web.agent.fenjin.org"
+
+    [admin]
+    api_bind_addr = "[::]:{{ $svc.ports.admin }}"
+    admin_token = "{{ $svc.adminToken }}"
+    metrics_token = "{{ $svc.metricsToken }}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage
+  namespace: {{ .Values.namespace }}
+  labels: { app: garage }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: garage } }
+  template:
+    metadata: { labels: { app: garage } }
+    spec:
+      containers:
+      - name: garage
+        image: {{ $svc.image }}
+        imagePullPolicy: {{ $g.imagePullPolicy }}
+        command: ["/garage"]
+        args: ["-c", "/etc/garage/garage.toml", "server"]
+        env:
+        {{- include "agent.proxyEnv" . | nindent 8 }}
+        ports:
+        - { name: s3, containerPort: {{ $svc.ports.s3 }} }
+        - { name: web, containerPort: {{ $svc.ports.web }} }
+        - { name: admin, containerPort: {{ $svc.ports.admin }} }
+        - { name: rpc, containerPort: {{ $svc.ports.rpc }} }
+        readinessProbe:
+          httpGet: { path: /health, port: {{ $svc.ports.admin }} }
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - { name: config, mountPath: /etc/garage, readOnly: true }
+        - { name: data, mountPath: /var/lib/garage }
+      volumes:
+      - name: config
+        configMap: { name: garage-config }
+      - name: data
+        hostPath:
+          path: {{ $svc.dataPath }}
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  namespace: {{ .Values.namespace }}
+  labels: { app: garage }
+spec:
+  selector: { app: garage }
+  ports:
+  - { name: http, port: 80, targetPort: {{ $svc.ports.s3 }} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: {{ .Values.namespace }}
+  labels: { app: garage }
+spec:
+  selector: { app: garage }
+  ports:
+  - { name: http, port: 80, targetPort: {{ $svc.ports.web }} }
+{{- end }}

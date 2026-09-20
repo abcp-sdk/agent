@@ -1,0 +1,70 @@
+{{- $svc := .Values.nats -}}
+{{- $g := .Values.global -}}
+{{- if $svc.enabled }}
+# One NATS account per application, so each has its OWN JetStream domain and
+# cannot see another's streams/KV/objects. The standalone agent connects as
+# account `agent` (user/pass); other apps get their own account later.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-config
+  namespace: {{ .Values.namespace }}
+data:
+  nats.conf: |
+    port: {{ $svc.ports.client }}
+    http_port: {{ $svc.ports.monitor }}
+    jetstream {
+      store_dir: "/data/nats"
+    }
+    accounts {
+      agent {
+        jetstream: enabled
+        users: [ { user: "{{ $svc.agent.user }}", password: "{{ $svc.agent.password }}" } ]
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  namespace: {{ .Values.namespace }}
+  labels: { app: nats }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: nats } }
+  template:
+    metadata: { labels: { app: nats } }
+    spec:
+      containers:
+      - name: nats
+        image: {{ $svc.image }}
+        imagePullPolicy: {{ $g.imagePullPolicy }}
+        args: ["-c", "/etc/nats/nats.conf"]
+        env:
+        {{- include "agent.proxyEnv" . | nindent 8 }}
+        ports:
+        - { name: client, containerPort: {{ $svc.ports.client }} }
+        - { name: monitor, containerPort: {{ $svc.ports.monitor }} }
+        volumeMounts:
+        - { name: data, mountPath: /data }
+        - { name: config, mountPath: /etc/nats, readOnly: true }
+      volumes:
+      - name: data
+        hostPath:
+          path: {{ $svc.dataPath }}
+          type: DirectoryOrCreate
+      - name: config
+        configMap: { name: nats-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: {{ .Values.namespace }}
+  labels: { app: nats }
+spec:
+  selector: { app: nats }
+  ports:
+  - { name: client, port: {{ $svc.ports.client }}, targetPort: {{ $svc.ports.client }} }
+  - { name: monitor, port: {{ $svc.ports.monitor }}, targetPort: {{ $svc.ports.monitor }} }
+{{- end }}

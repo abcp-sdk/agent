@@ -18,29 +18,32 @@ default
 {{- end -}}
 {{- end -}}
 
-{{/* In-cluster NATS URL (the standalone broker Deployment). */}}
+{{/* In-cluster NATS URL for the per-application `agent` account (infra). */}}
 {{- define "abcp-agent.natsUrl" -}}
-{{- printf "nats://%s.%s.svc.cluster.local:4222" .Values.nats.service.name (include "abcp-agent.namespace" .) -}}
+{{- printf "nats://%s:%s@%s:%v" .Values.infra.nats.user .Values.infra.nats.password .Values.infra.nats.host .Values.infra.nats.port -}}
+{{- end -}}
+
+{{/* In-cluster easyworker URL the worker extension drives (h1 Connect RPC). */}}
+{{- define "abcp-agent.workerUrl" -}}
+{{- printf "http://%s.%s.svc.cluster.local:80" .Values.worker.service.name (include "abcp-agent.namespace" .) -}}
 {{- end -}}
 
 {{/* S3 object-store env (durable file bytes leave NATS). */}}
 {{- define "abcp-agent.objectStoreEnv" -}}
-{{- if .Values.objectStore.enabled }}
 - name: AGENT_BLOB_BACKEND
   value: "s3"
 - name: S3_BUCKET
-  value: {{ .Values.objectStore.bucket | quote }}
+  value: {{ .Values.infra.s3.bucket | quote }}
 - name: S3_REGION
-  value: {{ .Values.objectStore.region | quote }}
+  value: {{ .Values.infra.s3.region | quote }}
 - name: S3_ENDPOINT
-  value: {{ .Values.objectStore.endpoint | quote }}
+  value: {{ .Values.infra.s3.endpoint | quote }}
 - name: S3_ACCESS_KEY
-  value: {{ .Values.objectStore.accessKey | quote }}
+  value: {{ .Values.infra.s3.accessKey | quote }}
 - name: S3_SECRET_KEY
-  value: {{ .Values.objectStore.secretKey | quote }}
+  value: {{ .Values.infra.s3.secretKey | quote }}
 - name: S3_PATH_STYLE
-  value: {{ .Values.objectStore.pathStyle | toString | quote }}
+  value: {{ .Values.infra.s3.pathStyle | toString | quote }}
 - name: S3_PREFIX
-  value: {{ .Values.objectStore.prefix | quote }}
-{{- end }}
+  value: {{ .Values.infra.s3.prefix | quote }}
 {{- end -}}

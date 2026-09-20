@@ -30,7 +30,7 @@ spec:
             - name: NATS_URL
               value: {{ include "abcp-agent.natsUrl" . | quote }}
             - name: PLAYWRIGHT_SELENIUM_URL
-              value: {{ .Values.playwright.seleniumUrl | quote }}
+              value: {{ .Values.infra.seleniumUrl | quote }}
             - name: PLAYWRIGHT_BROWSER
               value: chrome
             - name: PLAYWRIGHT_VIEWPORT

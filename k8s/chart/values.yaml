@@ -1,27 +1,46 @@
 # Values for the standalone ABCP agent stack.
 #
-# Topology (one namespace):
-#   - `standalone-agent` Pod: NATS sidecar + agent (h2c only). Exposed by the
-#     `standalone-agent` Service; in-cluster clients (extensions, gateways)
-#     connect over h2c.
-#   - `agent-web` Pod: a Caddy aggregator (h1 only). Serves the webui static
-#     build and reverse-proxies `/agent.v1.*` to the agent over h2c, so the
-#     browser is SAME-ORIGIN with the API (no CORS, no domain entry). Exposed by
-#     the `agent` Service.
-#   - `playwright-extension` Pod: browser tool server over NATS.
-#   - `selenium` Pod: standalone-chrome the playwright extension drives.
+# This chart is AGENT-SIDE ONLY. Shared infrastructure (NATS, S3/Garage,
+# Forgejo, Selenium, buildkitd, Postgres) lives in the separate `infra-chart`
+# and is consumed here purely over Service DNS. Nothing infra-ish is deployed
+# from this chart.
 #
-# The public domains are owned by the cluster edge (outside this chart):
-#   standalone-agent.<suffix> -> standalone-agent Service (h2c)
-#   agent.<suffix>            -> agent Service (h1, webui + proxied RPC)
+# Topology (namespace `agent`, co-located with the infra release):
+#   - `standalone-agent` Pod: agent (h2c) + in-process bundled extension.
+#   - `agent` Pod: Caddy aggregator (h1) serving the webui and reverse-proxying
+#     `/agent.v1.*` to the agent over h2c (same-origin browser API).
+#   - `playwright-extension` Pod: browser tool server (drives infra Selenium).
+#   - `worker` Pod: a fixed easyworker sandbox the `worker-extension` drives.
+#   - `worker-extension` Pod: run commands / read-write files in that worker.
 
 namespaceOverride: ""
 
-# ---- agent (h2c) + NATS sidecar ----
+# ---- shared infra endpoints (the `infra` release, same namespace) ----
+# All references are in-cluster Service DNS; the infra chart owns the pods.
+infra:
+  # NATS account `agent` (per-application JetStream isolation).
+  nats:
+    host: "nats.agent.svc.cluster.local"
+    port: 4222
+    user: "agent"
+    password: "devpassword"
+  # Garage S3 (durable file bytes). In-cluster plain HTTP.
+  s3:
+    bucket: "standalone-agent"
+    region: "garage"
+    endpoint: "http://s3.agent.svc.cluster.local"
+    accessKey: "GK66c166f3602ec6b5e762b21c"
+    secretKey: "685de4030127ea45b789396a1113e3b54f329e8e028ed4f47d0fbcd02da58c22"
+    pathStyle: true
+    prefix: "abcp"
+  # Selenium WebDriver the playwright extension drives over CDP.
+  seleniumUrl: "http://selenium.agent.svc.cluster.local:4444"
+
+# ---- agent (h2c) ----
 agent:
   image:
-    repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent
-    tag: "20260920041356"
+    repository: git.agent.fenjin.org/abcp/agent
+    tag: "20260920123450"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -38,38 +57,15 @@ agent:
     adminToken: "dev-admin-token"
     bootstrapTenant: "default"
     bootstrapToken: "devtenanttoken"
-  # Extra CA (PEM in a ConfigMap) trusted for provider TLS (self-signed dev CA).
-  caConfigMap: "standalone-agent-ca"
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "1", memory: 1Gi }
-
-# ---- NATS (JetStream KV/objects; a SEPARATE Deployment) ----
-# Its own Pod so a NATS restart never takes the agent down with it and the
-# broker's lifecycle (and JetStream storage) is independent of the agent.
-nats:
-  image:
-    repository: forgejo.develop.10.199.64.20.nip.io/easylab/nats
-    tag: latest
-    pullPolicy: IfNotPresent
-  # Service other workloads address (agent, extensions) by DNS:
-  # nats://<name>.<ns>.svc.cluster.local:4222
-  service:
-    name: standalone-agent-nats
-    type: ClusterIP
-  port: 4222
-  monitorPort: 8222
-  # hostPath subdirectory (under persistence.hostPath) backing JetStream.
-  dataSubPath: nats
-  resources:
-    requests: { cpu: 100m, memory: 64Mi }
-    limits: { cpu: 500m, memory: 512Mi }
 
 # ---- webui + Caddy aggregator (h1) ----
 webui:
   image:
     # Caddy with the webui static build baked into /srv.
-    repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent-webui
+    repository: git.agent.fenjin.org/abcp/agent-webui
     tag: "20260920041908"
     pullPolicy: IfNotPresent
   port: 8080
@@ -80,32 +76,13 @@ webui:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
 
-# ---- object storage (durable file bytes) ----
-# Enabled: durable file bytes live in a Garage S3 bucket and file metadata
-# in the agent's `agent_files` DB table, so file state leaves NATS.
-# Garage at s3.agent.fenjin.org presents a public Let's Encrypt cert, so no
-# extra CA / insecure flag is needed (the node runtime trusts the system store).
-objectStore:
-  enabled: true
-  bucket: "agent"
-  region: "garage"
-  endpoint: "https://s3.agent.fenjin.org"
-  accessKey: "GK137c914b4dda23e829499026"
-  secretKey: "baf816e7cc68df84a1dcf6194bba26c99e032a02f277dea91136c8102e6a8cb6"
-  pathStyle: true
-  prefix: "abcp"
-
 # ---- playwright browser-automation extension (separate server) ----
 playwright:
   enabled: true
   image:
-    repository: forgejo.develop.10.199.64.20.nip.io/abcp/playwright-extension
-    tag: "20260920031518"
+    repository: git.agent.fenjin.org/abcp/playwright-extension
+    tag: "20260920113616"
     pullPolicy: IfNotPresent
-  # Selenium WebDriver endpoint the extension drives over CDP. Also seeded as
-  # the default `playwright.selenium-url` (create-if-absent; a UI-set value
-  # always wins) so the browser tools work out of the box.
-  seleniumUrl: "http://selenium:4444"
   # Tenant the default is seeded for. `"*"` (default) seeds EVERY known tenant.
   seedTenant: "*"
   viewport: "1280x720"
@@ -115,28 +92,47 @@ playwright:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: "1", memory: 512Mi }
 
-# ---- Selenium standalone-chrome (browser host) ----
-selenium:
+# ---- fixed easyworker sandbox (worker-extension backend) ----
+worker:
   enabled: true
   image:
-    repository: forgejo.develop.10.199.64.20.nip.io/abcp/selenium-standalone-chrome
-    tag: "4.49.0"
+    repository: git.agent.fenjin.org/root/easyworker
+    tag: "20260912153224"
     pullPolicy: IfNotPresent
   service:
-    name: selenium
+    name: worker
     type: ClusterIP
-  port: 4444
-  maxSessions: 8
-  sessionTimeoutSecs: 900
-  shmSizeLimit: 1Gi
+  # Container port the worker listens on (the easyworker convention); the
+  # Service exposes 80 -> this so `worker-url` uses the plain :80 address.
+  port: 48080
+  workspace: /workspace
+  # Bearer the worker requires; the extension is seeded with the SAME token.
+  token: "devworker-token"
   resources:
-    requests: { cpu: 500m, memory: 2Gi }
-    limits: { cpu: "2", memory: 4Gi }
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+# ---- worker extension (run commands / read-write files via easyworker) ----
+workerExtension:
+  enabled: true
+  image:
+    repository: git.agent.fenjin.org/abcp/worker-extension
+    tag: "20260920113616"
+    pullPolicy: IfNotPresent
+  # Tenant the worker-url/-token defaults are seeded for. `"*"` = every tenant.
+  seedTenant: "*"
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
 
 # ---- persistence ----
+# The agent keeps its sqlite DB on a hostPath (sessions/messages survive
+# restarts). Set persistence.enabled=false to run fully ephemeral.
 persistence:
+  enabled: true
   # hostPath root for /data (single-node dev cluster). DirectoryOrCreate.
   hostPath: /home/develop/.easylab
+  subPath: agent-data
   type: DirectoryOrCreate
 
 # ---- RBAC ----

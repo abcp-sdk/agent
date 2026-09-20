@@ -37,10 +37,6 @@ spec:
             # aggregator) speak cleartext HTTP/2 prior-knowledge.
             - name: HTTP_PROTOCOL
               value: h2c
-            {{- if .Values.agent.caConfigMap }}
-            - name: NODE_EXTRA_CA_CERTS
-              value: /etc/ssl/certs/dev-ca.crt
-            {{- end }}
             - name: AGENT_CORS_ORIGIN
               value: {{ .Values.agent.corsOrigin | quote }}
             - name: AGENT_AUTH_MODE
@@ -55,13 +51,15 @@ spec:
             - name: DISABLED_TOOLS
               value: {{ .Values.agent.disabledTools | quote }}
             {{- end }}
-            {{- if .Values.playwright.enabled }}
             # Seed deployment-pinned extension config into the `cfg` KV
             # (create-if-absent; a UI-set value always wins) so the tools work
             # out of the box. `tenant: "*"` fans out to every known tenant.
+            {{- if or .Values.playwright.enabled .Values.workerExtension.enabled }}
             - name: AGENT_EXT_CONFIG_SEED
               value: {{ list
-                (dict "tenant" .Values.playwright.seedTenant "extId" "playwright" "name" "selenium-url" "value" .Values.playwright.seleniumUrl)
+                (dict "tenant" .Values.playwright.seedTenant "extId" "playwright" "name" "selenium-url" "value" .Values.infra.seleniumUrl)
+                (dict "tenant" .Values.workerExtension.seedTenant "extId" "worker" "name" "worker-url" "value" (include "abcp-agent.workerUrl" .))
+                (dict "tenant" .Values.workerExtension.seedTenant "extId" "worker" "name" "worker-token" "value" .Values.worker.token)
                 | toJson | quote }}
             {{- end }}
             {{- include "abcp-agent.objectStoreEnv" . | nindent 12 }}
@@ -69,21 +67,17 @@ spec:
             - { containerPort: {{ .Values.agent.port }}, protocol: TCP }
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
+          {{- if .Values.persistence.enabled }}
           volumeMounts:
-            - { mountPath: /data, name: data, subPath: agent-data }
-            {{- if .Values.agent.caConfigMap }}
-            - { mountPath: /etc/ssl/certs/dev-ca.crt, name: ca, subPath: ca.crt, readOnly: true }
-            {{- end }}
+            - { mountPath: /data, name: data, subPath: {{ .Values.persistence.subPath }} }
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
       volumes:
         - name: data
           hostPath:
             path: {{ .Values.persistence.hostPath }}
             type: {{ .Values.persistence.type }}
-        {{- if .Values.agent.caConfigMap }}
-        - name: ca
-          configMap:
-            name: {{ .Values.agent.caConfigMap }}
-        {{- end }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

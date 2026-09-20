@@ -1,0 +1,6 @@
+apiVersion: v2
+name: infra
+description: infra namespace - forgejo(git) + nats + selenium + postgres + garage(s3) + buildkitd
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
