@@ -21,7 +21,7 @@ namespaceOverride: ""
 agent:
   image:
     repository: forgejo.develop.10.199.64.20.nip.io/abcp/agent
-    tag: "20260920015749"
+    tag: "20260920024054"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -163,8 +163,10 @@ workspace:
   workerUrl: ""
   # Default `worker-token` seeded likewise (empty when the worker has auth off).
   workerToken: ""
-  # Tenant the defaults are seeded for (must match agent.auth.bootstrapTenant).
-  seedTenant: "default"
+  # Tenant the defaults are seeded for. `"*"` (default) seeds EVERY known
+  # tenant, so all tenants get a working workspace worker out of the box;
+  # a UI-set value always wins.
+  seedTenant: "*"
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { cpu: 500m, memory: 256Mi }

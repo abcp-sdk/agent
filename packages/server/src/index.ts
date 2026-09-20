@@ -138,8 +138,9 @@ async function main(): Promise<void> {
 
   // Seed deployment-pinned EXTENSION config (e.g. the default workspace
   // worker-url) into the `cfg` KV bucket. Create-if-absent: an existing value
-  // (a user set) always wins, so this is safe to run on every boot.
-  seedExtConfig(bus, config)
+  // (a user set) always wins, so this is safe to run on every boot. A seed
+  // entry with tenant "*" applies to EVERY known tenant.
+  seedExtConfig(bus, config, tenants)
 
   // Mailbox retention: consumed rows are audit-only, prune past a fixed window.
   const retentionDays = 7
@@ -579,30 +580,38 @@ void main()
  * fresh deployment a working default (e.g. the in-cluster easyworker URL)
  * without any UI round-trip, while keeping the UI authoritative afterwards.
  */
-function seedExtConfig(bus: Bus, config: ServerConfig): void {
+function seedExtConfig(
+  bus: Bus,
+  config: ServerConfig,
+  tenants: readonly string[],
+): void {
   for (const s of config.extConfigSeed) {
-    void (async () => {
-      try {
-        const key = tenantKVKey(s.tenant, `${s.extId}.${s.name}`)
-        const created = await bus.kvCreate(
-          'cfg',
-          key,
-          JSON.stringify({ r: 1, v: s.value }),
-          0,
-        )
-        if (created !== null) {
-          logger.info(
-            { tenant: s.tenant, extId: s.extId, name: s.name },
-            'seeded extension config default',
+    // `tenant: "*"` fans the entry out to every known tenant.
+    const targets = s.tenant === '*' ? tenants : [s.tenant]
+    for (const tenant of targets) {
+      void (async () => {
+        try {
+          const key = tenantKVKey(tenant, `${s.extId}.${s.name}`)
+          const created = await bus.kvCreate(
+            'cfg',
+            key,
+            JSON.stringify({ r: 1, v: s.value }),
+            0,
+          )
+          if (created !== null) {
+            logger.info(
+              { tenant, extId: s.extId, name: s.name },
+              'seeded extension config default',
+            )
+          }
+        } catch (e) {
+          logger.warn(
+            { tenant, extId: s.extId, name: s.name, err: String(e) },
+            'extension config seed failed',
           )
         }
-      } catch (e) {
-        logger.warn(
-          { tenant: s.tenant, extId: s.extId, name: s.name, err: String(e) },
-          'extension config seed failed',
-        )
-      }
-    })()
+      })()
+    }
   }
 }
 
