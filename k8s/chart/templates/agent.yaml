@@ -54,12 +54,19 @@ spec:
             # Seed deployment-pinned extension config into the `cfg` KV
             # (create-if-absent; a UI-set value always wins) so the tools work
             # out of the box. `tenant: "*"` fans out to every known tenant.
-            {{- if or .Values.playwright.enabled .Values.workerExtension.enabled }}
+            {{- if or .Values.playwright.enabled .Values.workerExtension.enabled .Values.bundled.seedTenant }}
             - name: AGENT_EXT_CONFIG_SEED
               value: {{ list
                 (dict "tenant" .Values.playwright.seedTenant "extId" "playwright" "name" "selenium-url" "value" .Values.infra.seleniumUrl)
                 (dict "tenant" .Values.workerExtension.seedTenant "extId" "worker" "name" "worker-url" "value" (include "abcp-agent.workerUrl" .))
                 (dict "tenant" .Values.workerExtension.seedTenant "extId" "worker" "name" "worker-token" "value" .Values.worker.token)
+                (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.text" "value" .Values.bundled.model.text)
+                (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.image" "value" .Values.bundled.model.image)
+                (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.image_edit" "value" .Values.bundled.model.imageEdit)
+                (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.video" "value" .Values.bundled.model.video)
+                (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.speech" "value" .Values.bundled.model.speech)
+                (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.speech_clone" "value" .Values.bundled.model.speechClone)
+                (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.transcription" "value" .Values.bundled.model.transcription)
                 | toJson | quote }}
             {{- end }}
             {{- include "abcp-agent.objectStoreEnv" . | nindent 12 }}
