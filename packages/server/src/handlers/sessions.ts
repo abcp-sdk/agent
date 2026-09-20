@@ -337,25 +337,14 @@ export function sessionsHandlers(
     async updateSettings(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
       const { id, ...patch } = req
-      // max_turns is optional: omitted = inherit (preset/default); an
-      // explicit value must be > 0.
-      if (patch.maxTurns !== undefined && patch.maxTurns <= 0) {
-        throw new ConnectError(
-          'max_turns must be > 0 (omit to inherit)',
-          Code.InvalidArgument,
-        )
-      }
-      // Validate the settings an API client may not forge/blank. Empty
+      // Only model / preset / locale / variant are client-editable. Empty
       // model/preset are ignored (the update simply does not change them);
       // non-empty values MUST be registered/resolvable.
       const cleanPatch: {
         model?: string
         preset?: string
         variant?: string
-        systemPrompt?: string
         locale?: string
-        maxTurns?: number
-        group?: string
       } = {}
       if (patch.preset !== undefined && patch.preset !== '') {
         const p = await Presets.get(deps.bus, tenant, patch.preset)
@@ -379,11 +368,7 @@ export function sessionsHandlers(
         cleanPatch.model = patch.model
       }
       if (patch.variant !== undefined) cleanPatch.variant = patch.variant
-      if (patch.systemPrompt !== undefined)
-        cleanPatch.systemPrompt = patch.systemPrompt
       if (patch.locale !== undefined) cleanPatch.locale = patch.locale
-      if (patch.maxTurns !== undefined) cleanPatch.maxTurns = patch.maxTurns
-      if (patch.group !== undefined) cleanPatch.group = patch.group
       const r = await Sessions.updateSettings(deps.db, tenant, id, cleanPatch)
       if (r.isErr()) throw new Error(r.error)
       publishSessionChanged(deps.bus, tenant, id)
