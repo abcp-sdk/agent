@@ -66,7 +66,7 @@ webui:
   image:
     # Caddy with the webui static build baked into /srv.
     repository: git.agent.fenjin.org/abcp/agent-webui
-    tag: "20260921063954"
+    tag: "20260921091734"
     pullPolicy: IfNotPresent
   port: 8080
   service:
