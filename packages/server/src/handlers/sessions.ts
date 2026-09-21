@@ -263,6 +263,7 @@ export function sessionsHandlers(
           id: m.id,
           sessionName: m.session_name,
           msgType: m.msg_type,
+          source: m.source,
           payload: m.payload,
           effectiveAt: m.effective_at ?? '',
           status: m.status,
