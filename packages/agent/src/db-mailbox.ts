@@ -1,5 +1,5 @@
 import type { MailboxRow } from '@abcp-agent/schema'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq, lt, or } from 'drizzle-orm'
 import type { ResultAsync } from 'neverthrow'
 import { z } from 'zod'
 import type { Db } from './db-client.js'
@@ -92,25 +92,61 @@ export const Mailbox = {
     ).map(() => id)
   },
 
-  list(
+  /**
+   * NEWEST-FIRST page of a session's mailbox, for infinite scroll. Returns up
+   * to `limit` rows older than `before` (exclusive; '' = the newest page) plus
+   * whether more (older) rows remain.
+   *
+   * Ordering is `created_at DESC, id DESC`: `id` is a unique UUID, so it is a
+   * stable total-order tiebreaker for identical timestamps. `before` resolves
+   * to that `(created_at, id)` keyset, so paging never skips or repeats a row
+   * even as new entries arrive at the head between pages.
+   */
+  listPage(
     db: Db,
     tenant: string,
     sessionName: string,
-  ): ResultAsync<MailboxRow[], string> {
-    return q(
-      () =>
-        db
-          .select()
+    limit: number,
+    before: string,
+  ): ResultAsync<{ rows: MailboxRow[]; hasMore: boolean }, string> {
+    return q(async () => {
+      const capped =
+        Number.isFinite(limit) && limit > 0 ? Math.min(limit, 200) : 50
+      const take = capped + 1 // one extra row tells us whether more remain
+      const base = and(
+        eq(mailbox.tenant, tenant),
+        eq(mailbox.sessionName, sessionName),
+      )
+      let where = base
+      if (before !== '') {
+        const anchor = await db
+          .select({ createdAt: mailbox.createdAt, id: mailbox.id })
           .from(mailbox)
-          .where(
-            and(
-              eq(mailbox.tenant, tenant),
-              eq(mailbox.sessionName, sessionName),
+          .where(and(base, eq(mailbox.id, before)))
+          .limit(1)
+          .then(rows => rows[0] ?? null)
+        if (anchor !== null) {
+          where = and(
+            base,
+            or(
+              lt(mailbox.createdAt, anchor.createdAt),
+              and(
+                eq(mailbox.createdAt, anchor.createdAt),
+                lt(mailbox.id, anchor.id),
+              ),
             ),
-          )
-          .then(rows => rows.map(toRow)),
-      'list mailbox',
-    )
+          )!
+        }
+      }
+      const rows = await db
+        .select()
+        .from(mailbox)
+        .where(where)
+        .orderBy(desc(mailbox.createdAt), desc(mailbox.id))
+        .limit(take)
+      const hasMore = rows.length > capped
+      return { rows: rows.slice(0, capped).map(toRow), hasMore }
+    }, 'list mailbox page')
   },
 
   /** Sessions (with their tenant) that still have pending mailbox items

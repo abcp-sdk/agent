@@ -315,12 +315,15 @@ export function sessionsHandlers(
 
     async mailbox(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
-      const id = req.id
-      const r = await Mailbox.list(deps.db, tenant, id)
+      const { id, limit, before } = req
+      // Newest-first, paged backward (older) for infinite scroll: `before` is
+      // the oldest entry the client already holds ('' = newest page).
+      const r = await Mailbox.listPage(deps.db, tenant, id, limit, before ?? '')
       if (r.isErr()) throw new Error(r.error)
       return {
         ok: true,
-        mailbox: r.value.map(m => ({
+        hasMore: r.value.hasMore,
+        mailbox: r.value.rows.map(m => ({
           id: m.id,
           sessionName: m.session_name,
           msgType: m.msg_type,

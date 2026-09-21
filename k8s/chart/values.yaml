@@ -40,7 +40,7 @@ infra:
 agent:
   image:
     repository: git.agent.fenjin.org/abcp/agent
-    tag: "20260921054436"
+    tag: "20260921063947"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -66,7 +66,7 @@ webui:
   image:
     # Caddy with the webui static build baked into /srv.
     repository: git.agent.fenjin.org/abcp/agent-webui
-    tag: "20260921054444"
+    tag: "20260921063954"
     pullPolicy: IfNotPresent
   port: 8080
   service:
