@@ -22,6 +22,37 @@ function primaryOf(tag: string): string {
 }
 
 /**
+ * The language directive injected into every turn's `<env>` block, so the
+ * model ALWAYS answers and reasons in the effective agent language regardless
+ * of the preset's system prompt (built-in, host-injected, or user-authored).
+ * Only the primary language matters; an unknown locale falls back to English.
+ */
+export function languageDirective(locale: string): string {
+  switch (primaryOf(normalizeLocale(locale))) {
+    case 'zh':
+      return '无论用户使用什么语言，你都必须始终用中文回复，并用中文进行思考。'
+    default:
+      return 'Regardless of the language the user writes in, you must always reply and reason in English.'
+  }
+}
+
+/**
+ * Build the per-turn `<env>` block appended to the model's system prompt. It
+ * ALWAYS carries the language directive, so the answer/reasoning language is
+ * enforced for every preset regardless of its own prompt text.
+ *
+ * Pure (takes `now` explicitly) so it is unit-testable.
+ */
+export function buildEnvBlock(locale: string, now: Date): string {
+  return [
+    '<env>',
+    `  Today's date: ${now.toISOString().slice(0, 10)}`,
+    `  ${languageDirective(locale)}`,
+    '</env>',
+  ].join('\n')
+}
+
+/**
  * Resolve a localized string from a `Record<locale, value>` map.
  * Exact match → region fallback → null (so callers fall back to default).
  */

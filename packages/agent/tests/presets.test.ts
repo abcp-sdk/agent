@@ -48,18 +48,19 @@ describe('built-in system preset set', () => {
     expect(SYSTEM_PRESETS.map(p => p.id)).toEqual(['default'])
   })
 
-  it('default preset has no whitelist and a bilingual generic prompt', () => {
+  it('default preset has no whitelist and a bilingual IDENTITY prompt', () => {
     const def = SYSTEM_PRESETS[0]
     // Empty whitelist = every discovered tool is allowed.
     expect(JSON.parse(def.tools)).toEqual([])
     expect(def.isSystem).toBe(true)
     const i18n = JSON.parse(def.systemPromptI18n)
-    // Each locale carries an explicit "answer in this language" emphasis so the
-    // model's body AND reasoning follow the effective agent locale.
-    expect(i18n.zh).toContain('你是一个有用的助手。')
-    expect(i18n.zh).toContain('中文')
-    expect(i18n.en).toContain('You are a helpful assistant.')
-    expect(i18n.en).toContain('English')
+    // The prompt is identity ONLY: the "answer in this language" directive is
+    // injected per-turn via `<env>` (languageDirective), not baked in here, so
+    // it applies to every preset.
+    expect(i18n.zh).toBe('你是一个有用的助手。')
+    expect(i18n.zh).not.toContain('中文')
+    expect(i18n.en).toBe('You are a helpful assistant.')
+    expect(i18n.en).not.toContain('English')
     expect(def.systemPrompt).toBe(i18n.en)
   })
 })

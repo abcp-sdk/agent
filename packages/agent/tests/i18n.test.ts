@@ -1,5 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { localizeSchema, pickLocalized } from '../src/i18n.js'
+import {
+  buildEnvBlock,
+  languageDirective,
+  localizeSchema,
+  pickLocalized,
+} from '../src/i18n.js'
+
+describe('languageDirective', () => {
+  it('zh (and its region variants) mandates Chinese reply AND reasoning', () => {
+    for (const l of ['zh', 'zh-CN', 'zh-hant', 'ZH']) {
+      const d = languageDirective(l)
+      expect(d).toContain('中文')
+      expect(d).toContain('思考')
+    }
+  })
+
+  it('en (and any unknown locale) mandates English', () => {
+    for (const l of ['en', 'en-US', 'ja', 'fr', '']) {
+      const d = languageDirective(l)
+      expect(d).toContain('English')
+      expect(d).toContain('reason')
+    }
+  })
+
+  it('covers BOTH reply and reasoning in each language', () => {
+    expect(languageDirective('zh')).toContain('回复')
+    expect(languageDirective('en')).toContain('reply')
+  })
+})
+
+describe('buildEnvBlock', () => {
+  const now = new Date('2026-09-21T12:00:00Z')
+
+  it('always includes the date AND the language directive', () => {
+    const zh = buildEnvBlock('zh', now)
+    expect(zh).toContain("Today's date: 2026-09-21")
+    expect(zh).toContain(languageDirective('zh'))
+    expect(zh).toContain('中文')
+
+    const en = buildEnvBlock('en', now)
+    expect(en).toContain(languageDirective('en'))
+    expect(en).toContain('English')
+  })
+
+  it('is a well-formed <env> block', () => {
+    const b = buildEnvBlock('zh', now)
+    expect(b.startsWith('<env>\n')).toBe(true)
+    expect(b.endsWith('\n</env>')).toBe(true)
+  })
+})
 
 describe('pickLocalized', () => {
   it('exact match wins, region falls back to primary', () => {

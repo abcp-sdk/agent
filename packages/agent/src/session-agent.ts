@@ -41,7 +41,7 @@ import {
 import { renderTemplate } from './extensions.js'
 import type { BlobStore } from './files.js'
 import { rebuildHistory } from './history.js'
-import { pickLocalized, resolveLocale } from './i18n.js'
+import { buildEnvBlock, pickLocalized, resolveLocale } from './i18n.js'
 import { clearRun, getAbortController, interruptRun } from './interrupt.js'
 import {
   ContentPayloadSchema,
@@ -89,6 +89,14 @@ export interface AgentDeps {
 }
 
 const DRAIN_GRACE_MS = 200
+
+/**
+ * Fallback identity when neither the session nor its preset yields any system
+ * prompt text. A preset with no prompt is valid (e.g. one that only whitelists
+ * tools); the turn must still run, and the language directive always comes
+ * from `<env>` regardless.
+ */
+const DEFAULT_SYSTEM_PROMPT = 'You are a helpful assistant.'
 
 /**
  * Watch the durable mailbox queue (`mailbox.session.>`): each replica joins
@@ -731,23 +739,21 @@ async function prepare(
     blocked,
   )
 
-  // Session-level settings override the preset. There is NO hardcoded
-  // fallback prompt: the preset must supply one (the built-in `default`
-  // preset always does).
-  const systemPrompt =
+  // Session-level settings override the preset. An EMPTY resolved prompt is
+  // never an error: it falls back to the built-in default identity so a
+  // preset that supplies only, say, a tools list still runs. (The language
+  // directive is injected via `<env>` below and needs no preset text.)
+  const presetPrompt =
     session.system_prompt !== ''
       ? session.system_prompt
       : presetRow !== null
         ? presetPromptFor(presetRow, locale)
         : ''
-  if (systemPrompt.trim() === '') {
-    return `no system prompt: session has none and preset '${session.preset}' is missing or empty`
-  }
-  const env = [
-    '<env>',
-    `  Today's date: ${new Date().toISOString().slice(0, 10)}`,
-    '</env>',
-  ].join('\n')
+  const systemPrompt =
+    presetPrompt.trim() !== '' ? presetPrompt : DEFAULT_SYSTEM_PROMPT
+  // The `<env>` block always carries the language directive, so the model
+  // answers and reasons in the effective language whatever the preset says.
+  const env = buildEnvBlock(locale, new Date())
 
   // Render extension-provided template variables ({{ext.<id>.<name>}}) and
   // built-ins ({{date}}/{{datetime}}) into the system prompt. Unresolvable

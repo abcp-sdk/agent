@@ -11,11 +11,13 @@ import type { PresetRowInternal } from './kv-store.js'
 export const SYSTEM_PRESETS: readonly PresetRowInternal[] = [
   {
     id: 'default',
-    systemPrompt:
-      'You are a helpful assistant. Always write your entire reply and your reasoning in English.',
+    // Identity only. The "answer/reason in <language>" directive is injected
+    // into the per-turn `<env>` block (see `languageDirective`) so it applies
+    // to EVERY preset, not just this one.
+    systemPrompt: 'You are a helpful assistant.',
     systemPromptI18n: JSON.stringify({
-      en: 'You are a helpful assistant. Always write your entire reply and your reasoning in English.',
-      zh: '你是一个有用的助手。你的所有正文和思考请始终使用中文。',
+      en: 'You are a helpful assistant.',
+      zh: '你是一个有用的助手。',
     }),
     // Empty whitelist = no restriction: all discovered tools are allowed.
     tools: '[]',

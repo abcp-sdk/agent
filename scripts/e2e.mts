@@ -181,6 +181,8 @@ async function freePort(): Promise<number> {
 interface MockState {
   /** Last `reasoning_effort` observed on a chat request (undefined if none). */
   lastReasoningEffort: string | undefined
+  /** The `system` message text of the last chat request (for prompt asserts). */
+  lastSystem: string | undefined
   requests: number
   /** Number of /images/generations calls (image toolchain coverage). */
   embeddingRequests: number
@@ -525,6 +527,14 @@ async function startMockLlm(
       }
       const eff = body['reasoning_effort']
       state.lastReasoningEffort = typeof eff === 'string' ? eff : undefined
+      const msgs = Array.isArray(body['messages'])
+        ? (body['messages'] as Array<{ role?: string; content?: unknown }>)
+        : []
+      const sys = msgs.find(m => m.role === 'system')
+      state.lastSystem =
+        sys !== undefined && typeof sys.content === 'string'
+          ? sys.content
+          : undefined
       const plan = mockResponse(body)
       const id = `chatcmpl-${state.requests}`
       const base = {
@@ -750,6 +760,7 @@ async function main(): Promise<void> {
 
   const state: MockState = {
     lastReasoningEffort: undefined,
+    lastSystem: undefined,
     requests: 0,
     embeddingRequests: 0,
     imageRequests: 0,
@@ -1757,6 +1768,14 @@ async function run(
     'text streamed',
     collector.text().includes('HELLO-E2E'),
     collector.text(),
+  )
+  // The `<env>` block is appended to EVERY preset's system prompt and always
+  // carries the language directive (default locale here is en).
+  check(
+    'system prompt carries the env language directive',
+    (state.lastSystem ?? '').includes('<env>') &&
+      (state.lastSystem ?? '').includes('reply and reason in English'),
+    state.lastSystem,
   )
   ac.abort()
   await watcher.catch(() => {})
