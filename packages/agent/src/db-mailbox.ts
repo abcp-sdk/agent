@@ -11,6 +11,7 @@ const DrainedMailboxRowSchema = z.object({
   tenant: z.string().optional(),
   session_name: z.string(),
   msg_type: z.string(),
+  source: z.string().nullable().optional(),
   payload: z.string(),
   effective_at: z.string().nullable().optional(),
   status: z.string(),
@@ -23,6 +24,7 @@ const toRow = (r: typeof mailbox.$inferSelect): MailboxRow => ({
   id: r.id,
   session_name: r.sessionName,
   msg_type: r.msgType,
+  source: r.source,
   payload: r.payload,
   effective_at: r.effectiveAt,
   status: r.status,
@@ -43,6 +45,7 @@ export const Mailbox = {
     sessionName: string,
     msgType: string,
     payload: unknown,
+    source = '',
   ): ResultAsync<string, string> {
     const id = uuid()
     return q(
@@ -52,6 +55,7 @@ export const Mailbox = {
           tenant,
           sessionName,
           msgType,
+          source,
           payload: JSON.stringify(payload ?? {}),
           status: 'pending',
           createdAt: nowStr(),
@@ -73,6 +77,7 @@ export const Mailbox = {
     sessionName: string,
     msgType: string,
     payload: unknown,
+    source = '',
   ): ResultAsync<string, string> {
     return q(
       () =>
@@ -83,6 +88,7 @@ export const Mailbox = {
             tenant,
             sessionName,
             msgType,
+            source,
             payload: JSON.stringify(payload ?? {}),
             status: 'pending',
             createdAt: nowStr(),
@@ -190,7 +196,7 @@ export const Mailbox = {
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
-       RETURNING id, tenant, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`
+       RETURNING id, tenant, session_name, msg_type, source, payload, effective_at, status, created_at, consumed_at, seq`
     const sqliteSQL = `UPDATE mailbox SET status = 'consumed', consumed_at = ?
        WHERE id = (
          SELECT id FROM mailbox
@@ -198,7 +204,7 @@ export const Mailbox = {
          ORDER BY COALESCE(effective_at, created_at) ASC, COALESCE(seq, 0) ASC, created_at ASC
          LIMIT 1
        )
-       RETURNING id, tenant, session_name, msg_type, payload, effective_at, status, created_at, consumed_at, seq`
+       RETURNING id, tenant, session_name, msg_type, source, payload, effective_at, status, created_at, consumed_at, seq`
     const isPg = dbBackend(db) === 'pg'
     return q(
       () =>
@@ -216,6 +222,7 @@ export const Mailbox = {
             tenant: d.tenant ?? tenant,
             session_name: d.session_name,
             msg_type: d.msg_type,
+            source: d.source ?? '',
             payload: d.payload,
             effective_at: d.effective_at ?? null,
             status: d.status,

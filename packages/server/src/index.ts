@@ -337,8 +337,14 @@ async function main(): Promise<void> {
     },
     // Cross-session messaging (subsession handoff + direct session-send):
     // the bundled tools deliver to any session's mailbox over the same bus.
-    publishMailbox: (tenant, sessionName, type, payload) =>
-      new AbcAgent(bus).publishMailbox(tenant, sessionName, type, payload),
+    publishMailbox: (tenant, sessionName, type, payload, source) =>
+      new AbcAgent(bus).publishMailbox(
+        tenant,
+        sessionName,
+        type,
+        payload,
+        source ?? '',
+      ),
     // Config lives in the `cfg` KV bucket (source of truth for extensions).
     // Session-scoped overrides are applied by the Extension itself; here we
     // resolve the effective global value (envelope-aware {r,v} format).

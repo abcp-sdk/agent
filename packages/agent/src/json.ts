@@ -44,7 +44,7 @@ export function stringify(value: unknown): string {
 
 export const WakePayloadSchema = z.object({
   session_name: z.string(),
-  type: z.enum(['user_prompt', 'interrupt', 'event']),
+  type: z.enum(['trigger', 'interrupt', 'event']),
 })
 export type WakePayload = z.infer<typeof WakePayloadSchema>
 
@@ -60,6 +60,8 @@ export const MailboxEnvelopeSchema = z.object({
   session_name: z.string(),
   type: z.string(),
   payload: z.unknown(),
+  /** Message origin; see the proto MailboxEntry.source contract. */
+  source: z.string().optional(),
 })
 export type MailboxEnvelope = z.infer<typeof MailboxEnvelopeSchema>
 

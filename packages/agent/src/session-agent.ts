@@ -106,7 +106,13 @@ export function watchMailboxWake(deps: AgentDeps): () => void {
 export async function handleMailboxMessage(
   deps: AgentDeps,
   tenant: string,
-  msg: { id: string; sessionName: string; type: string; payload?: unknown },
+  msg: {
+    id: string
+    sessionName: string
+    type: string
+    payload?: unknown
+    source?: string
+  },
 ): Promise<void> {
   const env = {
     // Defensive: a wake-style message without a producer id would fail the
@@ -115,6 +121,7 @@ export async function handleMailboxMessage(
     session_name: msg.sessionName,
     type: msg.type,
     payload: msg.payload,
+    source: msg.source ?? '',
   }
 
   const enq = await Mailbox.enqueueIdempotent(
@@ -124,6 +131,7 @@ export async function handleMailboxMessage(
     env.session_name,
     env.type,
     env.payload,
+    env.source,
   )
   if (enq.isErr()) {
     if (isForeignKeyViolation(enq.error)) {
@@ -269,10 +277,10 @@ async function handleItem(
     return
   }
 
-  if (item.msg_type === 'user_prompt') {
+  if (item.msg_type === 'trigger') {
     // Persist the prompt into the chain BEFORE running the turn. The mailbox
     // is the single writer: the HTTP Prompt route publishes the envelope and
-    // never writes the chain, and a mailbox-delivered user_prompt
+    // never writes the chain, and a mailbox-delivered trigger
     // (subsession-create's handoff, mail-send's result) arrives here too.
     const payload = parse(ContentPayloadSchema, item.payload)
     const text = payload.isOk()
@@ -373,7 +381,7 @@ async function runTurnOnce(
       // announce it. The id is authoritative: every delta below carries it and
       // `persistStep` writes the SAME id, so a client groups the live stream by
       // id and never has to guess. The anchor is the current tip (already
-      // reflecting any user_prompt drained at the previous boundary).
+      // reflecting any trigger drained at the previous boundary).
       const stepMessageId = randomUUID()
       const tipRes = await Sessions.tip(deps.db, tenant, sid)
       const stepPrevId: string | null = tipRes.isErr() ? null : tipRes.value
@@ -588,7 +596,7 @@ async function runTurnOnce(
       if (interrupted || ctrl.signal.aborted) break
 
       // Step boundary: inject any newly-arrived mailbox messages. A fresh
-      // user_prompt continues the loop (the model responds to it); events fold
+      // trigger continues the loop (the model responds to it); events fold
       // into context; a full stop with nothing new ends the turn.
       const injectedUserPrompt = await drainAndInject(deps, tenant, sid, ctrl)
       if (ctrl.signal.aborted && injectedUserPrompt.length === 0) break

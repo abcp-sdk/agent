@@ -22,7 +22,7 @@
     "test:coverage": "npm test --workspaces --if-present -- --coverage"
   },
   "devDependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.5.2",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.7.0",
     "@biomejs/biome": "^2.5.9",
     "@types/node": "^26.2.0",
     "postject": "^1.0.0-alpha.6",

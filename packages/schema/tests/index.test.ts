@@ -45,6 +45,7 @@ describe('proto-derived row schemas', () => {
       id: 'e1',
       session_name: 'a:b:main',
       msg_type: 'event',
+      source: 'user',
       payload: '{"text":"hi"}',
       effective_at: null,
       status: 'pending',

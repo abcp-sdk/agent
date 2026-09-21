@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
     tenant TEXT NOT NULL DEFAULT 'default',
     session_name TEXT NOT NULL,
     msg_type TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
     payload TEXT NOT NULL DEFAULT '{}',
     effective_at TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -217,6 +218,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
     tenant TEXT NOT NULL DEFAULT 'default',
     session_name TEXT NOT NULL,
     msg_type TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
     payload TEXT NOT NULL DEFAULT '{}',
     effective_at TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -298,6 +300,7 @@ const PG_MIGRATIONS = `
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE parts ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE mailbox ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE mailbox ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
     ALTER TABLE providers ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE providers ADD COLUMN IF NOT EXISTS capability TEXT NOT NULL DEFAULT 'text';
     DROP TABLE IF EXISTS worksheets;
@@ -359,6 +362,7 @@ const SQLITE_MIGRATIONS = [
   `ALTER TABLE messages ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE parts ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE mailbox ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
+  `ALTER TABLE mailbox ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE providers ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE providers ADD COLUMN capability TEXT NOT NULL DEFAULT 'text'`,
   `ALTER TABLE agent_files ADD COLUMN width INTEGER`,
@@ -736,6 +740,7 @@ const SQLITE_TABLE_DDL: Record<string, string> = {
     tenant TEXT NOT NULL DEFAULT 'default',
     session_name TEXT NOT NULL,
     msg_type TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
     payload TEXT NOT NULL DEFAULT '{}',
     effective_at TEXT,
     status TEXT NOT NULL DEFAULT 'pending',

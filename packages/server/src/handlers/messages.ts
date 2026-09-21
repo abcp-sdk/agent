@@ -150,11 +150,19 @@ export function messagesHandlers(
       // concurrent prompts (and prompt-vs-turn appends) — the old double-write
       // left `tip -> insert -> setTip` here exposed to interleaving.
       const messageId = randomUUID()
-      await new AbcAgent(deps.bus).publishMailbox(tenant, id, 'user_prompt', {
-        message_id: messageId,
-        text: prompt,
-        attachments: resolved,
-      })
+      // `trigger` drives a turn; `source: 'user'` marks it as a HUMAN prompt
+      // (the origin disambiguates it from a session hand-off / system event).
+      await new AbcAgent(deps.bus).publishMailbox(
+        tenant,
+        id,
+        'trigger',
+        {
+          message_id: messageId,
+          text: prompt,
+          attachments: resolved,
+        },
+        'user',
+      )
       yield {
         event: 'accepted',
         params: { message_id: messageId },

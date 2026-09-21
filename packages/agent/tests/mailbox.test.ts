@@ -32,6 +32,7 @@ describe('handleMailboxMessage', () => {
       'a:b:main',
       'event',
       { text: 'hi' },
+      '',
     )
     enqueue.mockRestore()
   })

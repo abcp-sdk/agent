@@ -74,6 +74,7 @@ export const mailbox = sqliteTable('mailbox', {
   tenant: text('tenant').notNull().default('default'),
   sessionName: text('session_name').notNull(),
   msgType: text('msg_type').notNull(),
+  source: text('source').notNull().default(''),
   payload: text('payload').notNull().default('{}'),
   effectiveAt: text('effective_at'),
   status: text('status').notNull().default('pending'),

@@ -15,7 +15,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.5.2",
+    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.7.0",
     "@abcp-agent/schema": "*",
     "@ai-sdk/anthropic": "^4.0.40",
     "@ai-sdk/cohere": "^3.0.61",

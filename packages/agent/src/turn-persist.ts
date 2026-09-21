@@ -179,7 +179,7 @@ export async function persistEvent(
 /**
  * Between steps: drain the mailbox and inject everything that arrived.
  *
- * - `user_prompt` → persisted as a `role=user` message (chained) and returned
+ * - `trigger` → persisted as a `role=user` message (chained) and returned
  *   so the loop continues and the model responds to it.
  * - other event types → folded as `role=event` (as `persistEvent`).
  * - `interrupt` → handled out-of-band by the wake watcher; if one surfaces
@@ -201,7 +201,7 @@ export async function drainAndInject(
       ctrl.abort()
       continue
     }
-    if (item.msg_type === 'user_prompt') {
+    if (item.msg_type === 'trigger') {
       const payload = parse(ContentPayloadSchema, item.payload)
       const text = payload.isOk()
         ? (payload.value.text ?? payload.value.prompt ?? item.payload)
@@ -225,7 +225,7 @@ export async function drainAndInject(
   return injected
 }
 
-/** Resolved attachment ref carried in the user_prompt payload. */
+/** Resolved attachment ref carried in the trigger payload. */
 interface PromptAttachment {
   code: string
   name: string
