@@ -114,7 +114,9 @@ export async function sanitizeStreamPart(
   if (part.type === 'start-step') {
     return {
       type: 'start-step',
-      ...(part.warnings !== undefined ? { warnings: jsonSafe(part.warnings) } : {}),
+      ...(part.warnings !== undefined
+        ? { warnings: jsonSafe(part.warnings) }
+        : {}),
     }
   }
   if (part.type === 'finish-step') {
@@ -135,8 +137,13 @@ export async function sanitizeStreamPart(
   // read (they predate transparent pass-through and would otherwise regress).
   if (part.type === 'tool-result') {
     const out = jsonSafe(part) as Record<string, unknown>
-    const output = part.output as { content?: unknown; metadata?: unknown } | undefined
-    const metadata = output?.metadata as Record<string, unknown> | null | undefined
+    const output = part.output as
+      | { content?: unknown; metadata?: unknown }
+      | undefined
+    const metadata = output?.metadata as
+      | Record<string, unknown>
+      | null
+      | undefined
     out['formatted'] = typeof output?.content === 'string' ? output.content : ''
     out['data'] = jsonSafe(output?.metadata ?? null)
     if (metadata && typeof metadata['change_id'] === 'string') {

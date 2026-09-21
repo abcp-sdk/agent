@@ -69,17 +69,14 @@ export const FilesDb = {
     const bySha = pg
       ? 'SELECT * FROM agent_files WHERE tenant = $1 AND sha256 = $2'
       : 'SELECT * FROM agent_files WHERE tenant = ? AND sha256 = ?'
-    return q(
-      async () => {
-        await rawRun(db, insert, params)
-        // Re-read: on a (tenant, sha) collision the ORIGINAL row wins (the
-        // insert was a no-op), so callers always get the canonical code for
-        // these bytes within the tenant.
-        const rows = await rawAll(db, bySha, [tenant, record.sha256])
-        return rows[0] === undefined ? record : toRecord(rows[0])
-      },
-      'file upsert',
-    )
+    return q(async () => {
+      await rawRun(db, insert, params)
+      // Re-read: on a (tenant, sha) collision the ORIGINAL row wins (the
+      // insert was a no-op), so callers always get the canonical code for
+      // these bytes within the tenant.
+      const rows = await rawAll(db, bySha, [tenant, record.sha256])
+      return rows[0] === undefined ? record : toRecord(rows[0])
+    }, 'file upsert')
   },
 
   /** Look up a record by code within a tenant. */
@@ -156,7 +153,9 @@ export const FilesDb = {
     const assigns = cols
       .map((c, i) => `${c} = ${pg ? `$${i + 1}` : '?'}`)
       .join(', ')
-    const where = pg ? `tenant = $${cols.length + 1} AND code = $${cols.length + 2}` : 'tenant = ? AND code = ?'
+    const where = pg
+      ? `tenant = $${cols.length + 1} AND code = $${cols.length + 2}`
+      : 'tenant = ? AND code = ?'
     const sql = `UPDATE agent_files SET ${assigns} WHERE ${where}`
     return q(
       () => rawRun(db, sql, [...vals, tenant, code]),

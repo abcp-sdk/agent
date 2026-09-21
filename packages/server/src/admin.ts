@@ -1,5 +1,3 @@
-import type { ConnectRouter, HandlerContext } from '@connectrpc/connect'
-import { Code, ConnectError } from '@connectrpc/connect'
 import type { AgentDeps } from '@abcp-agent/agent'
 import {
   Presets,
@@ -7,17 +5,9 @@ import {
   Tenants,
   type TenantTokenRow,
 } from '@abcp-agent/agent'
-import {
-  AdminService,
-  CreateTenantRequestSchema,
-  DeleteTenantRequestSchema,
-  IssueTenantTokenRequestSchema,
-  ListTenantsRequestSchema,
-  ListTenantTokensRequestSchema,
-  RevokeTenantTokenRequestSchema,
-  RotateTenantTokenRequestSchema,
-  UpdateTenantRequestSchema,
-} from '@abcp-agent/schema'
+import { AdminService } from '@abcp-agent/schema'
+import type { ConnectRouter, HandlerContext } from '@connectrpc/connect'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { identityOf } from './auth.js'
 
 /**

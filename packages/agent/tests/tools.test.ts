@@ -3,9 +3,7 @@ import type { Bus } from '../src/bus.js'
 import {
   buildAiTools,
   type DiscoveredTool,
-  discoverToolsCached,
   filterDeniedTools,
-  invalidateDiscoveryCache,
   toolQualifiedName,
 } from '../src/tools.js'
 

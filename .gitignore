@@ -3,3 +3,5 @@ dist/
 .sea/
 *.log
 core
+core
+packages/*/coverage/

@@ -6,13 +6,13 @@ import type { Db } from './db-client.js'
 import { nowStr, q, rawAll, uuid } from './db-client.js'
 import { messages, parts } from './db-schema.js'
 import {
+  type FilePartData,
   FilePartDataSchema,
   parse,
   SummaryPartDataSchema,
   TextPartDataSchema,
   ToolPartDataSchema,
   ToolResultPartDataSchema,
-  type FilePartData,
 } from './json.js'
 
 const toRow = (r: typeof messages.$inferSelect): MessageRow => ({
@@ -323,12 +323,18 @@ function rawChainRows(
          UNION
          SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
          FROM messages m JOIN chain c ON m.id = c.prev_id
-         WHERE m.tenant = ?
+         WHERE m.tenant = ? AND c.depth < ?
        )
        SELECT id, role, prev_id, created_at
        FROM chain WHERE depth < ?
        ORDER BY depth DESC`,
-      [cursor, tenant, tenant, limit],
+      // The depth bound MUST ALSO live inside the recursive step: bound only
+      // on the outer query, it trims the OUTPUT while the recursion stays
+      // unbounded, so a single corrupted (cyclic) prev_id would recurse
+      // forever and synchronously wedge the event loop (found by the chain
+      // property tests — see tests/chain-properties.test.ts P7). The outer
+      // filter keeps the acyclic row count exactly `limit`.
+      [cursor, tenant, tenant, limit, limit],
     )
   }, 'query message chain')
 }

@@ -4,30 +4,14 @@ import {
   claimSession,
   releaseSession,
   renewSession,
-  setSessionVariable,
 } from '@abc-protocol/sdk'
-import type { PartRow, PresetRow } from '@abcp-agent/schema'
-import type { ModelMessage, Tool } from 'ai'
 import { streamText } from 'ai'
-import { err, ok, type Result } from 'neverthrow'
-import { z } from 'zod'
-import { fireAndForget } from './async.js'
 import type { Bus } from './bus.js'
 import { mailboxSubject, SESSION_LEASE_MS } from './bus.js'
-import {
-  COMPACTION_ROLE,
-  checkpointContent,
-  foldQA,
-  splitScan,
-} from './compaction.js'
 import type { ServerConfig } from './config.js'
 import { isContextOverflowFailure } from './context-overflow.js'
 import type { Db } from './db-client.js'
-import { nowStr } from './db-client.js'
 import { Mailbox } from './db-mailbox.js'
-import { type ChainMessage, Messages } from './db-messages.js'
-import { Parts } from './db-parts.js'
-import { Providers } from './db-providers.js'
 import { Sessions } from './db-sessions.js'
 import {
   clearActiveRun,
@@ -35,42 +19,33 @@ import {
   markActiveRun,
   pushEvent,
   pushEventNow,
-  pushMessageAdded,
   pushMessageAddedNow,
 } from './events.js'
-import { renderTemplate } from './extensions.js'
 import type { BlobStore } from './files.js'
-import { rebuildHistory } from './history.js'
-import { buildEnvBlock, pickLocalized, resolveLocale } from './i18n.js'
 import { clearRun, getAbortController, interruptRun } from './interrupt.js'
 import {
   ContentPayloadSchema,
   parse,
-  SummaryPartDataSchema,
-  stringify,
-  TextPartDataSchema,
   type ToolResult,
   WakePayloadSchema,
 } from './json.js'
-import { Config, Presets } from './kv-store.js'
-import { type LlmRegistry, parseProviderModelRef } from './llm.js'
+import type { LlmRegistry } from './llm.js'
 import { logger } from './logger.js'
-import { factFromPersist, projectMessageFact } from './session-state.js'
-import { sanitizeStreamPart, type SanitizeDeps } from './stream-parts.js'
+import { compactSession } from './session-compact.js'
+import { type SanitizeDeps, sanitizeStreamPart } from './stream-parts.js'
 import {
-  appendSessionId,
-  getModelsDev,
-  getSessionIds,
-  putSessionIds,
-} from './store.js'
-import {
-  buildAiTools,
-  discoverToolsCached,
-  filterDeniedTools,
-  toolQualifiedName,
-  toolsBlockedByMissingRequired,
-} from './tools.js'
-import { catalogModel, findVariant, type JsonObject } from './variants.js'
+  appendStep,
+  drainAndInject,
+  drainOne,
+  type FilePartRec,
+  loadHistory,
+  persistEvent,
+  persistStep,
+  persistUserPrompt,
+  type ToolCallRec,
+  type ToolResultRec,
+} from './turn-persist.js'
+import { prepare } from './turn-prepare.js'
 
 export interface AgentDeps {
   db: Db
@@ -89,14 +64,6 @@ export interface AgentDeps {
 }
 
 const DRAIN_GRACE_MS = 200
-
-/**
- * Fallback identity when neither the session nor its preset yields any system
- * prompt text. A preset with no prompt is valid (e.g. one that only whitelists
- * tools); the turn must still run, and the language directive always comes
- * from `<env>` regardless.
- */
-const DEFAULT_SYSTEM_PROMPT = 'You are a helpful assistant.'
 
 /**
  * Watch the durable mailbox queue (`mailbox.session.>`): each replica joins
@@ -197,7 +164,7 @@ export async function runSessionTurn(
   sid: string,
 ): Promise<void> {
   for (;;) {
-    const agent = deps.agent ?? new AbcAgent(deps.bus)
+    const _agent = deps.agent ?? new AbcAgent(deps.bus)
     let revision: number | null
     try {
       revision = await claimSession(deps.bus, tenant, sid)
@@ -327,11 +294,6 @@ async function handleItem(
   await persistEvent(deps, tenant, sid, item.payload)
 }
 
-async function drainOne(deps: AgentDeps, tenant: string, sid: string) {
-  const r = await Mailbox.drainOne(deps.db, tenant, sid)
-  return r.isErr() ? null : r.value
-}
-
 /**
  * Detect a Postgres foreign-key violation (SQLSTATE 23503) in an error
  * message. Used to distinguish permanent poison-message failures (envelope
@@ -339,17 +301,6 @@ async function drainOne(deps: AgentDeps, tenant: string, sid: string) {
  */
 function isForeignKeyViolation(errText: string): boolean {
   return /23503|foreign key|violates foreign key/i.test(errText)
-}
-
-interface TurnCtx {
-  tools: Record<string, Tool>
-  system: string
-  maxTurns: number
-  model: import('ai').LanguageModel
-  providerOptions:
-    | Record<string, import('./variants.js').JsonObject>
-    | undefined
-  headers: Record<string, string> | undefined
 }
 
 /**
@@ -532,10 +483,17 @@ async function runTurnOnce(
           // verbatim (sanitized) before the turn unwinds.
           if (part.type === 'error') {
             const error = part.error
-            pushEvent(deps.bus, tenant, sid, 'error', {
-              error: String(error),
-              message: String(error),
-            }, runId)
+            pushEvent(
+              deps.bus,
+              tenant,
+              sid,
+              'error',
+              {
+                error: String(error),
+                message: String(error),
+              },
+              runId,
+            )
             if (isContextOverflowFailure(error)) {
               // Context overflow: compact and retry once with the trimmed
               // context — transparent to the caller.
@@ -573,8 +531,12 @@ async function runTurnOnce(
             fileParts.push({
               type: part.type,
               code: sanitized['code'],
-              name: sanitized['name'] as string | undefined ?? `model-${part.type}`,
-              mime: (sanitized['mediaType'] as string | undefined) ?? 'application/octet-stream',
+              name:
+                (sanitized['name'] as string | undefined) ??
+                `model-${part.type}`,
+              mime:
+                (sanitized['mediaType'] as string | undefined) ??
+                'application/octet-stream',
               size: Number(sanitized['size'] ?? 0),
             })
           }
@@ -670,759 +632,9 @@ async function runTurnOnce(
   return null
 }
 
-async function prepare(
-  deps: AgentDeps,
-  tenant: string,
-  sid: string,
-  abortSignal: AbortSignal,
-): Promise<TurnCtx | string> {
-  const sessionRes = await Sessions.get(deps.db, tenant, sid)
-  if (sessionRes.isErr()) return sessionRes.error
-  const session = sessionRes.value
-  if (session === null) return 'session not found'
-
-  const presetRow =
-    session.preset !== ''
-      ? (await Presets.get(deps.bus, tenant, session.preset)).unwrapOr(null)
-      : null
-  const presetTools = parse(z.array(z.string()), presetRow?.tools ?? '[]')
-  const toolNames = presetTools.isOk() ? presetTools.value : []
-  const whitelist = toolNames.length > 0 ? new Set(toolNames) : null
-
-  // Effective locale: session → KV config (live) → env → "en". The KV read
-  // makes `PUT /api/v1/config {key:"locale"}` take effect on the very next
-  // turn (no restart), while per-session `PATCH /sessions/{id}/settings`
-  // {locale} still wins. Used to localize tool descriptions and the system
-  // prompt, and projected as vars.agent.locale.
-  const configLocale = (await Config.get(deps.bus, tenant, 'locale')).unwrapOr(
-    null,
-  )
-  const locale = resolveLocale(session.locale, configLocale, 'en')
-
-  // Host hard-denylist (env DISABLED_TOOLS) runs FIRST: removing a colliding
-  // tool before qualified names are computed lets the surviving same-named tool
-  // fall back to its bare name, which is what preset whitelists reference. A
-  // denylist entry may be a bare name or `<extId>.<name>`.
-  const discovered = filterDeniedTools(
-    await discoverToolsCached(deps.bus),
-    deps.config.disabledTools,
-  )
-  const active =
-    whitelist === null
-      ? discovered
-      : discovered.filter(t => whitelist.has(toolQualifiedName(discovered, t)))
-  logger.info(
-    {
-      sid,
-      tools: active.map(t => toolQualifiedName(discovered, t)),
-      whitelisted: whitelist !== null,
-    },
-    'tools prepared for turn',
-  )
-  // Hard-disable tools whose required config is unset: the model must not call
-  // a tool it cannot run. Reads the `cfg` bucket per turn (cheap, few knobs).
-  const blocked = await toolsBlockedByMissingRequired(deps.bus, tenant, active)
-  if (blocked.size > 0) {
-    logger.info(
-      { sid, blocked: [...blocked] },
-      'tools blocked (required config unset)',
-    )
-  }
-  const tools = buildAiTools(
-    active,
-    deps.bus,
-    deps.config.toolTimeoutMs,
-    tenant,
-    sid,
-    abortSignal,
-    locale,
-    blocked,
-  )
-
-  // Session-level settings override the preset. An EMPTY resolved prompt is
-  // never an error: it falls back to the built-in default identity so a
-  // preset that supplies only, say, a tools list still runs. (The language
-  // directive is injected via `<env>` below and needs no preset text.)
-  const presetPrompt =
-    session.system_prompt !== ''
-      ? session.system_prompt
-      : presetRow !== null
-        ? presetPromptFor(presetRow, locale)
-        : ''
-  const systemPrompt =
-    presetPrompt.trim() !== '' ? presetPrompt : DEFAULT_SYSTEM_PROMPT
-  // The `<env>` block always carries the language directive, so the model
-  // answers and reasons in the effective language whatever the preset says.
-  const env = buildEnvBlock(locale, new Date())
-
-  // Render extension-provided template variables ({{ext.<id>.<name>}}) and
-  // built-ins ({{date}}/{{datetime}}) into the system prompt. Unresolvable
-  // variables are left as literal placeholders.
-  const sessionName = sid
-  const renderedPrompt = await renderTemplate(
-    systemPrompt,
-    deps.bus,
-    tenant,
-    sessionName,
-  )
-
-  // Max steps per turn: session override → preset → fixed default. A
-  // resolved value of 0 is invalid (the loop would never run).
-  const maxTurns =
-    session.max_turns > 0
-      ? session.max_turns
-      : presetRow !== null && presetRow.max_turns > 0
-        ? presetRow.max_turns
-        : deps.config.defaultMaxTurns
-  if (maxTurns <= 0) {
-    return `max_turns must be > 0 (session/preset/default all resolved to 0)`
-  }
-
-  const resolved = await deps.llm.resolve(deps.db, tenant, session.model)
-  if (resolved.isErr()) return resolved.error
-
-  // Resolve the selected reasoning variant (if any) into AI-SDK
-  // providerOptions + request headers. Strict provider+model lookup against
-  // the models.dev catalog; no variant ⇒ no providerOptions sent.
-  const { providerOptions, headers } = await resolveVariantOptions(
-    deps,
-    resolved.value.providerId,
-    resolved.value.modelId,
-    resolved.value.apiType,
-    session.variant,
-  )
-
-  // Project the effective locale as a session variable so extensions can
-  // localize their tool-result text. Written by the agent (provider "agent")
-  // into the shared vars bucket during each turn. AWAITED (failures are
-  // logged, not fatal): a tool running later in THIS turn (e.g.
-  // subsession-create reading the locale) must observe the write — a
-  // fire-and-forget put raced the tool's read in the wild.
-  await setSessionVariable(
-    deps.bus,
-    tenant,
-    'agent',
-    sid,
-    'locale',
-    locale,
-  ).catch(e => {
-    logger.warn(
-      { tenant, sid, err: String(e) },
-      'locale session-variable projection failed',
-    )
-  })
-
-  return {
-    tools,
-    system: `${renderedPrompt}\n\n${env}`,
-    maxTurns,
-    model: resolved.value.model,
-    providerOptions,
-    headers,
-  }
-}
-
-/** Resolve the preset's system prompt honoring the effective locale. */
-function presetPromptFor(preset: PresetRow, locale: string): string {
-  // Parse `system_prompt_i18n` as { locale: template }; fall back to the
-  // default `system_prompt` (English) when absent or unmatched.
-  if (preset.system_prompt_i18n && preset.system_prompt_i18n !== '{}') {
-    const map = parse(
-      z.record(z.string(), z.string()),
-      preset.system_prompt_i18n,
-    )
-    if (map.isOk()) {
-      const picked = pickLocalized(map.value, locale)
-      if (picked !== null) return picked
-    }
-  }
-  return preset.system_prompt
-}
-
-interface ToolCallRec {
-  id: string
-  name: string
-  input: unknown
-}
-/** A streamed media part to persist as a `file` part (already in the blob
- *  store; only its reference is carried here). */
-interface FilePartRec {
-  type: string
-  code: string
-  name: string
-  mime: string
-  size: number
-}
-
-interface ToolResultRec {
-  id: string
-  name: string
-  result: ToolResult
-}
-
-/** Persist one step under its PRE-MINTED id: chained assistant message +
- *  file/text/tool/tool_result parts. The id was announced via message-added
- *  before streaming, so the persisted row must use the SAME id — that is what
- *  makes the client's streamed bubble turn into the server row in place. */
-async function persistStep(
-  deps: AgentDeps,
-  tenant: string,
-  sid: string,
-  messageId: string,
-  prevId: string | null,
-  reasoning: string,
-  text: string,
-  toolCalls: ToolCallRec[],
-  toolResults: ToolResultRec[],
-  fileParts: FilePartRec[] = [],
-): Promise<void> {
-  if (
-    reasoning === '' &&
-    text === '' &&
-    toolCalls.length === 0 &&
-    fileParts.length === 0
-  ) {
-    return
-  }
-
-  const insert = await Messages.insertWithId(
-    deps.db,
-    tenant,
-    messageId,
-    'assistant',
-    prevId,
-  )
-  if (insert.isErr()) {
-    logger.error({ sid, err: String(insert.error) }, 'persist step failed')
-    return
-  }
-  // Redelivery/duplicate: the row already exists — its parts are complete.
-  if (!insert.value) return
-
-  let seq = 0
-  // Reasoning (thinking) is persisted for display only; it is deliberately
-  // EXCLUDED from the model's rebuilt context (see rebuildHistory/appendStep).
-  if (reasoning !== '') {
-    await Parts.insert(deps.db, tenant, messageId, 'reasoning', seq++, {
-      text: reasoning,
-    })
-  }
-  if (text !== '') {
-    await Parts.insert(deps.db, tenant, messageId, 'text', seq++, { text })
-  }
-  for (const tc of toolCalls) {
-    const result = toolResults.find(r => r.id === tc.id)?.result
-    await Parts.insert(deps.db, tenant, messageId, 'tool', seq++, {
-      id: tc.id,
-      name: tc.name,
-      input: tc.input,
-    })
-    // Persist the canonical ToolResult (content + opaque metadata) so the
-    // history rebuild and the read API can both reproduce it verbatim. The
-    // metadata blob belongs to the tool server; the agent never interprets it.
-    const content =
-      result !== undefined
-        ? result.content
-        : `tool '${tc.name}' produced no output`
-    const metadata = result !== undefined ? result.metadata : null
-    await Parts.insert(deps.db, tenant, messageId, 'tool_result', seq++, {
-      tool_use_id: tc.id,
-      content,
-      metadata,
-    })
-  }
-  // Streamed media parts (model-produced files) → `file` parts.
-  for (const f of fileParts) {
-    await Parts.insert(deps.db, tenant, messageId, 'file', seq++, {
-      code: f.code,
-      name: f.name,
-      mime: f.mime,
-      size: f.size,
-    })
-  }
-  await Sessions.setTip(deps.db, tenant, sid, messageId)
-  // Keep the per-session context id cache in step with the write.
-  fireAndForget(
-    appendSessionId(deps.bus, tenant, sid, messageId),
-    'appendSessionIds',
-  )
-  // Mirror the newest-message fact to the bus KV for DB-less consumers.
-  projectMessageFact(
-    deps.bus,
-    tenant,
-    sid,
-    factFromPersist(nowStr(), 'assistant', text !== '' ? text : reasoning),
-  )
-}
-
-/** Fold a mailbox event into the chain as an `event` message. */
-async function persistEvent(
-  deps: AgentDeps,
-  tenant: string,
-  sid: string,
-  payload: string,
-) {
-  const parsed = parse(ContentPayloadSchema, payload)
-  const text =
-    parsed.isOk() && parsed.value.content !== undefined
-      ? parsed.value.content
-      : payload
-  const tip = await Sessions.tip(deps.db, tenant, sid)
-  const tipId = tip.isErr() ? null : tip.value
-  const insert = await Messages.insert(deps.db, tenant, 'event', tipId)
-  if (insert.isOk()) {
-    await Parts.insert(deps.db, tenant, insert.value, 'text', 0, { text })
-    await Sessions.setTip(deps.db, tenant, sid, insert.value)
-    fireAndForget(
-      appendSessionId(deps.bus, tenant, sid, insert.value),
-      'appendSessionIds',
-    )
-    projectMessageFact(
-      deps.bus,
-      tenant,
-      sid,
-      factFromPersist(nowStr(), 'event', text),
-    )
-  }
-}
-
-/**
- * Between steps: drain the mailbox and inject everything that arrived.
- *
- * - `user_prompt` → persisted as a `role=user` message (chained) and returned
- *   so the loop continues and the model responds to it.
- * - other event types → folded as `role=event` (as `persistEvent`).
- * - `interrupt` → handled out-of-band by the wake watcher; if one surfaces
- *   here we abort defensively.
- *
- * Returns the list of injected user prompts (may be empty).
- */
-async function drainAndInject(
-  deps: AgentDeps,
-  tenant: string,
-  sid: string,
-  ctrl: AbortController,
-): Promise<string[]> {
-  const injected: string[] = []
-  for (;;) {
-    const item = await drainOne(deps, tenant, sid)
-    if (item === null) break
-    if (item.msg_type === 'interrupt') {
-      ctrl.abort()
-      continue
-    }
-    if (item.msg_type === 'user_prompt') {
-      const payload = parse(ContentPayloadSchema, item.payload)
-      const text = payload.isOk()
-        ? (payload.value.text ?? payload.value.prompt ?? item.payload)
-        : item.payload
-      const messageId = payload.isOk() ? (payload.value.message_id ?? '') : ''
-      const attachments = payload.isOk() ? (payload.value.attachments ?? []) : []
-      // Idempotent by id: a redelivered envelope is a no-op (no duplicate
-      // row). A brand-new message is stored AND injected so the running turn
-      // can pivot to it.
-      await persistUserPrompt(deps, tenant, sid, text, messageId, attachments)
-      // Only a text prompt continues the running turn; an attachment-only
-      // message is now in the chain (its file parts render via history) and is
-      // picked up by the next turn rather than injected as empty content.
-      if (text !== '') injected.push(text)
-      continue
-    }
-    await persistEvent(deps, tenant, sid, item.payload)
-  }
-  return injected
-}
-
-/** Resolved attachment ref carried in the user_prompt payload. */
-interface PromptAttachment {
-  code: string
-  name: string
-  mime: string
-  size: number
-}
-
-/** Persist an injected user prompt as a chained `role=user` message.
- *
- * The mailbox is the SINGLE writer of the prompt chain: the HTTP Prompt route
- * publishes the envelope (with a pre-minted message id) and never touches the
- * DB, so every chain append happens here, under the session's run lease. That
- * serializes prompt-vs-prompt and prompt-vs-turn appends — the previous
- * double-write (route wrote the row, then this idempotently no-op'd) left the
- * route's `tip -> insert -> setTip` exposed to interleaving with `persistStep`.
- */
-async function persistUserPrompt(
-  deps: AgentDeps,
-  tenant: string,
-  sid: string,
-  text: string,
-  messageId?: string,
-  attachments: PromptAttachment[] = [],
-): Promise<void> {
-  const id =
-    messageId !== undefined && messageId !== '' ? messageId : randomUUID()
-  const tip = await Sessions.tip(deps.db, tenant, sid)
-  const tipId = tip.isErr() ? null : tip.value
-  // Idempotent by id: a redelivered envelope (JetStream at-least-once) makes
-  // this a no-op rather than a duplicate row.
-  const created = await Messages.insertWithId(
-    deps.db,
-    tenant,
-    id,
-    'user',
-    tipId,
-  )
-  if (created.isErr()) return
-  if (!created.value) return // already persisted (redelivery)
-  // File parts first (in payload order), then the text part — the same layout
-  // the route used to write, so the read API/UI renders identically.
-  let seq = 0
-  for (const att of attachments) {
-    await Parts.insert(deps.db, tenant, id, 'file', seq++, att)
-  }
-  if (text !== '') {
-    await Parts.insert(deps.db, tenant, id, 'text', seq++, { text })
-  }
-  await Sessions.setTip(deps.db, tenant, sid, id)
-  fireAndForget(appendSessionId(deps.bus, tenant, sid, id), 'appendSessionIds')
-  const preview =
-    text !== ''
-      ? text
-      : attachments.length > 0
-        ? `[${attachments.length} attachment(s)]`
-        : ''
-  projectMessageFact(
-    deps.bus,
-    tenant,
-    sid,
-    factFromPersist(nowStr(), 'user', preview),
-  )
-  // Real-time signal: this message is now IN the chain, with its authoritative
-  // id and anchor. Run-less so it passes watchSession's live-run filter.
-  pushMessageAdded(deps.bus, tenant, sid, {
-    messageId: id,
-    prevId: tipId ?? '',
-    role: 'user',
-    streaming: false,
-  })
-}
-
-/** Append a completed step to the in-memory message list for the next step. */
-function appendStep(
-  messages: ModelMessage[],
-  text: string,
-  toolCalls: ToolCallRec[],
-  toolResults: ToolResultRec[],
-): ModelMessage[] {
-  const content: Array<
-    | { type: 'text'; text: string }
-    | {
-        type: 'tool-call'
-        toolCallId: string
-        toolName: string
-        input: unknown
-      }
-  > = []
-  if (text !== '') content.push({ type: 'text', text })
-  for (const tc of toolCalls) {
-    content.push({
-      type: 'tool-call',
-      toolCallId: tc.id,
-      toolName: tc.name,
-      input: tc.input ?? {},
-    })
-  }
-  const next: ModelMessage[] = [...messages]
-  next.push({ role: 'assistant', content })
-  if (toolResults.length > 0) {
-    next.push({
-      role: 'tool',
-      content: toolResults.map(r => ({
-        type: 'tool-result',
-        toolCallId: r.id,
-        toolName: r.name,
-        output: { type: 'text', value: r.result.content },
-      })),
-    })
-  }
-  return next
-}
-
-async function loadHistory(
-  deps: AgentDeps,
-  tenant: string,
-  sid: string,
-): Promise<ModelMessage[]> {
-  const tipRes = await Sessions.tip(deps.db, tenant, sid)
-  const tipId = tipRes.isErr() ? null : tipRes.value
-  if (tipId === null) return []
-
-  // Cache hit: use the cached id list to fetch rows + parts directly.
-  const cached = await getSessionIds(deps.bus, tenant, sid)
-  if (cached !== null) {
-    const rows = await Messages.byIds(deps.db, tenant, cached)
-    const parts = await Parts.listByMessages(deps.db, tenant, cached)
-    if (rows.isOk() && parts.isOk()) {
-      return spliceContext(rows.value, parts.value)
-    }
-  }
-
-  // Cache miss: bounded scan from tip, then backfill.
-  const chain = await Messages.chain(deps.db, tenant, tipId, 100_000, null)
-  if (chain.isErr()) return []
-  const ids = chain.value.map(m => m.id)
-  const parts = await Parts.listByMessages(deps.db, tenant, ids)
-  if (parts.isErr()) return []
-
-  // Backfill the cache with the full bounded id list.
-  fireAndForget(putSessionIds(deps.bus, tenant, sid, ids), 'putSessionIds')
-
-  return spliceContext(chain.value, parts.value)
-}
-
-/**
- * Build the LLM context from a bounded id list + parts. The newest compaction
- * message supplies the checkpoint summary; only messages at or after its
- * recorded tail boundary (`tail_from`) are kept verbatim — everything older
- * is represented by the checkpoint. With no compaction message the whole
- * chain is rebuilt verbatim.
- */
-export function spliceContext(
-  rows: ChainMessage[],
-  parts: PartRow[],
-): ModelMessage[] {
-  interface Cm {
-    summary: string
-    tailFrom: string | null
-  }
-  const cmByMsg = new Map<string, Cm>()
-  for (const p of parts) {
-    if (p.type !== 'summary') continue
-    const d = parse(SummaryPartDataSchema, p.data)
-    if (d.isOk()) {
-      cmByMsg.set(p.message_id, {
-        summary: d.value.summary,
-        tailFrom: d.value.tail_from ?? null,
-      })
-    }
-  }
-
-  // rows are oldest-first; walk from the newest end to find the latest
-  // compaction message (chain may carry several).
-  let cm: Cm | null = null
-  let cmIndex = -1
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const row = rows[i]
-    if (row === undefined) continue
-    const c = cmByMsg.get(row.id)
-    if (c !== undefined) {
-      cm = c
-      cmIndex = i
-      break
-    }
-  }
-
-  if (cm === null) {
-    return rebuildHistory(
-      rows.filter(r => r.role !== COMPACTION_ROLE),
-      parts,
-    )
-  }
-
-  // Prefer the recorded tail boundary; fall back to everything after the cm
-  // (legacy summaries written before tail_from existed).
-  let start = cmIndex + 1
-  if (cm.tailFrom !== null) {
-    const idx = rows.findIndex(r => r.id === cm.tailFrom)
-    if (idx >= 0) start = idx
-  }
-
-  const visibleRows = rows.slice(start).filter(r => r.role !== COMPACTION_ROLE)
-  const history = rebuildHistory(visibleRows, parts)
-  return [{ role: 'user', content: checkpointContent(cm.summary) }, ...history]
-}
-
-/**
- * Fold the chain prefix into a rule-based summary (no LLM) and persist a new
- * compaction message chained onto the tip.
- */
-export async function compactSession(
-  deps: AgentDeps,
-  tenant: string,
-  sid: string,
-  reason: 'manual' | 'overflow' = 'manual',
-): Promise<Result<boolean, string>> {
-  const tipRes = await Sessions.tip(deps.db, tenant, sid)
-  if (tipRes.isErr()) return err(tipRes.error)
-  const tipId = tipRes.value
-  if (tipId === null) return ok(false)
-
-  const sessionRes = await Sessions.get(deps.db, tenant, sid)
-  if (sessionRes.isErr()) return err(sessionRes.error)
-  const session = sessionRes.value
-  const modelId = session === null ? '' : session.model
-
-  const chain = await Messages.chain(deps.db, tenant, tipId, 100_000, null)
-  if (chain.isErr()) return err(chain.error)
-
-  const ids = chain.value.map(m => m.id)
-  const partsRes = await Parts.listByMessages(deps.db, tenant, ids)
-  if (partsRes.isErr()) return err(partsRes.error)
-  const parts = partsRes.value
-
-  // Fold entries: text per message + tool-call count.
-  const textByMsg = new Map<string, string>()
-  for (const p of parts) {
-    if (p.type !== 'text') continue
-    const d = parse(TextPartDataSchema, p.data)
-    if (d.isOk()) {
-      textByMsg.set(
-        p.message_id,
-        (textByMsg.get(p.message_id) ?? '') + d.value.text,
-      )
-    }
-  }
-  const toolCountByMsg = new Map<string, number>()
-  for (const p of parts) {
-    if (p.type === 'tool') {
-      toolCountByMsg.set(
-        p.message_id,
-        (toolCountByMsg.get(p.message_id) ?? 0) + 1,
-      )
-    }
-  }
-
-  const entries = chain.value.map(m => ({
-    id: m.id,
-    role: m.role,
-    text: textByMsg.get(m.id) ?? '',
-    toolCalls: toolCountByMsg.get(m.id) ?? 0,
-  }))
-
-  const limit = await contextLimit(deps, tenant, modelId)
-  // No configured context window for this provider/model ⇒ cannot compute
-  // budgets ⇒ skip compaction (never guess a window).
-  if (limit <= 0) return ok(false)
-  const { tail, folded } = splitScan(entries, limit * 0.2, limit * 0.1)
-  if (folded.length === 0) return ok(false)
-
-  const summary = foldQA(folded)
-  if (summary.trim() === '') return ok(false)
-
-  // tail is oldest-first; its first entry marks the verbatim boundary kept
-  // after this checkpoint.
-  const tailFromId = tail[0]?.id ?? null
-
-  const insert = await Messages.insert(deps.db, tenant, COMPACTION_ROLE, tipId)
-  if (insert.isErr()) return err(insert.error)
-  const cmId = insert.value
-  const part = await Parts.insertSummary(
-    deps.db,
-    tenant,
-    cmId,
-    summary,
-    tailFromId,
-  )
-  if (part.isErr()) return err(part.error)
-  await Sessions.setTip(deps.db, tenant, sid, cmId)
-  projectMessageFact(
-    deps.bus,
-    tenant,
-    sid,
-    factFromPersist(nowStr(), COMPACTION_ROLE, summary),
-  )
-
-  // Rewrite the cache to the new bounded context id list (with the cm).
-  const chainAfter = await Messages.chain(deps.db, tenant, cmId, 100_000, null)
-  if (chainAfter.isOk()) {
-    fireAndForget(
-      putSessionIds(
-        deps.bus,
-        tenant,
-        sid,
-        chainAfter.value.map(m => m.id),
-      ),
-      'putSessionIds',
-    )
-  }
-
-  pushEvent(deps.bus, tenant, sid, 'compacted', { reason })
-  return ok(true)
-}
-
-async function contextLimit(
-  deps: AgentDeps,
-  tenant: string,
-  modelRef: string,
-): Promise<number> {
-  // The context window is USER-CONFIGURED per provider model (required at
-  // registration). No external catalog, no fallback: an unknown provider/model
-  // yields 0, which disables compaction for that session.
-  const parsed = parseProviderModelRef(modelRef)
-  if (parsed === null) return 0
-  const rows = await Providers.list(deps.db, tenant)
-  if (rows.isErr()) return 0
-  const provider = rows.value.find(r => r.provider_id === parsed.providerId)
-  if (provider === undefined) return 0
-  const models = parse(
-    z.array(
-      z.object({
-        id: z.string(),
-        name: z.string().optional(),
-        context_limit: z.number().int(),
-      }),
-    ),
-    provider.models,
-  )
-  if (models.isErr()) return 0
-  const hit = models.value.find(m => m.id === parsed.modelId)
-  return hit?.context_limit ?? 0
-}
-
-/**
- * Resolve the selected reasoning variant to AI-SDK providerOptions + request
- * headers. Unknown variant or catalog miss ⇒ `{}`/undefined (provider
- * defaults; no providerOptions sent).
- */
-async function resolveVariantOptions(
-  deps: AgentDeps,
-  providerId: string,
-  modelId: string,
-  apiType: string,
-  variantId: string,
-): Promise<{
-  providerOptions: Record<string, JsonObject> | undefined
-  headers: Record<string, string> | undefined
-}> {
-  if (variantId === '')
-    return { providerOptions: undefined, headers: undefined }
-  const catalog = await getModelsDev(deps.bus)
-  const model = catalogModel(catalog, providerId, modelId)
-  if (model === null) {
-    logger.warn(
-      { provider: providerId, model: modelId, variant: variantId },
-      'variant requested but model not in catalog; ignoring',
-    )
-    return { providerOptions: undefined, headers: undefined }
-  }
-  const def = findVariant(model, apiType, variantId)
-  if (def === null) {
-    logger.warn(
-      { provider: providerId, model: modelId, variant: variantId },
-      'unknown variant; ignoring',
-    )
-    return { providerOptions: undefined, headers: undefined }
-  }
-  return {
-    providerOptions:
-      Object.keys(def.providerOptions).length > 0
-        ? def.providerOptions
-        : undefined,
-    headers: def.headers,
-  }
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+export { compactSession, spliceContext } from './session-compact.js'
 export { events }

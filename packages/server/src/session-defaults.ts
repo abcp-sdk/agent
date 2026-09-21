@@ -1,4 +1,3 @@
-import { Code, ConnectError } from '@connectrpc/connect'
 import {
   type AgentDeps,
   CONFIG_DEFAULT_MODEL,
@@ -7,6 +6,7 @@ import {
   DEFAULT_PRESET,
   Presets,
 } from '@abcp-agent/agent'
+import { Code, ConnectError } from '@connectrpc/connect'
 
 export async function resolveSessionDefaults(
   deps: AgentDeps,

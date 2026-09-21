@@ -58,16 +58,14 @@ describe('FilesDb is tenant-scoped', () => {
     expect(a2._unsafeUnwrap().code).toBe('code-a')
 
     // bySha is tenant-scoped.
-    expect((await FilesDb.bySha(d, 'tenant-a', sha))._unsafeUnwrap()?.code).toBe(
-      'code-a',
-    )
-    expect((await FilesDb.bySha(d, 'tenant-b', sha))._unsafeUnwrap()?.code).toBe(
-      'code-b',
-    )
-    // A tenant that never uploaded these bytes sees nothing.
     expect(
-      (await FilesDb.bySha(d, 'tenant-c', sha))._unsafeUnwrap(),
-    ).toBeNull()
+      (await FilesDb.bySha(d, 'tenant-a', sha))._unsafeUnwrap()?.code,
+    ).toBe('code-a')
+    expect(
+      (await FilesDb.bySha(d, 'tenant-b', sha))._unsafeUnwrap()?.code,
+    ).toBe('code-b')
+    // A tenant that never uploaded these bytes sees nothing.
+    expect((await FilesDb.bySha(d, 'tenant-c', sha))._unsafeUnwrap()).toBeNull()
 
     // byCode is tenant-scoped: tenant-b cannot resolve tenant-a's code.
     expect(

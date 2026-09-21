@@ -1,4 +1,3 @@
-import { Agent as AbcAgent } from '@abc-protocol/sdk'
 import type { Provider, ProviderMap } from '@opencode-ai/models'
 import { Models } from '@opencode-ai/models'
 import { providers as snapshotProviders } from '@opencode-ai/models/snapshot'

@@ -2,18 +2,15 @@ import { createServer as createHttpServer } from 'node:http'
 import * as http2Module from 'node:http2'
 import { serveBundled } from '@abc-protocol/bundled-extension'
 import { Agent as AbcAgent } from '@abc-protocol/sdk'
-import { createConnectRouter } from '@connectrpc/connect'
-import { createFetchHandler } from '@connectrpc/connect/protocol'
 import {
   type AgentDeps,
   type Bus,
   backfillKvFromPg,
   backfillModelRefs,
-  Config,
   calibrateMessageFacts,
+  configureFileMetaStore,
   connectBus,
   connectDb,
-  configureFileMetaStore,
   type Db,
   knownTenants,
   LlmRegistry,
@@ -35,6 +32,8 @@ import {
   tenantKVKey,
   watchMailboxWake,
 } from '@abcp-agent/agent'
+import { createConnectRouter } from '@connectrpc/connect'
+import { createFetchHandler } from '@connectrpc/connect/protocol'
 import { getRequestListener } from '@hono/node-server'
 import { Hono } from 'hono'
 import { buildAdminRoutes } from './admin.js'
@@ -161,7 +160,7 @@ async function main(): Promise<void> {
   // Agent-served file RPCs (`abc.<tenant>.file.ingest`/`.get`): let a DB-less,
   // store-less extension (e.g. the playwright extension) persist bytes + mint a
   // canonical file:<code> through the agent, regardless of blob backend.
-  const stopFileRpc = serveFileRpc({ bus, files })
+  const _stopFileRpc = serveFileRpc({ bus, files })
   // ONE long-lived abc agent role: it owns the extension-manifest cache and
   // the config authority. `serveConfig()` must run before any config write,
   // otherwise SetExtensionConfig fails with an opaque internal error (the
@@ -454,7 +453,7 @@ async function main(): Promise<void> {
   }
   app.options(
     '*',
-    c => new Response(null, { status: 204, headers: corsHeaders }),
+    _c => new Response(null, { status: 204, headers: corsHeaders }),
   )
   app.use('*', async (c, next) => {
     await next()

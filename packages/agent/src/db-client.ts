@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { drizzle as drizzleSqlite } from 'drizzle-orm/node-sqlite'
-import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
+import { drizzle } from 'drizzle-orm/postgres-js'
 import { ResultAsync } from 'neverthrow'
 import postgres, { type Sql } from 'postgres'
 import { z } from 'zod'
@@ -224,6 +224,15 @@ CREATE TABLE IF NOT EXISTS mailbox (
     consumed_at TEXT,
     seq INTEGER
 );
+-- Provider registry. THREAT MODEL for api_key: keys are stored in PLAINTEXT
+-- (both sqlite and PG). Acceptable because: the table is only readable via the
+-- DB handle inside the agent process; the RPC surface never returns a raw key
+-- (providers.ts masks it via maskSecret, and a client saving the MASKED value
+-- round-trips the stored key untouched); tenant tokens (the DB's other secret)
+-- are hashed sha256, so a DB dump yields provider keys but NOT credentials.
+-- NOT acceptable without changes when: the DB is hosted off-box, shared, or
+-- backed up unencrypted. Then encrypt at rest (e.g. XChaCha20 with a KMS-held
+-- key) BEFORE this column leaves the node. See README "Secret handling".
 CREATE TABLE IF NOT EXISTS providers (
     tenant TEXT NOT NULL DEFAULT 'default',
     provider_id TEXT NOT NULL,
@@ -640,9 +649,9 @@ function rebuildMailboxIfLegacyFk(raw: DatabaseSync): void {
  * No-op on fresh (already tenant-scoped) databases.
  */
 function rebuildAgentFilesIfLegacy(raw: DatabaseSync): void {
-  const cols = raw
-    .prepare('PRAGMA table_info(agent_files)')
-    .all() as Array<{ name: string }>
+  const cols = raw.prepare('PRAGMA table_info(agent_files)').all() as Array<{
+    name: string
+  }>
   if (cols.length === 0) return // table absent (nats mode / fresh)
   if (cols.some(c => String(c.name) === 'tenant')) return
   raw.exec('PRAGMA foreign_keys = OFF')

@@ -1,13 +1,13 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { connectDb, type Db, LlmRegistry } from '@abcp-agent/agent'
 import {
   Code,
   ConnectError,
   createContextValues,
   type HandlerContext,
 } from '@connectrpc/connect'
-import { connectDb, type Db } from '@abcp-agent/agent'
 import { afterEach, describe, expect, it } from 'vitest'
 import { kIdentity } from '../src/auth.js'
 import { providersHandlers } from '../src/handlers/providers.js'
@@ -33,7 +33,9 @@ async function handlers() {
   const r = await connectDb('sqlite', `sqlite://${join(dir, 'a.db')}`)
   if (r.isErr()) throw new Error(r.error)
   dbs.push(r.value)
-  return providersHandlers({ db: r.value } as never)
+  // registerProvider drops the llm client cache; the deps bag needs a real
+  // registry or invalidate() crashes.
+  return providersHandlers({ db: r.value, llm: new LlmRegistry() } as never)
 }
 const ctx = (): HandlerContext => {
   const values = createContextValues()

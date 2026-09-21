@@ -1,7 +1,8 @@
-import type { HandlerContext, Interceptor } from '@connectrpc/connect'
-import { Code, ConnectError, createContextKey } from '@connectrpc/connect'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import type { AgentDeps } from '@abcp-agent/agent'
 import { Tenants, touchToken } from '@abcp-agent/agent'
+import type { HandlerContext, Interceptor } from '@connectrpc/connect'
+import { Code, ConnectError, createContextKey } from '@connectrpc/connect'
 
 /**
  * Request authentication (protocol v2 multi-tenancy).
@@ -94,6 +95,17 @@ function bearerToken(req: {
 }
 
 /**
+ * Constant-time equality of two secrets. Hashing first normalizes the length
+ * (so the comparison time leaks neither content nor length) and makes
+ * `timingSafeEqual`'s equal-length requirement trivially satisfied.
+ */
+function tokensEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a, 'utf8').digest()
+  const hb = createHash('sha256').update(b, 'utf8').digest()
+  return timingSafeEqual(ha, hb)
+}
+
+/**
  * Connect interceptor implementing the auth gate for BOTH unary and streaming
  * calls: it runs before the handler reads the message and throws
  * `Unauthenticated` when the credential is missing/invalid.
@@ -127,8 +139,9 @@ export function makeAuth(
       throw new ConnectError('missing bearer token', Code.Unauthenticated)
     }
 
-    // Static admin token (never logged).
-    if (auth.adminToken !== '' && token === auth.adminToken) {
+    // Static admin token (never logged). Compared in constant time: hashing
+    // both sides to a fixed-length digest first hides the length as well.
+    if (auth.adminToken !== '' && tokensEqual(token, auth.adminToken)) {
       req.contextValues.set(kIdentity, { role: 'admin', tenant: '' })
       return next(req)
     }

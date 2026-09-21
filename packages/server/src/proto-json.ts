@@ -1,5 +1,5 @@
 import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
-import { create, fromJson, toJson } from '@bufbuild/protobuf'
+import { fromJson, toJson } from '@bufbuild/protobuf'
 import { type Value, ValueSchema } from '@bufbuild/protobuf/wkt'
 
 /**

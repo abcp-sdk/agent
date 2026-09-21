@@ -90,9 +90,16 @@ function run(
       done = true
       clearTimeout(timer)
       if (code === 0) {
-        resolve({ stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString('utf8') })
+        resolve({
+          stdout: Buffer.concat(out),
+          stderr: Buffer.concat(err).toString('utf8'),
+        })
       } else {
-        reject(new Error(`${bin} exited ${code}: ${Buffer.concat(err).toString('utf8').slice(0, 400)}`))
+        reject(
+          new Error(
+            `${bin} exited ${code}: ${Buffer.concat(err).toString('utf8').slice(0, 400)}`,
+          ),
+        )
       }
     })
   })
@@ -141,8 +148,14 @@ function mimeFromProbe(info: ProbeInfo): string | null {
     [/bmp/, 'image/bmp'],
     [/tiff/, 'image/tiff'],
     [/avif|heic|heif/, 'image/avif'],
-    [/mp4|mov|m4a|3gp|mj2|isom/, has('audio') && !has('video') ? 'audio/mp4' : 'video/mp4'],
-    [/matroska|webm/, has('audio') && !has('video') ? 'audio/webm' : 'video/webm'],
+    [
+      /mp4|mov|m4a|3gp|mj2|isom/,
+      has('audio') && !has('video') ? 'audio/mp4' : 'video/mp4',
+    ],
+    [
+      /matroska|webm/,
+      has('audio') && !has('video') ? 'audio/webm' : 'video/webm',
+    ],
     [/mpeg|mp3/, 'audio/mpeg'],
     [/flac/, 'audio/flac'],
     [/ogg/, 'audio/ogg'],
@@ -186,7 +199,8 @@ async function probeInfo(path: string): Promise<ProbeInfo> {
     json.format?.duration ??
     json.streams?.find(s => s.duration !== undefined)?.duration
   const dur = durStr !== undefined ? Number(durStr) : NaN
-  const durationMs = Number.isFinite(dur) && dur > 0 ? Math.round(dur * 1000) : null
+  const durationMs =
+    Number.isFinite(dur) && dur > 0 ? Math.round(dur * 1000) : null
   return {
     width,
     height,
@@ -358,7 +372,9 @@ async function probeAndStore(
           }
           await deps.files.put(tenant, thumbRecord.code, thumbRecord, thumb)
           const stored = await upsertFile(deps.bus, tenant, thumbRecord)
-          patch.thumb_code = stored.isOk() ? stored.value.code : thumbRecord.code
+          patch.thumb_code = stored.isOk()
+            ? stored.value.code
+            : thumbRecord.code
         }
       } catch (e) {
         logger.warn(

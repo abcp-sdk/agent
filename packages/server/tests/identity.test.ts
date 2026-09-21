@@ -1,8 +1,8 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createContextValues, type HandlerContext } from '@connectrpc/connect'
 import { connectDb, type Db, Tenants } from '@abcp-agent/agent'
+import { createContextValues, type HandlerContext } from '@connectrpc/connect'
 import { afterEach, describe, expect, it } from 'vitest'
 import { kIdentity } from '../src/auth.js'
 import { identityHandlers } from '../src/handlers/identity.js'
@@ -35,13 +35,21 @@ describe('GetIdentity', () => {
   it('resolves a tenant token to its id, human name and role', async () => {
     const h = await handlers()
     const out = await h.getIdentity!({} as never, ctx('tenant', 'acme'))
-    expect(out).toEqual({ tenant: 'acme', tenantName: 'Acme Corp', role: 'tenant' })
+    expect(out).toEqual({
+      tenant: 'acme',
+      tenantName: 'Acme Corp',
+      role: 'tenant',
+    })
   })
 
   it('falls back to the tenant id when no name is stored', async () => {
     const h = await handlers()
     const out = await h.getIdentity!({} as never, ctx('tenant', 'ghost'))
-    expect(out).toEqual({ tenant: 'ghost', tenantName: 'ghost', role: 'tenant' })
+    expect(out).toEqual({
+      tenant: 'ghost',
+      tenantName: 'ghost',
+      role: 'tenant',
+    })
   })
 
   it('resolves an admin token to role=admin with empty tenant fields', async () => {

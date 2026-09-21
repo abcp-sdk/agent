@@ -31,7 +31,6 @@ export * from './model-ref-backfill.js'
 export * from './models-dev.js'
 export * from './object-store-s3.js'
 export * from './session-agent.js'
-export * from './store-file.js'
 export {
   calibrateMessageFacts,
   factFromPersist,
@@ -48,6 +47,7 @@ export {
   putModelsDev,
   putSessionIds,
 } from './store.js'
+export * from './store-file.js'
 export * from './token.js'
 export * from './tools.js'
 export * from './variants.js'

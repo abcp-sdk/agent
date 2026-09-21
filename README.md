@@ -85,6 +85,22 @@ provider API keys are stored server-side and returned **masked**.
 - Multi-tenant: every subject/KV key/object is tenant-scoped (`t.<tenant>…`);
   per-session abort controllers are tenant-scoped in-memory.
 
+## Secret handling
+
+- **Tenant bearer tokens** are stored ONLY as sha256 hashes (`tenant_tokens.token_sha256`);
+  a database compromise yields no usable credential.
+- **Admin token** (`AGENT_ADMIN_TOKEN`) lives in the process env, is compared in
+  constant time, and is never logged.
+- **Provider API keys** (`providers.api_key`) are stored in PLAINTEXT — the agent
+  must present them verbatim to upstream model gateways, so they are recoverable
+  by necessity. Mitigations in place: the RPC surface always masks them
+  (`maskSecret`; saving a masked value round-trips the stored key untouched) and
+  tenant tokens remain hashed. This is acceptable ONLY while the DB file/instance
+  is single-node and not shared; if the database moves off-box, gets shared, or is
+  backed up unencrypted, encrypt `api_key` at rest first (e.g. XChaCha20 with a
+  KMS-held key). See the threat-model note at the `providers` DDL
+  (`packages/agent/src/db-client.ts`).
+
 ## Deploy
 
 `build-image.sh` builds the SEA binary in buildkit and pushes to the internal

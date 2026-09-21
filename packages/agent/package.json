@@ -11,7 +11,8 @@
   "scripts": {
     "build": "tsc --emitDeclarationOnly && node ../../scripts/build-esbuild.mjs",
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.5.2",

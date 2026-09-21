@@ -137,7 +137,7 @@ function fileRefsText(msgParts: PartRow[]): string {
     const meta = [f.mime, f.size != null ? `${f.size} B` : null]
       .filter(Boolean)
       .join(' | ')
-    const ref = `[附件 ${name} | file:${f.code}` + (meta ? ` | ${meta}]` : ']')
+    const ref = `[附件 ${name} | file:${f.code}${meta ? ` | ${meta}]` : ']'}`
     s += (s === '' ? '' : '\n') + ref
   }
   return s

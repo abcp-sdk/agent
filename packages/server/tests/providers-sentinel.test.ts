@@ -1,14 +1,15 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createContextValues, type HandlerContext } from '@connectrpc/connect'
 import {
   connectDb,
   type Db,
+  LlmRegistry,
   maskSecret,
   Providers,
   rawAll,
 } from '@abcp-agent/agent'
+import { createContextValues, type HandlerContext } from '@connectrpc/connect'
 import { afterEach, describe, expect, it } from 'vitest'
 import { kIdentity } from '../src/auth.js'
 import { providersHandlers } from '../src/handlers/providers.js'
@@ -41,8 +42,11 @@ describe('registerProvider api-key sentinel', () => {
     const r = await connectDb('sqlite', `sqlite://${join(dir, 'a.db')}`)
     if (r.isErr()) throw new Error(r.error)
     dbs.push(r.value)
+    // registerProvider drops the llm client cache; the deps bag needs a real
+    // registry or invalidate() crashes.
     return providersHandlers({
       db: r.value,
+      llm: new LlmRegistry(),
     } as never)
   }
 

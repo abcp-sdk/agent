@@ -3,8 +3,8 @@ import { z } from 'zod'
 import {
   ExtensionManifestSchema,
   MailboxRowSchema,
-  SessionRowSchema,
   parse,
+  SessionRowSchema,
 } from '../src/index.js'
 
 describe('parse', () => {

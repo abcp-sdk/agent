@@ -10,8 +10,13 @@
  * catalog caches, coordination KV) keep flowing through NATS. The transient
  * methods below just satisfy the interface and are never used by the bus.
  */
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+
 import type { ObjectStore } from '@abc-protocol/sdk'
+import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3'
 
 export interface S3Config {
   bucket: string

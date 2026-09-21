@@ -158,9 +158,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     bootstrapTenant: or('AGENT_BOOTSTRAP_TENANT', ''),
     bootstrapToken: or('AGENT_BOOTSTRAP_TOKEN', ''),
     disabledTools: parseDisabledTools(or('DISABLED_TOOLS', '')),
-    blobBackend: or('AGENT_BLOB_BACKEND', 'nats').toLowerCase() === 's3'
-      ? 's3'
-      : 'nats',
+    blobBackend:
+      or('AGENT_BLOB_BACKEND', 'nats').toLowerCase() === 's3' ? 's3' : 'nats',
     s3: {
       bucket: or('S3_BUCKET', ''),
       region: or('S3_REGION', 'us-east-1'),
@@ -185,7 +184,10 @@ export function parseExtConfigSeed(raw: string): ServerConfig['extConfigSeed'] {
   try {
     parsed = JSON.parse(raw)
   } catch (e) {
-    logger.warn({ err: String(e) }, 'AGENT_EXT_CONFIG_SEED: invalid JSON; ignored')
+    logger.warn(
+      { err: String(e) },
+      'AGENT_EXT_CONFIG_SEED: invalid JSON; ignored',
+    )
     return []
   }
   if (!Array.isArray(parsed)) {
@@ -201,7 +203,10 @@ export function parseExtConfigSeed(raw: string): ServerConfig['extConfigSeed'] {
     const name = String(e['name'] ?? '').trim()
     const value = e['value']
     if (tenant === '' || extId === '' || name === '' || value === undefined) {
-      logger.warn({ entry }, 'AGENT_EXT_CONFIG_SEED: entry missing fields; dropped')
+      logger.warn(
+        { entry },
+        'AGENT_EXT_CONFIG_SEED: entry missing fields; dropped',
+      )
       continue
     }
     out.push({ tenant, extId, name, value: String(value) })

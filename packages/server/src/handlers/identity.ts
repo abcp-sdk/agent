@@ -1,6 +1,6 @@
-import type { HandlerContext, ServiceImpl } from '@connectrpc/connect'
 import { type AgentDeps, Tenants } from '@abcp-agent/agent'
-import { type AgentService } from '@abcp-agent/schema'
+import type { AgentService } from '@abcp-agent/schema'
+import type { HandlerContext, ServiceImpl } from '@connectrpc/connect'
 import { identityOf } from '../auth.js'
 
 /**

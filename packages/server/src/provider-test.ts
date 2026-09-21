@@ -139,7 +139,7 @@ export async function runProviderTest(
       const built = buildGenerativeModel(c, input.modelId, 'image')
       if (built.isErr()) return { ok: false, result: built.error }
       const res = await generateImage({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // biome-ignore lint/suspicious/noExplicitAny: the AI SDK's generate* option bags are not fully typed across providers
         model: built.value as any,
         prompt: 'a small red square on a white background',
         n: 1,
@@ -155,7 +155,7 @@ export async function runProviderTest(
       const built = buildGenerativeModel(c, input.modelId, 'speech')
       if (built.isErr()) return { ok: false, result: built.error }
       const res = await generateSpeech({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // biome-ignore lint/suspicious/noExplicitAny: the AI SDK's generate* option bags are not fully typed across providers
         model: built.value as any,
         text: TEST_SPEECH_TEXT,
       })
@@ -169,7 +169,7 @@ export async function runProviderTest(
       // the AI SDK throws AI_NoTranscriptGeneratedError in that case, so treat
       // it as a PASS with an explicit note rather than a provider failure.
       const res = await transcribe({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // biome-ignore lint/suspicious/noExplicitAny: the AI SDK's generate* option bags are not fully typed across providers
         model: built.value as any,
         audio: asrSampleWav(16000, TEST_ASR_SAMPLE_SECONDS),
       }).catch((e: unknown) => {
@@ -198,7 +198,7 @@ export async function runProviderTest(
       const built = buildGenerativeModel(c, input.modelId, 'video')
       if (built.isErr()) return { ok: false, result: built.error }
       const res = await experimental_generateVideo({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // biome-ignore lint/suspicious/noExplicitAny: the AI SDK's generate* option bags are not fully typed across providers
         model: built.value as any,
         prompt: 'a cat sitting still',
         duration: TEST_VIDEO_SECONDS,
@@ -218,7 +218,7 @@ export async function runProviderTest(
       const built = buildGenerativeModel(c, input.modelId, 'embedding')
       if (built.isErr()) return { ok: false, result: built.error }
       const res = await embedMany({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // biome-ignore lint/suspicious/noExplicitAny: the AI SDK's generate* option bags are not fully typed across providers
         model: built.value as any,
         values: ['hello', 'world'],
       })
@@ -235,7 +235,7 @@ export async function runProviderTest(
       const built = buildGenerativeModel(c, input.modelId, 'rerank')
       if (built.isErr()) return { ok: false, result: built.error }
       const res = await rerank({
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // biome-ignore lint/suspicious/noExplicitAny: the AI SDK's generate* option bags are not fully typed across providers
         model: built.value as any,
         query: 'cat',
         documents: ['a dog barks', 'a cat sleeps'],

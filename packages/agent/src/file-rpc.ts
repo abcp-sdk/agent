@@ -1,12 +1,11 @@
-import { CH, FILE_GET_WILDCARD, FILE_INGEST_WILDCARD } from '@abc-protocol/sdk'
 import { randomUUID } from 'node:crypto'
+import { FILE_GET_WILDCARD, FILE_INGEST_WILDCARD } from '@abc-protocol/sdk'
 import { z } from 'zod'
 import type { Bus } from './bus.js'
 import { tenantObjectName } from './bus.js'
 import type { BlobStore } from './files.js'
 import { logger } from './logger.js'
 import { storeFile } from './store-file.js'
-import { parse } from './json.js'
 
 /**
  * Agent-served file RPCs (`abc.<tenant>.file.ingest` / `.file.get`).
@@ -69,7 +68,10 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
             replyTo,
             {
               ok: false,
-              error: { code: 'invalid_argument', message: 'invalid ingest request' },
+              error: {
+                code: 'invalid_argument',
+                message: 'invalid ingest request',
+              },
             },
             { tenant },
           )
@@ -81,7 +83,10 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
           if (raw === null) {
             await bus.publish(
               replyTo,
-              { ok: false, error: { code: 'not_found', message: 'ingest object missing' } },
+              {
+                ok: false,
+                error: { code: 'not_found', message: 'ingest object missing' },
+              },
               { tenant },
             )
             continue
@@ -90,7 +95,13 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
           if (bytes.length === 0) {
             await bus.publish(
               replyTo,
-              { ok: false, error: { code: 'invalid_argument', message: 'file data is empty' } },
+              {
+                ok: false,
+                error: {
+                  code: 'invalid_argument',
+                  message: 'file data is empty',
+                },
+              },
               { tenant },
             )
             continue
@@ -101,7 +112,10 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
               replyTo,
               {
                 ok: false,
-                error: { code: 'invalid_argument', message: 'file name is required' },
+                error: {
+                  code: 'invalid_argument',
+                  message: 'file name is required',
+                },
               },
               { tenant },
             )
@@ -116,7 +130,9 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
               data: bytes,
               name: cleanName,
               uploaderSession: session_name ?? '',
-              ...(parsed.data.code !== undefined ? { code: parsed.data.code } : {}),
+              ...(parsed.data.code !== undefined
+                ? { code: parsed.data.code }
+                : {}),
             },
           )
           await bus.publish(
@@ -149,7 +165,13 @@ export function serveFileRpc(deps: FileRpcDeps): () => void {
         if (!parsed.success) {
           await bus.publish(
             replyTo,
-            { ok: false, error: { code: 'invalid_argument', message: 'invalid get request' } },
+            {
+              ok: false,
+              error: {
+                code: 'invalid_argument',
+                message: 'invalid get request',
+              },
+            },
             { tenant },
           )
           continue

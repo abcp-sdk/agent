@@ -1,97 +1,19 @@
-import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
-import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
-import { create, fromJson, toJson } from '@bufbuild/protobuf'
-import { StructSchema, type Value, ValueSchema } from '@bufbuild/protobuf/wkt'
-import {
-  Code,
-  ConnectError,
-  type ConnectRouter,
-  type HandlerContext,
-  type ServiceImpl,
-} from '@connectrpc/connect'
-import {
-  type AgentDeps,
-  appendSessionId,
-  BUCKET_SESSION_STATE,
-  type ChainMessage,
-  CONFIG_DEFAULT_MODEL,
-  CONFIG_DEFAULT_PRESET,
-  Config,
-  catalogModel,
-  clearActiveRun,
-  compactSession,
-  DEFAULT_PRESET,
-  deleteSessionIds,
-  discoverTools,
-  factFromPersist,
-  fileByCode,
-  findVariant,
-  fireAndForget,
-  GATEWAY_API_TYPE,
-  getModelsDev,
-  interruptRun,
-  localizeSchema,
-  Mailbox,
-  Messages,
-  mailboxSubject,
-  maskSecret,
-  Parts,
-  Presets,
-  Providers,
-  parse,
-  parseCapability,
-  parseProviderModelRef,
-  pickDescription,
-  pickLocalized,
-  projectMessageFact,
-  publishLifecycle,
-  publishSessionChanged,
-  pushChainChanged,
-  readActiveRun,
-  readMessageFacts,
-  renderTemplate,
-  resolveLocale,
-  Sessions,
-  TextPartDataSchema,
-  toModelVariant,
-  toolConfigMap,
-  validateApiType,
-  variantsForApiType,
-  writeMessageFact,
-} from '@abcp-agent/agent'
+import { type AgentDeps, fileByCode } from '@abcp-agent/agent'
 import {
   type AgentService,
   FileChunkSchema,
-  GetAgentConfigResponseSchema,
   GetFileResponseSchema,
   IngestFileResponseSchema,
-  ListToolsResponseSchema,
-  type WatchSessionResponse,
-  WatchSessionResponseSchema,
-  type WatchSessionsResponse,
-  WatchSessionsResponseSchema,
 } from '@abcp-agent/schema'
-import { EidDedup } from '../context.js'
+import { create } from '@bufbuild/protobuf'
 import {
-  fieldString,
-  isRecord,
-  toJsonObject,
-  toJsonValue,
-  toStructFields,
-  toStructValue,
-  toValue,
-  valueToRaw,
-} from '../proto-json.js'
-import { runProviderTest } from '../provider-test.js'
-import { resolveSessionDefaults } from '../session-defaults.js'
+  Code,
+  ConnectError,
+  type HandlerContext,
+  type ServiceImpl,
+} from '@connectrpc/connect'
 import { tenantOf } from '../tenant.js'
-import {
-  parseProviderModels,
-  presetToMsg,
-  providerToMsg,
-  sessionToMsg,
-} from '../views.js'
-import { refreshMessageFactFromTip, storeBytes } from './helpers.js'
+import { storeBytes } from './helpers.js'
 
 /**
  * File handlers: upload/ingest/get/meta.
