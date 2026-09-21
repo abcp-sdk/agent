@@ -100,6 +100,32 @@ export function pushEvent(
 }
 
 /**
+ * Awaited variant of [pushEvent]. Ordered publication matters for the
+ * session-terminal `status:idle`: it must be durably enqueued BEFORE the run
+ * lease is released, otherwise a mailbox wake for the next turn can claim the
+ * freed lease and emit `status:busy`, leaving this idle to land AFTER the new
+ * busy — watchers then close the live turn mid-flight. Callers that need
+ * ordering (not best-effort) must await this.
+ */
+export async function pushEventNow(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+  event: string,
+  params: unknown = {},
+): Promise<void> {
+  try {
+    await bus.inboxPublish(
+      sseSubject(tenant, sid),
+      { event, params, eid: randomUUID() },
+      { id: randomUUID(), tenant },
+    )
+  } catch (err) {
+    logger.warn({ tenant, sid, err: String(err) }, 'sse publish failed')
+  }
+}
+
+/**
  * Announce that a session's MESSAGE CHAIN changed out-of-band (an undo /
  * retry withdraw moved the tip backwards). Published on the same per-session
  * event stream as turn events but WITHOUT a `run_id`, so `watchSession`'s
@@ -128,6 +154,39 @@ export function pushChainChanged(
       logger.warn(
         { tenant, sid, err: String(err) },
         'chain-changed publish failed',
+      )
+    })
+}
+
+/**
+ * Announce that a NEW message landed in a session's chain (the mailbox-only
+ * write path persists the user prompt inside the turn). Published on the same
+ * per-session event stream as turn events but WITHOUT a `run_id`, so
+ * `watchSession`'s live-run filter must exempt it. Every client viewing the
+ * session reacts by re-fetching the authoritative chain — this is what shows
+ * the user's own message on OTHER devices in real time, and what makes a
+ * mailbox-delivered prompt (subsession-create / mail-send) converge.
+ */
+export function pushMessageAdded(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+  messageId: string,
+): void {
+  void bus
+    .inboxPublish(
+      sseSubject(tenant, sid),
+      {
+        event: 'message-added',
+        params: { message_id: messageId },
+        eid: randomUUID(),
+      },
+      { id: randomUUID(), tenant },
+    )
+    .catch(err => {
+      logger.warn(
+        { tenant, sid, err: String(err) },
+        'message-added publish failed',
       )
     })
 }

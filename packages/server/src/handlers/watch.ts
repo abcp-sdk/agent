@@ -125,21 +125,41 @@ export function watchHandlers(
           }
         }
       }
+      // Live runs we are allowed to surface. Seeded with the turn active at
+      // subscription time; a NEW run is adopted the moment its `status:busy`
+      // arrives. This matters because a mailbox-drained prompt CONTINUES the
+      // session as a fresh run after the anchored turn ends — with a static
+      // snapshot those run-B events were filtered out and the client hung until
+      // a manual refresh re-subscribed with a new anchor.
+      const liveRuns = new Set<string>()
+      if (activeRun !== null) liveRuns.add(activeRun.runId)
       const dedup = new EidDedup()
       for await (const raw of agent.streamEvents(
         tenant,
         id,
         startTimeMs !== undefined ? { startTimeMs } : undefined,
       )) {
-        // Only the live run's events (a prior turn's terminal marker may fall
-        // inside the same time window); never resurface finished/revoked runs.
-        // EXEMPT chain-changed: it is an out-of-band chain notification with
-        // no run_id, and MUST reach viewers even while a turn is running.
-        const isChainChanged = raw?.event === 'chain-changed'
+        // Adopt a newly-started turn. `status:busy` is emitted at the top of
+        // every run with its run_id, so this catches run B without polling.
+        const rawRunId = fieldString(raw?.params, 'run_id') ?? ''
         if (
-          !isChainChanged &&
-          activeRun !== null &&
-          fieldString(raw?.params, 'run_id') !== activeRun.runId
+          raw?.event === 'status' &&
+          fieldString(raw?.params, 'type') === 'busy' &&
+          rawRunId !== ''
+        ) {
+          liveRuns.add(rawRunId)
+        }
+        // Only the live runs' events (a prior turn's terminal marker may fall
+        // inside the same time window); never resurface finished/revoked runs.
+        // EXEMPT out-of-band chain notifications (chain-changed, message-added):
+        // they carry no run_id and MUST reach viewers even while a turn is
+        // running, so a revert / a freshly-appended user message converges.
+        const isOutOfBand =
+          raw?.event === 'chain-changed' || raw?.event === 'message-added'
+        if (
+          !isOutOfBand &&
+          liveRuns.size > 0 &&
+          !liveRuns.has(rawRunId)
         ) {
           continue
         }

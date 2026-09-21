@@ -68,13 +68,28 @@ export const ContentPayloadSchema = z.object({
   text: z.string().optional(),
   prompt: z.string().optional(),
   /**
-   * Logical message id already assigned by the producer. When present, the
-   * agent persists the user message with THIS id idempotently: the producer
-   * (HTTP Prompt route) has already written the row, so the agent's mailbox
-   * handlers must not insert a second copy. Absent (subsession-create,
-   * mail-send, extensions) => the agent owns both id and write.
+   * Logical message id already assigned by the producer. The mailbox consumer
+   * persists the user message with THIS id (idempotent by id), so a
+   * redelivered envelope never inserts a duplicate row. Absent
+   * (subsession-create, mail-send, extensions) => the agent mints the id.
    */
   message_id: z.string().optional(),
+  /**
+   * Resolved attachment refs (the HTTP Prompt route validates each `code`
+   * against the stored file record and hands the metadata over, so the agent
+   * writes the file parts without a second lookup). Absent when the prompt
+   * carries no attachments.
+   */
+  attachments: z
+    .array(
+      z.object({
+        code: z.string(),
+        name: z.string(),
+        mime: z.string(),
+        size: z.number(),
+      }),
+    )
+    .optional(),
 })
 export type ContentPayload = z.infer<typeof ContentPayloadSchema>
 

@@ -74,3 +74,8 @@ buildkitd:
   image: docker.io/moby/buildkit:v0.32.2-rootless
   port: 1234
   dataPath: /home/develop/Agent/Volumes/BUILDKIT
+  # Sized for CONCURRENT image builds (agent + webui + extensions in parallel):
+  # the default 2c/2Gi starved the builder (rpc EOF / OOM mid-build).
+  resources:
+    requests: { cpu: "2", memory: 8Gi }
+    limits: { cpu: "16", memory: 64Gi }

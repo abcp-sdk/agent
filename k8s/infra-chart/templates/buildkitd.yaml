@@ -81,8 +81,7 @@ spec:
           appArmorProfile:
             type: Unconfined
         resources:
-          limits: { cpu: "2", memory: 2Gi }
-          requests: { cpu: 200m, memory: 256Mi }
+          {{- toYaml $svc.resources | nindent 10 }}
         volumeMounts:
         - { name: cfg, mountPath: /home/user/.config/buildkit/buildkitd.toml, subPath: buildkitd.toml, readOnly: true }
         - { name: docker, mountPath: /home/user/.docker/config.json, subPath: config.json, readOnly: true }

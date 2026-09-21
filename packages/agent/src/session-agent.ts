@@ -29,7 +29,14 @@ import { type ChainMessage, Messages } from './db-messages.js'
 import { Parts } from './db-parts.js'
 import { Providers } from './db-providers.js'
 import { Sessions } from './db-sessions.js'
-import { clearActiveRun, events, markActiveRun, pushEvent } from './events.js'
+import {
+  clearActiveRun,
+  events,
+  markActiveRun,
+  pushEvent,
+  pushEventNow,
+  pushMessageAdded,
+} from './events.js'
 import { renderTemplate } from './extensions.js'
 import type { BlobStore } from './files.js'
 import { rebuildHistory } from './history.js'
@@ -217,6 +224,10 @@ export async function runSessionTurn(
       )
     }, SESSION_LEASE_MS / 3)
 
+    // Drain every pending item while holding the lease. Each prompt runs as
+    // its own run (busy → … → turn-complete); there is NO idle between them —
+    // a mailbox continuation is the SAME busy period, exactly as the user
+    // expects ("跑完之后 consume mailbox 应延续 busy，不发 idle").
     try {
       for (;;) {
         const item = await drainOne(deps, tenant, sid)
@@ -235,13 +246,39 @@ export async function runSessionTurn(
       await releaseSession(deps.bus, tenant, sid)
     }
 
-    // Released: confirm nothing arrived during the release window. If it did,
-    // loop and re-claim (the lease is now free, so the claim wins).
-    const leftover = await drainOne(deps, tenant, sid)
-    if (leftover === null) break
-    await handleItem(deps, tenant, sid, leftover)
+    // The drain is empty. Release, then RE-CLAIM: the release opens a window
+    // where a mailbox wake for a late prompt could not claim (we held the
+    // lease) and returned, so its row may still be pending. Owning the lease
+    // again lets us decide the lifecycle atomically.
+    let reRevision: number | null
+    try {
+      reRevision = await claimSession(deps.bus, tenant, sid)
+    } catch (e) {
+      logger.warn({ tenant, sid, err: String(e) }, 're-claim error')
+      return
+    }
+    if (reRevision === null) {
+      // Another invocation owns the session now; IT will process any prompt and
+      // emit the terminal idle when it finishes. We must not emit idle here.
+      return
+    }
+    const pending = await drainOne(deps, tenant, sid)
+    if (pending !== null) {
+      // A late prompt arrived: run it under THIS lease. No idle is emitted
+      // between the runs, so the continuation stays one busy period.
+      await handleItem(deps, tenant, sid, pending)
+      await releaseSession(deps.bus, tenant, sid)
+      continue
+    }
+    // No work remains and we own the lease: emit the terminal idle WHILE STILL
+    // HOLDING it, and AWAIT the publish. Holding the lease makes "busy for the
+    // next run" and "idle for this one" mutually exclusive; awaiting removes
+    // the reorder window. The client therefore never sees an idle land after a
+    // newer run's busy (which used to tear down the live continuation).
+    await pushEventNow(deps.bus, tenant, sid, 'status', { type: 'idle' })
+    await releaseSession(deps.bus, tenant, sid)
+    return
   }
-  pushEvent(deps.bus, tenant, sid, 'status', { type: 'idle' })
 }
 
 async function handleItem(
@@ -257,18 +294,18 @@ async function handleItem(
   }
 
   if (item.msg_type === 'user_prompt') {
-    // Persist the prompt into the chain BEFORE running the turn. The HTTP
-    // Prompt route pre-persists its own user message, but a mailbox-delivered
-    // user_prompt (subsession-create's handoff, mail-send's result) arrives
-    // ONLY here — without this the text would be dropped and the turn would
-    // run against stale history.
+    // Persist the prompt into the chain BEFORE running the turn. The mailbox
+    // is the single writer: the HTTP Prompt route publishes the envelope and
+    // never writes the chain, and a mailbox-delivered user_prompt
+    // (subsession-create's handoff, mail-send's result) arrives here too.
     const payload = parse(ContentPayloadSchema, item.payload)
     const text = payload.isOk()
       ? (payload.value.text ?? payload.value.prompt ?? item.payload)
       : item.payload
     const messageId = payload.isOk() ? (payload.value.message_id ?? '') : ''
-    if (text !== '') {
-      await persistUserPrompt(deps, tenant, sid, text, messageId)
+    const attachments = payload.isOk() ? (payload.value.attachments ?? []) : []
+    if (text !== '' || attachments.length > 0) {
+      await persistUserPrompt(deps, tenant, sid, text, messageId, attachments)
     }
     const r = await runTurnOnce(deps, tenant, sid)
     if (r !== null) {
@@ -585,14 +622,15 @@ async function runTurnOnce(
     if (unsub !== null) unsub()
     clearRun(tenant, sid)
     clearActiveRun(deps.bus, tenant, sid)
-    pushEvent(
-      deps.bus,
-      tenant,
-      sid,
-      'turn-complete',
-      { reason: interrupted ? 'interrupted' : 'stop' },
-      runId,
-    )
+    // AWAIT this terminal: the client uses `turn-complete` to close the run,
+    // and a following mailbox turn publishes its `status:busy` + deltas on the
+    // same subject. A fire-and-forget publish could be reordered after that
+    // new busy, so the client would tear down the live continuation. Durable
+    // (awaited) ordering keeps "old run ends" strictly before "new run starts".
+    await pushEventNow(deps.bus, tenant, sid, 'turn-complete', {
+      reason: interrupted ? 'interrupted' : 'stop',
+      run_id: runId,
+    })
   }
   return null
 }
@@ -937,11 +975,15 @@ async function drainAndInject(
         ? (payload.value.text ?? payload.value.prompt ?? item.payload)
         : item.payload
       const messageId = payload.isOk() ? (payload.value.message_id ?? '') : ''
-      // Idempotent by id: a message the HTTP Prompt route already stored is a
-      // no-op here (no duplicate row). A brand-new message is stored AND
-      // injected so the running turn can pivot to it.
-      await persistUserPrompt(deps, tenant, sid, text, messageId)
-      injected.push(text)
+      const attachments = payload.isOk() ? (payload.value.attachments ?? []) : []
+      // Idempotent by id: a redelivered envelope is a no-op (no duplicate
+      // row). A brand-new message is stored AND injected so the running turn
+      // can pivot to it.
+      await persistUserPrompt(deps, tenant, sid, text, messageId, attachments)
+      // Only a text prompt continues the running turn; an attachment-only
+      // message is now in the chain (its file parts render via history) and is
+      // picked up by the next turn rather than injected as empty content.
+      if (text !== '') injected.push(text)
       continue
     }
     await persistEvent(deps, tenant, sid, item.payload)
@@ -949,21 +991,37 @@ async function drainAndInject(
   return injected
 }
 
-/** Persist an injected user prompt as a chained `role=user` message. */
+/** Resolved attachment ref carried in the user_prompt payload. */
+interface PromptAttachment {
+  code: string
+  name: string
+  mime: string
+  size: number
+}
+
+/** Persist an injected user prompt as a chained `role=user` message.
+ *
+ * The mailbox is the SINGLE writer of the prompt chain: the HTTP Prompt route
+ * publishes the envelope (with a pre-minted message id) and never touches the
+ * DB, so every chain append happens here, under the session's run lease. That
+ * serializes prompt-vs-prompt and prompt-vs-turn appends — the previous
+ * double-write (route wrote the row, then this idempotently no-op'd) left the
+ * route's `tip -> insert -> setTip` exposed to interleaving with `persistStep`.
+ */
 async function persistUserPrompt(
   deps: AgentDeps,
   tenant: string,
   sid: string,
   text: string,
   messageId?: string,
+  attachments: PromptAttachment[] = [],
 ): Promise<void> {
   const id =
     messageId !== undefined && messageId !== '' ? messageId : randomUUID()
   const tip = await Sessions.tip(deps.db, tenant, sid)
   const tipId = tip.isErr() ? null : tip.value
-  // Idempotent by id: a producer that already wrote this message (HTTP Prompt
-  // route) makes this a no-op, so the same logical user message is never
-  // inserted twice even though BOTH the route and the mailbox handlers write.
+  // Idempotent by id: a redelivered envelope (JetStream at-least-once) makes
+  // this a no-op rather than a duplicate row.
   const created = await Messages.insertWithId(
     deps.db,
     tenant,
@@ -972,16 +1030,33 @@ async function persistUserPrompt(
     tipId,
   )
   if (created.isErr()) return
-  if (!created.value) return // already persisted by the producer
-  await Parts.insert(deps.db, tenant, id, 'text', 0, { text })
+  if (!created.value) return // already persisted (redelivery)
+  // File parts first (in payload order), then the text part — the same layout
+  // the route used to write, so the read API/UI renders identically.
+  let seq = 0
+  for (const att of attachments) {
+    await Parts.insert(deps.db, tenant, id, 'file', seq++, att)
+  }
+  if (text !== '') {
+    await Parts.insert(deps.db, tenant, id, 'text', seq++, { text })
+  }
   await Sessions.setTip(deps.db, tenant, sid, id)
   fireAndForget(appendSessionId(deps.bus, tenant, sid, id), 'appendSessionIds')
+  const preview =
+    text !== ''
+      ? text
+      : attachments.length > 0
+        ? `[${attachments.length} attachment(s)]`
+        : ''
   projectMessageFact(
     deps.bus,
     tenant,
     sid,
-    factFromPersist(nowStr(), 'user', text),
+    factFromPersist(nowStr(), 'user', preview),
   )
+  // Real-time signal: this message is now IN the chain. Run-less so it passes
+  // watchSession's live-run filter; other clients reconcile to show it.
+  pushMessageAdded(deps.bus, tenant, sid, id)
 }
 
 /** Append a completed step to the in-memory message list for the next step. */

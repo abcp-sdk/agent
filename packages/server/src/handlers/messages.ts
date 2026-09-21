@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
 import type { JsonObject, JsonValue } from '@bufbuild/protobuf'
 import { create, fromJson, toJson } from '@bufbuild/protobuf'
@@ -11,7 +12,6 @@ import {
 } from '@connectrpc/connect'
 import {
   type AgentDeps,
-  appendSessionId,
   BUCKET_SESSION_STATE,
   type ChainMessage,
   CONFIG_DEFAULT_MODEL,
@@ -23,10 +23,8 @@ import {
   DEFAULT_PRESET,
   deleteSessionIds,
   discoverTools,
-  factFromPersist,
   fileByCode,
   findVariant,
-  fireAndForget,
   GATEWAY_API_TYPE,
   getModelsDev,
   interruptRun,
@@ -43,7 +41,6 @@ import {
   parseProviderModelRef,
   pickDescription,
   pickLocalized,
-  projectMessageFact,
   publishLifecycle,
   publishSessionChanged,
   pushChainChanged,
@@ -179,11 +176,18 @@ export function messagesHandlers(
       if (session.isErr()) throw new Error(session.error)
       if (session.value === null) throw new Error('session not found')
 
-      const tipRes = await Sessions.tip(deps.db, tenant, id)
-      const tipId = tipRes.isErr() ? null : tipRes.value
-      const insert = await Messages.insert(deps.db, tenant, 'user', tipId)
-      if (insert.isErr()) throw new Error(insert.error)
-      let seq = 0
+      // Resolve + validate attachments here (so a bad ref fails the RPC with
+      // the right ConnectError code), then hand the resolved metadata to the
+      // mailbox consumer, which owns the actual chain write. The client sends
+      // ONLY the code; name / mime / size come from the stored record whose
+      // mime the agent DERIVED at ingest. A file part must carry real metadata,
+      // otherwise the prompt is refused (a blank file part cannot be rendered).
+      const resolved: Array<{
+        code: string
+        name: string
+        mime: string
+        size: number
+      }> = []
       for (const att of attachments ?? []) {
         if (att.code === '') {
           throw new ConnectError(
@@ -191,10 +195,6 @@ export function messagesHandlers(
             Code.InvalidArgument,
           )
         }
-        // The client sends ONLY the code: name / mime / size are resolved
-        // from the stored record, whose mime the agent DERIVED at ingest. A
-        // file part must carry a real name, mime and size, otherwise the
-        // prompt is refused (a blank metadata file part cannot be rendered).
         const rec = await fileByCode(deps.bus, tenant, att.code)
         if (rec.isErr()) throw new Error(rec.error)
         if (rec.value === null) {
@@ -213,51 +213,23 @@ export function messagesHandlers(
             Code.FailedPrecondition,
           )
         }
-        await Parts.insert(deps.db, tenant, insert.value, 'file', seq++, {
-          code: att.code,
-          name,
-          mime,
-          size,
-        })
+        resolved.push({ code: att.code, name, mime, size })
       }
-      if (prompt !== '') {
-        await Parts.insert(deps.db, tenant, insert.value, 'text', seq++, {
-          text: prompt,
-        })
-      }
-      await Sessions.setTip(deps.db, tenant, id, insert.value)
-      fireAndForget(
-        appendSessionId(deps.bus, tenant, id, insert.value),
-        'appendSessionIds',
-      )
-      // Mirror the newest-message fact immediately so the chat-list preview
-      // shows the user's message right away (assistant steps overwrite it as
-      // the turn progresses).
-      const previewText =
-        prompt !== ''
-          ? prompt
-          : attachments.length > 0
-            ? `[${attachments.length} attachment(s)]`
-            : ''
-      projectMessageFact(
-        deps.bus,
-        tenant,
-        id,
-        factFromPersist(new Date().toISOString(), 'user', previewText),
-      )
-      // The route owns the row for this logical message (id = insert.value):
-      // it writes the parts/tip/fact above for an immediate preview, then
-      // wakes the turn with the SAME id in the payload. The agent's mailbox
-      // handlers persist idempotently, so the message is never inserted
-      // twice even though both paths "persist".
+
+      // The MAILBOX is the single writer of the prompt chain: the route mints
+      // the logical message id and publishes it, and the agent persists the
+      // row/parts/tip under the session's run lease. This is what serializes
+      // concurrent prompts (and prompt-vs-turn appends) — the old double-write
+      // left `tip -> insert -> setTip` here exposed to interleaving.
+      const messageId = randomUUID()
       await new AbcAgent(deps.bus).publishMailbox(tenant, id, 'user_prompt', {
-        message_id: insert.value,
+        message_id: messageId,
         text: prompt,
-        attachments: attachments ?? [],
+        attachments: resolved,
       })
       yield {
         event: 'accepted',
-        params: { message_id: insert.value },
+        params: { message_id: messageId },
         eid: '',
       }
     },
