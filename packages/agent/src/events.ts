@@ -159,36 +159,69 @@ export function pushChainChanged(
 }
 
 /**
- * Announce that a NEW message landed in a session's chain (the mailbox-only
- * write path persists the user prompt inside the turn). Published on the same
- * per-session event stream as turn events but WITHOUT a `run_id`, so
- * `watchSession`'s live-run filter must exempt it. Every client viewing the
- * session reacts by re-fetching the authoritative chain — this is what shows
- * the user's own message on OTHER devices in real time, and what makes a
- * mailbox-delivered prompt (subsession-create / mail-send) converge.
+ * Announce a message in a session's chain, carrying its SERVER-AUTHORED id and
+ * chain anchor. This is the single source of truth for message identity and
+ * position: clients never mint their own ids or guess the chain — they group
+ * streamed deltas by `message_id` and place each message after `prev_id`.
+ *
+ * Emitted twice per message lifecycle:
+ *   - `streaming: true`  — an assistant STEP is about to stream. Sent BEFORE
+ *     any delta of that step, so a client can create the bubble under the id
+ *     the deltas will carry.
+ *   - `streaming: false` — the message was persisted (user prompt, or a
+ *     completed step). Awaited by the caller when ordering matters.
+ *
+ * Run-less for user prompts (so `watchSession`'s live-run filter must exempt
+ * it); assistant steps pass their `runId` so they stay scoped to the live turn.
  */
+export interface MessageAddedParams {
+  messageId: string
+  prevId: string
+  role: string
+  streaming: boolean
+}
+
+/**
+ * Publish a message-added event, AWAITED. Use when ordering against the
+ * subsequent streamed deltas is required (assistant step start).
+ */
+export async function pushMessageAddedNow(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+  p: MessageAddedParams,
+  runId?: string,
+): Promise<void> {
+  const params: Record<string, unknown> = {
+    message_id: p.messageId,
+    prev_id: p.prevId,
+    role: p.role,
+    streaming: p.streaming,
+  }
+  if (runId !== undefined) params['run_id'] = runId
+  try {
+    await bus.inboxPublish(
+      sseSubject(tenant, sid),
+      { event: 'message-added', params, eid: randomUUID() },
+      { id: randomUUID(), tenant },
+    )
+  } catch (err) {
+    logger.warn(
+      { tenant, sid, err: String(err) },
+      'message-added publish failed',
+    )
+  }
+}
+
+/** Fire-and-forget [pushMessageAddedNow] (best-effort ordering). */
 export function pushMessageAdded(
   bus: Bus,
   tenant: string,
   sid: string,
-  messageId: string,
+  p: MessageAddedParams,
+  runId?: string,
 ): void {
-  void bus
-    .inboxPublish(
-      sseSubject(tenant, sid),
-      {
-        event: 'message-added',
-        params: { message_id: messageId },
-        eid: randomUUID(),
-      },
-      { id: randomUUID(), tenant },
-    )
-    .catch(err => {
-      logger.warn(
-        { tenant, sid, err: String(err) },
-        'message-added publish failed',
-      )
-    })
+  void pushMessageAddedNow(bus, tenant, sid, p, runId)
 }
 
 export const events = {

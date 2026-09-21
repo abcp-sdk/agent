@@ -36,6 +36,7 @@ import {
   pushEvent,
   pushEventNow,
   pushMessageAdded,
+  pushMessageAddedNow,
 } from './events.js'
 import { renderTemplate } from './extensions.js'
 import type { BlobStore } from './files.js'
@@ -409,6 +410,27 @@ async function runTurnOnce(
       // step may retry once after an overflow compaction.
       let stepMessages = messages
 
+      // Mint this step's message id and chain anchor BEFORE streaming, and
+      // announce it. The id is authoritative: every delta below carries it and
+      // `persistStep` writes the SAME id, so a client groups the live stream by
+      // id and never has to guess. The anchor is the current tip (already
+      // reflecting any user_prompt drained at the previous boundary).
+      const stepMessageId = randomUUID()
+      const tipRes = await Sessions.tip(deps.db, tenant, sid)
+      const stepPrevId: string | null = tipRes.isErr() ? null : tipRes.value
+      await pushMessageAddedNow(
+        deps.bus,
+        tenant,
+        sid,
+        {
+          messageId: stepMessageId,
+          prevId: stepPrevId ?? '',
+          role: 'assistant',
+          streaming: true,
+        },
+        runId,
+      )
+
       const attempt = async (): Promise<
         | {
             text: string
@@ -548,6 +570,9 @@ async function runTurnOnce(
               size: Number(sanitized['size'] ?? 0),
             })
           }
+          // Tag every part with the step's server id so the client routes the
+          // streamed deltas into the right bubble without guessing.
+          sanitized['message_id'] = stepMessageId
           pushEvent(deps.bus, tenant, sid, part.type, sanitized, runId)
         }
         return { text, reasoning, toolCalls, toolResults, fileParts, usage }
@@ -571,6 +596,8 @@ async function runTurnOnce(
         deps,
         tenant,
         sid,
+        stepMessageId,
+        stepPrevId,
         reasoning,
         text,
         toolCalls,
@@ -827,12 +854,16 @@ interface ToolResultRec {
   result: ToolResult
 }
 
-/** Persist one step: chained assistant message + file/text/tool/tool_result
- *  parts. */
+/** Persist one step under its PRE-MINTED id: chained assistant message +
+ *  file/text/tool/tool_result parts. The id was announced via message-added
+ *  before streaming, so the persisted row must use the SAME id — that is what
+ *  makes the client's streamed bubble turn into the server row in place. */
 async function persistStep(
   deps: AgentDeps,
   tenant: string,
   sid: string,
+  messageId: string,
+  prevId: string | null,
   reasoning: string,
   text: string,
   toolCalls: ToolCallRec[],
@@ -848,14 +879,19 @@ async function persistStep(
     return
   }
 
-  const tipRes = await Sessions.tip(deps.db, tenant, sid)
-  const prevId = tipRes.isErr() ? null : tipRes.value
-  const insert = await Messages.insert(deps.db, tenant, 'assistant', prevId)
+  const insert = await Messages.insertWithId(
+    deps.db,
+    tenant,
+    messageId,
+    'assistant',
+    prevId,
+  )
   if (insert.isErr()) {
     logger.error({ sid, err: String(insert.error) }, 'persist step failed')
     return
   }
-  const messageId = insert.value
+  // Redelivery/duplicate: the row already exists — its parts are complete.
+  if (!insert.value) return
 
   let seq = 0
   // Reasoning (thinking) is persisted for display only; it is deliberately
@@ -1054,9 +1090,14 @@ async function persistUserPrompt(
     sid,
     factFromPersist(nowStr(), 'user', preview),
   )
-  // Real-time signal: this message is now IN the chain. Run-less so it passes
-  // watchSession's live-run filter; other clients reconcile to show it.
-  pushMessageAdded(deps.bus, tenant, sid, id)
+  // Real-time signal: this message is now IN the chain, with its authoritative
+  // id and anchor. Run-less so it passes watchSession's live-run filter.
+  pushMessageAdded(deps.bus, tenant, sid, {
+    messageId: id,
+    prevId: tipId ?? '',
+    role: 'user',
+    streaming: false,
+  })
 }
 
 /** Append a completed step to the in-memory message list for the next step. */
