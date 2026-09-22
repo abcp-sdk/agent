@@ -9,10 +9,16 @@ metadata:
 data:
   buildkitd.toml: |
     # docker.io is reached through the HTTPS_PROXY (mihomo); no in-cluster
-    # mirror is used. git.agent.fenjin.org is dialed DIRECTLY (NO_PROXY) and
-    # presents a public Let's Encrypt cert, so it needs no registry stanza.
+    # mirror is used.
     #
-    # Build artifacts + registry cache are pushed to git.agent.fenjin.org/root/.
+    # The in-cluster Forgejo registry (git.agent.svc.cluster.local) is reached
+    # over PLAIN HTTP on the cluster network, so it is declared insecure here
+    # and dialed directly (.svc.cluster.local is in NO_PROXY).
+    [registry."git.agent.svc.cluster.local"]
+      http = true
+      insecure = true
+    #
+    # Build artifacts + registry cache are pushed to the Forgejo registry.
     # Auth for the push is provided via DOCKER_CONFIG (buildkitd-docker-config).
 ---
 apiVersion: v1
@@ -24,7 +30,8 @@ stringData:
   config.json: |
     {
       "auths": {
-        "git.agent.fenjin.org": { "auth": "{{ printf "%s:%s" $g.credentials.rootUsername $g.credentials.rootPassword | b64enc }}" }
+        "git.agent.fenjin.org": { "auth": "{{ printf "%s:%s" $g.credentials.rootUsername $g.credentials.rootPassword | b64enc }}" },
+        "git.agent.svc.cluster.local": { "auth": "{{ printf "%s:%s" $g.credentials.rootUsername $g.credentials.rootPassword | b64enc }}" }
       }
     }
 ---

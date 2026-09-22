@@ -1,7 +1,8 @@
 {{- $svc := .Values.forgejo -}}
 {{- $g := .Values.global -}}
 {{- if $svc.enabled }}
-{{- $fenjinHost := "git.agent.fenjin.org" }}
+{{- $fenjinHost := $svc.host | default "git.agent.fenjin.org" }}
+{{- $rootUrl := $svc.rootUrl | default (printf "https://%s" $fenjinHost) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,7 +17,7 @@ data:
     [server]
     DOMAIN = {{ $fenjinHost }}
     HTTP_PORT = {{ $svc.port }}
-    ROOT_URL = https://{{ $fenjinHost }}
+    ROOT_URL = {{ $rootUrl }}
     DISABLE_SSH = true
     SSH_DOMAIN = {{ $fenjinHost }}
     SSH_PORT = 22

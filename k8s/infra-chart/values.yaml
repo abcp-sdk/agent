@@ -18,6 +18,14 @@ forgejo:
   image: codeberg.org/forgejo/forgejo:16.0.5
   port: 3000
   dataPath: /home/develop/Agent/Volumes/FORGEJO
+  # DOMAIN is the hostname Forgejo reports (NO scheme — it is a host field,
+  # used for cookies/SSH_DOMAIN). Point it at the in-cluster Service DNS so
+  # generated host references stay internal.
+  host: git.agent.svc.cluster.local
+  # ROOT_URL is what Forgejo stamps into generated URLs (clone URLs, the OCI
+  # registry auth realm + manifest/blob references, web links). Plain HTTP on
+  # the cluster network so pods resolve it without the proxy/edge.
+  rootUrl: http://git.agent.svc.cluster.local
   admin:
     username: root
     password: devpassword
