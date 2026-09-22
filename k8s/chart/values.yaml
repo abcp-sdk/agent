@@ -35,6 +35,12 @@ infra:
     prefix: "abcp"
   # Selenium WebDriver the playwright extension drives over CDP.
   seleniumUrl: "http://selenium.agent.svc.cluster.local:4444"
+  # Outbound HTTP(S) proxy (infra mihomo). The agent loads the bundled
+  # web-fetch / brave-search tools IN-PROCESS, so its Node fetch must egress
+  # through this proxy (NODE_USE_ENV_PROXY=1 makes Node honor it).
+  proxy:
+    http: "http://mihomo.develop.svc.cluster.local:7890"
+    https: "http://mihomo.develop.svc.cluster.local:7890"
 
 # ---- agent (h2c) ----
 agent:
