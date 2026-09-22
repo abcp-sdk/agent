@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tenant TEXT NOT NULL DEFAULT 'default',
     role TEXT NOT NULL,
     prev_id TEXT,
+    source TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (NOW()::text)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_prev ON messages (prev_id);
@@ -199,6 +200,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tenant TEXT NOT NULL DEFAULT 'default',
     role TEXT NOT NULL,
     prev_id TEXT,
+    source TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_messages_prev ON messages (prev_id);
@@ -298,6 +300,7 @@ const PG_MIGRATIONS = `
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS "group" TEXT NOT NULL DEFAULT '';
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
     ALTER TABLE parts ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE mailbox ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE mailbox ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
@@ -360,6 +363,7 @@ const SQLITE_MIGRATIONS = [
   `ALTER TABLE sessions ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE sessions ADD COLUMN "group" TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE messages ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
+  `ALTER TABLE messages ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE parts ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE mailbox ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE mailbox ADD COLUMN source TEXT NOT NULL DEFAULT ''`,

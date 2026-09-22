@@ -55,6 +55,9 @@ export const messages = sqliteTable('messages', {
   prevId: text('prev_id').references((): AnySQLiteColumn => messages.id, {
     onDelete: 'set null',
   }),
+  // Message origin ('' for agent-authored rows): user / session:{name} /
+  // system:{name} / extension-defined.
+  source: text('source').notNull().default(''),
   createdAt: text('created_at').notNull(),
 })
 

@@ -62,6 +62,7 @@ export function messagesHandlers(
           id: m.id,
           role: m.role,
           prevId: m.prev_id ?? '',
+          source: m.source ?? '',
           createdAt: m.created_at ?? '',
           parts: (partsByMsg.get(m.id) ?? []).map(p => ({
             id: p.id,

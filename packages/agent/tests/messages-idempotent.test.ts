@@ -53,4 +53,20 @@ describe('Messages.insertWithId is idempotent by id', () => {
     const chain = await Messages.chain(d, 't', 'b', 50, null)
     expect(chain.isOk() ? chain.value.map(m => m.id) : []).toEqual(['a', 'b'])
   })
+
+  it('round-trips the message SOURCE through the chain', async () => {
+    const d = await db()
+    await Messages.insertWithId(d, 't', 'u1', 'user', null, 'session:parent')
+    await Messages.insertWithId(d, 't', 'a1', 'assistant', 'u1', '')
+    const chain = await Messages.chain(d, 't', 'a1', 50, null)
+    expect(chain.isOk()).toBe(true)
+    const byId = Object.fromEntries(
+      (chain.isOk() ? chain.value : []).map(m => [m.id, m.source]),
+    )
+    expect(byId['u1']).toBe('session:parent')
+    expect(byId['a1']).toBe('')
+    // deltaSince must carry it too (incremental sync path).
+    const delta = await Messages.deltaSince(d, 't', 'a1', 'u1', 50)
+    expect(delta.isOk() && delta.value.messages[0]?.source).toBe('')
+  })
 })

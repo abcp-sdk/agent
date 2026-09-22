@@ -213,7 +213,15 @@ export async function drainAndInject(
       // Idempotent by id: a redelivered envelope is a no-op (no duplicate
       // row). A brand-new message is stored AND injected so the running turn
       // can pivot to it.
-      await persistUserPrompt(deps, tenant, sid, text, messageId, attachments)
+      await persistUserPrompt(
+        deps,
+        tenant,
+        sid,
+        text,
+        messageId,
+        attachments,
+        item.source,
+      )
       // Only a text prompt continues the running turn; an attachment-only
       // message is now in the chain (its file parts render via history) and is
       // picked up by the next turn rather than injected as empty content.
@@ -249,6 +257,7 @@ export async function persistUserPrompt(
   text: string,
   messageId?: string,
   attachments: PromptAttachment[] = [],
+  source = '',
 ): Promise<void> {
   const id =
     messageId !== undefined && messageId !== '' ? messageId : randomUUID()
@@ -262,6 +271,7 @@ export async function persistUserPrompt(
     id,
     'user',
     tipId,
+    source,
   )
   if (created.isErr()) return
   if (!created.value) return // already persisted (redelivery)
@@ -295,6 +305,7 @@ export async function persistUserPrompt(
     prevId: tipId ?? '',
     role: 'user',
     streaming: false,
+    source,
   })
 }
 

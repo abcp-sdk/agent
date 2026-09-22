@@ -269,7 +269,7 @@ async function handleItem(
   deps: AgentDeps,
   tenant: string,
   sid: string,
-  item: { msg_type: string; payload: string },
+  item: { msg_type: string; payload: string; source?: string },
 ): Promise<void> {
   if (item.msg_type === 'interrupt') {
     // Interrupt is handled out-of-band by the wake watcher; ignore here.
@@ -289,7 +289,15 @@ async function handleItem(
     const messageId = payload.isOk() ? (payload.value.message_id ?? '') : ''
     const attachments = payload.isOk() ? (payload.value.attachments ?? []) : []
     if (text !== '' || attachments.length > 0) {
-      await persistUserPrompt(deps, tenant, sid, text, messageId, attachments)
+      await persistUserPrompt(
+        deps,
+        tenant,
+        sid,
+        text,
+        messageId,
+        attachments,
+        item.source ?? '',
+      )
     }
     const r = await runTurnOnce(deps, tenant, sid)
     if (r !== null) {

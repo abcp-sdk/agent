@@ -179,6 +179,9 @@ export interface MessageAddedParams {
   prevId: string
   role: string
   streaming: boolean
+  /** ORIGIN of the message ('' for agent-authored rows): user /
+   *  session:{name} / system:{name} / extension-defined. */
+  source?: string
 }
 
 /**
@@ -197,6 +200,7 @@ export async function pushMessageAddedNow(
     prev_id: p.prevId,
     role: p.role,
     streaming: p.streaming,
+    source: p.source ?? '',
   }
   if (runId !== undefined) params['run_id'] = runId
   try {

@@ -19,6 +19,7 @@ const toRow = (r: typeof messages.$inferSelect): MessageRow => ({
   id: r.id,
   role: r.role,
   prev_id: r.prevId,
+  source: r.source,
   created_at: r.createdAt,
 })
 
@@ -71,16 +72,17 @@ export const Messages = {
     id: string,
     role: MessageRole,
     prevId: string | null,
+    source = '',
   ): ResultAsync<boolean, string> {
     return q(
       () =>
         rawAll(
           db,
-          `INSERT INTO messages (id, tenant, role, prev_id, created_at)
-           VALUES (?, ?, ?, ?, ?)
+          `INSERT INTO messages (id, tenant, role, prev_id, source, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO NOTHING
            RETURNING id`,
-          [id, tenant, role, prevId, nowStr()],
+          [id, tenant, role, prevId, source, nowStr()],
         ).then(rows => rows.length > 0),
       'insert message idempotent',
     )
@@ -230,14 +232,14 @@ export const Messages = {
       const rows = await rawAll(
         db,
         `WITH RECURSIVE chain AS (
-           SELECT id, role, prev_id, created_at, 0 AS depth
+           SELECT id, role, prev_id, source, created_at, 0 AS depth
            FROM messages WHERE id = ? AND tenant = ?
            UNION
-           SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
+           SELECT m.id, m.role, m.prev_id, m.source, m.created_at, c.depth + 1
            FROM messages m JOIN chain c ON m.id = c.prev_id
            WHERE m.tenant = ? AND c.depth < ?
          )
-         SELECT id, role, prev_id, created_at, depth
+         SELECT id, role, prev_id, source, created_at, depth
          FROM chain ORDER BY depth ASC`,
         [tipId, tenant, tenant, limit],
       )
@@ -246,6 +248,7 @@ export const Messages = {
           id: z.string(),
           role: z.string(),
           prev_id: z.string().nullable(),
+          source: z.string().nullable(),
           created_at: z.string(),
           depth: z.number(),
         })
@@ -283,6 +286,7 @@ const ChainRowSchema = z.object({
   id: z.string(),
   role: z.string(),
   prev_id: z.string().nullable(),
+  source: z.string().nullable(),
   created_at: z.string(),
 })
 
@@ -317,15 +321,15 @@ function rawChainRows(
     return await rawAll(
       db,
       `WITH RECURSIVE chain AS (
-         SELECT id, role, prev_id, created_at,
+         SELECT id, role, prev_id, source, created_at,
                 0 AS depth
          FROM messages WHERE id = ? AND tenant = ?
          UNION
-         SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
+         SELECT m.id, m.role, m.prev_id, m.source, m.created_at, c.depth + 1
          FROM messages m JOIN chain c ON m.id = c.prev_id
          WHERE m.tenant = ? AND c.depth < ?
        )
-       SELECT id, role, prev_id, created_at
+       SELECT id, role, prev_id, source, created_at
        FROM chain WHERE depth < ?
        ORDER BY depth DESC`,
       // The depth bound MUST ALSO live inside the recursive step: bound only
@@ -367,6 +371,7 @@ const toChain = (r: z.infer<typeof ChainRowSchema>): ChainMessage => ({
   tool_parts: [],
   file_parts: [],
   prev_id: r.prev_id,
+  source: r.source ?? '',
   created_at: r.created_at,
 })
 
