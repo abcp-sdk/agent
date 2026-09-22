@@ -81,7 +81,7 @@ playwright:
   enabled: true
   image:
     repository: git.agent.fenjin.org/abcp/playwright-extension
-    tag: "20260920113616"
+    tag: "20260922031821"
     pullPolicy: IfNotPresent
   # Tenant the default is seeded for. `"*"` (default) seeds EVERY known tenant.
   seedTenant: "*"
@@ -133,7 +133,7 @@ workerExtension:
   enabled: true
   image:
     repository: git.agent.fenjin.org/abcp/worker-extension
-    tag: "20260920113616"
+    tag: "20260922031821"
     pullPolicy: IfNotPresent
   # Tenant the worker-url/-token defaults are seeded for. `"*"` = every tenant.
   seedTenant: "*"
