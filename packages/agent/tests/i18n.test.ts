@@ -3,7 +3,9 @@ import {
   buildEnvBlock,
   languageDirective,
   localizeSchema,
+  normalizeLocale,
   pickLocalized,
+  resolveLocale,
 } from '../src/i18n.js'
 
 describe('languageDirective', () => {
@@ -120,5 +122,30 @@ describe('localizeSchema', () => {
     localizeSchema(schema, 'zh')
     expect(schema.properties.target.descriptions).toEqual({ zh: '目标书签' })
     expect(schema.properties.target.description).toBe('Target bookmark')
+  })
+})
+
+describe('resolveLocale', () => {
+  it('an explicit session locale ALWAYS wins, including "en"', () => {
+    // Regression: the old loop skipped a normalized "en", so a session pinned
+    // to English was overridden by a zh tenant config.
+    expect(resolveLocale('en', 'zh', 'en')).toBe('en')
+    expect(resolveLocale('zh', 'en', 'en')).toBe('zh')
+  })
+
+  it('an empty/unset session locale falls through to the tenant config', () => {
+    expect(resolveLocale('', 'zh', 'en')).toBe('zh')
+    expect(resolveLocale(undefined, 'zh', 'en')).toBe('zh')
+    expect(resolveLocale(null, 'en', 'zh')).toBe('en')
+  })
+
+  it('falls back to the env default when neither is set', () => {
+    expect(resolveLocale('', '', 'zh')).toBe('zh')
+    expect(resolveLocale(undefined, undefined, 'en')).toBe('en')
+  })
+
+  it('normalizes region/underscore/uppercase variants', () => {
+    expect(resolveLocale('ZH_CN', 'en', 'en')).toBe('zh-cn')
+    expect(normalizeLocale('ZH_CN')).toBe('zh-cn')
   })
 })

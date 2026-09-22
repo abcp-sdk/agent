@@ -126,11 +126,21 @@ describe('resolveSessionDefaults', () => {
     expect(r.model).toBe('p/m')
   })
 
-  it('unknown preset is rejected (InvalidArgument)', async () => {
+  it('unknown REQUESTED preset is rejected (InvalidArgument)', async () => {
     const deps = await fixture({})
     await expect(
       resolveSessionDefaults(deps, T, 'nope', ''),
     ).rejects.toMatchObject({ code: 3 })
+  })
+
+  it('a DELETED tenant default_preset falls back to the built-in default', async () => {
+    // The tenant config points at a preset that no longer exists (deleted).
+    // Creating a session must NOT fail — it falls back to `default`.
+    const deps = await fixture({
+      config: { [CONFIG_DEFAULT_PRESET]: 'ghost' },
+    })
+    const r = await resolveSessionDefaults(deps, T, '', '')
+    expect(r.preset).toBe(DEFAULT_PRESET)
   })
 
   it('unresolvable model is rejected (InvalidArgument)', async () => {

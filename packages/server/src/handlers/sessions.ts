@@ -8,6 +8,7 @@ import {
   Mailbox,
   Messages,
   mailboxSubject,
+  normalizeLocale,
   Presets,
   publishLifecycle,
   publishSessionChanged,
@@ -71,6 +72,9 @@ export function sessionsHandlers(
         variant: body.variant,
         preset,
         group: body.group,
+        // Pin the session language at creation (empty = follow the tenant
+        // default at turn time). Normalized so "ZH"/"zh_CN" collapse to "zh".
+        locale: normalizeLocale(body.locale ?? ''),
       })
       if (name.isErr()) throw new Error(name.error)
       publishLifecycle(deps.bus, tenant, 'created', {

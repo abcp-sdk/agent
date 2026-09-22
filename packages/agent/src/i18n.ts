@@ -131,10 +131,14 @@ export function resolveLocale(
   configLocale: string | undefined | null,
   envDefault: string,
 ): string {
+  // "unset" is the ONLY reason to fall through: an explicitly chosen locale
+  // (including "en") always wins. The previous version skipped "en" by
+  // comparing the NORMALIZED value to "en" — but normalizeLocale('') also
+  // yields "en", so a session pinned to English was silently overridden by a
+  // zh tenant config.
   for (const v of [sessionLocale, configLocale]) {
-    const n = normalizeLocale(v)
-    if (n !== 'en' && n !== '') return n
-    if (n === '' && v == null) continue
+    const raw = (v ?? '').trim()
+    if (raw !== '') return normalizeLocale(raw)
   }
   return normalizeLocale(envDefault)
 }
