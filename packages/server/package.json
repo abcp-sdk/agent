@@ -13,7 +13,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@abc-protocol/bundled-extension": "github:abcp-sdk/bundled-extension#v0.9.0",
+    "@abc-protocol/bundled-extension": "github:abcp-sdk/bundled-extension#v0.10.0",
     "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.7.0",
     "@abcp-agent/agent": "*",
     "@abcp-agent/schema": "*",
