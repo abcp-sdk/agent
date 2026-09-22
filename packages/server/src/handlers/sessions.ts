@@ -1,8 +1,7 @@
-import { isSessionRunning } from '@abc-protocol/sdk'
+import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
 import {
   type AgentDeps,
   clearActiveRun,
-  compactSession,
   DEFAULT_PRESET,
   deleteSessionIds,
   interruptRun,
@@ -337,9 +336,23 @@ export function sessionsHandlers(
     async compact(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
       const id = req.id
-      const r = await compactSession(deps, tenant, id)
-      if (r.isErr()) throw new Error(r.error)
-      return { ok: r.value }
+      const session = await Sessions.get(deps.db, tenant, id)
+      if (session.isErr()) throw new Error(session.error)
+      if (session.value === null) throw new Error('session not found')
+      // Enqueue the compaction on the MAILBOX rather than running it inline.
+      // The mailbox is drained at a step boundary UNDER the session's run
+      // lease, so a manual compact can never race a running turn's chain write
+      // (the two would otherwise fork the chain). The result is reported via
+      // the `compacted` event (ok true/false), not this response — `ok` here
+      // means "accepted", exactly like Prompt's `accepted`.
+      await new AbcAgent(deps.bus).publishMailbox(
+        tenant,
+        id,
+        'compact',
+        { reason: 'manual' },
+        'user',
+      )
+      return { ok: true }
     },
   }
 }

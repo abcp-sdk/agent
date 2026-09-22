@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Bus } from '../src/bus.js'
 import { Mailbox } from '../src/db-mailbox.js'
 import type { AgentDeps } from '../src/session-agent.js'
-import { runSessionTurn } from '../src/session-agent.js'
+import { handleItem, runSessionTurn } from '../src/session-agent.js'
+import * as sessionCompact from '../src/session-compact.js'
 
 const T = 't1'
 
@@ -86,5 +87,24 @@ describe('runSessionTurn', () => {
       ),
     ).rejects.toThrow('db down')
     expect(released).toBe(true)
+  })
+})
+
+describe('handleItem (compact branch)', () => {
+  it('runs compactSession with reason=manual and does NOT run a turn', async () => {
+    const compact = vi
+      .spyOn(sessionCompact, 'compactSession')
+      .mockResolvedValue(ok(true) as never)
+    const deps = {
+      db: {},
+      bus: { inboxPublish: () => Promise.resolve() },
+      config: {},
+      llm: {},
+    } as unknown as AgentDeps
+    await handleItem(deps, T, 'a:b:main', {
+      msg_type: 'compact',
+      payload: JSON.stringify({ reason: 'manual' }),
+    })
+    expect(compact).toHaveBeenCalledWith(deps, T, 'a:b:main', 'manual')
   })
 })

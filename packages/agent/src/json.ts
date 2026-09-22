@@ -132,6 +132,12 @@ export const SummaryPartDataSchema = z.object({
   summary: z.string(),
   /** First message id of the verbatim tail kept after this checkpoint. */
   tail_from: z.string().nullish(),
+  /** Why the checkpoint was created: a user action or an overflow retry. */
+  reason: z.enum(['manual', 'overflow']).optional(),
+  /** Number of messages folded into `summary` (the collapsed prefix). */
+  folded_count: z.number().int().optional(),
+  /** Estimated tokens of the folded region (cheap heuristic, not a tokenizer). */
+  folded_tokens: z.number().int().optional(),
 })
 export type SummaryPartData = z.infer<typeof SummaryPartDataSchema>
 

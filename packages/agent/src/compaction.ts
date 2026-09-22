@@ -20,6 +20,14 @@ import { estimateTokens } from './token.js'
 
 export const COMPACTION_ROLE = 'compaction'
 
+/**
+ * Sentinel `last_message_preview` for a session whose tip is a compaction
+ * checkpoint. The chat list must not render the raw folded Q&A; clients
+ * recognise this exact string and substitute a localized label. Kept in sync
+ * with `webui`'s `COMPACTION_PREVIEW`.
+ */
+export const COMPACTION_PREVIEW = '__compacted__'
+
 export interface FoldEntry {
   id: string
   role: string

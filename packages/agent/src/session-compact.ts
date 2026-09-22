@@ -4,6 +4,7 @@ import { err, ok, type Result } from 'neverthrow'
 import { z } from 'zod'
 import { fireAndForget } from './async.js'
 import {
+  COMPACTION_PREVIEW,
   COMPACTION_ROLE,
   checkpointContent,
   foldQA,
@@ -21,6 +22,7 @@ import { parseProviderModelRef } from './llm.js'
 import type { AgentDeps } from './session-agent.js'
 import { factFromPersist, projectMessageFact } from './session-state.js'
 import { putSessionIds } from './store.js'
+import { estimateTokens } from './token.js'
 
 /**
  * Build the LLM context from a bounded id list + parts. The newest compaction
@@ -87,6 +89,17 @@ export function spliceContext(
 /**
  * Fold the chain prefix into a rule-based summary (no LLM) and persist a new
  * compaction message chained onto the tip.
+ *
+ * The CALLER MUST HOLD the session's run lease (or otherwise be the sole
+ * writer of this session's chain). The chain append here is a plain
+ * `tip -> insert -> setTip`; running it concurrently with a turn would fork
+ * the chain (the cm and a step would share a parent and one becomes an
+ * orphan). Manual compaction therefore goes through the mailbox (drained at a
+ * step boundary under the lease), and the overflow path already owns the lease.
+ *
+ * Emits `compacted { reason, ok }` on every non-error outcome so the UI can
+ * react: `ok:false` means there was nothing to fold (short history / no
+ * configured context window).
  */
 export async function compactSession(
   deps: AgentDeps,
@@ -97,7 +110,7 @@ export async function compactSession(
   const tipRes = await Sessions.tip(deps.db, tenant, sid)
   if (tipRes.isErr()) return err(tipRes.error)
   const tipId = tipRes.value
-  if (tipId === null) return ok(false)
+  if (tipId === null) return skip(deps, tenant, sid, reason)
 
   const sessionRes = await Sessions.get(deps.db, tenant, sid)
   if (sessionRes.isErr()) return err(sessionRes.error)
@@ -144,16 +157,20 @@ export async function compactSession(
   const limit = await contextLimit(deps, tenant, modelId)
   // No configured context window for this provider/model ⇒ cannot compute
   // budgets ⇒ skip compaction (never guess a window).
-  if (limit <= 0) return ok(false)
+  if (limit <= 0) return skip(deps, tenant, sid, reason)
   const { tail, folded } = splitScan(entries, limit * 0.2, limit * 0.1)
-  if (folded.length === 0) return ok(false)
+  if (folded.length === 0) return skip(deps, tenant, sid, reason)
 
   const summary = foldQA(folded)
-  if (summary.trim() === '') return ok(false)
+  if (summary.trim() === '') return skip(deps, tenant, sid, reason)
 
   // tail is oldest-first; its first entry marks the verbatim boundary kept
   // after this checkpoint.
   const tailFromId = tail[0]?.id ?? null
+  const foldedTokens = folded.reduce(
+    (n, e) => n + estimateTokens(e.text) + e.toolCalls * 4,
+    0,
+  )
 
   const insert = await Messages.insert(deps.db, tenant, COMPACTION_ROLE, tipId)
   if (insert.isErr()) return err(insert.error)
@@ -164,14 +181,18 @@ export async function compactSession(
     cmId,
     summary,
     tailFromId,
+    { reason, foldedCount: folded.length, foldedTokens },
   )
   if (part.isErr()) return err(part.error)
   await Sessions.setTip(deps.db, tenant, sid, cmId)
+  // The list preview shows a FIXED sentinel for a compaction tip (the raw
+  // summary would leak a wall of folded Q&A into the chat list). Clients map
+  // this sentinel to a localized "History compacted" label.
   projectMessageFact(
     deps.bus,
     tenant,
     sid,
-    factFromPersist(nowStr(), COMPACTION_ROLE, summary),
+    factFromPersist(nowStr(), COMPACTION_ROLE, COMPACTION_PREVIEW),
   )
 
   // Rewrite the cache to the new bounded context id list (with the cm).
@@ -188,8 +209,20 @@ export async function compactSession(
     )
   }
 
-  pushEvent(deps.bus, tenant, sid, 'compacted', { reason })
+  pushEvent(deps.bus, tenant, sid, 'compacted', { reason, ok: true })
   return ok(true)
+}
+
+/** Nothing to fold: announce the no-op outcome (the UI may toast for a manual
+ *  request) and report `false` to the caller. */
+function skip(
+  deps: AgentDeps,
+  tenant: string,
+  sid: string,
+  reason: 'manual' | 'overflow',
+): Result<boolean, string> {
+  pushEvent(deps.bus, tenant, sid, 'compacted', { reason, ok: false })
+  return ok(false)
 }
 
 async function contextLimit(

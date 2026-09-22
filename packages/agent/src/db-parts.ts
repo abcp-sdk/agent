@@ -60,17 +60,26 @@ export const Parts = {
     )
   },
 
-  /** Insert the compaction message's summary part (with the tail boundary). */
+  /** Insert the compaction message's summary part (with the tail boundary
+   *  plus the display metadata: reason / folded count / folded tokens). */
   insertSummary(
     db: Db,
     tenant: string,
     messageId: string,
     summary: string,
     tailFromId: string | null,
+    meta: {
+      reason: 'manual' | 'overflow'
+      foldedCount: number
+      foldedTokens: number
+    },
   ): ResultAsync<string, string> {
     return Parts.insert(db, tenant, messageId, 'summary', 0, {
       summary,
       tail_from: tailFromId,
+      reason: meta.reason,
+      folded_count: meta.foldedCount,
+      folded_tokens: meta.foldedTokens,
     })
   },
 }

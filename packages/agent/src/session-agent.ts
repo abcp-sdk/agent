@@ -265,7 +265,7 @@ export async function runSessionTurn(
   }
 }
 
-async function handleItem(
+export async function handleItem(
   deps: AgentDeps,
   tenant: string,
   sid: string,
@@ -274,6 +274,18 @@ async function handleItem(
   if (item.msg_type === 'interrupt') {
     // Interrupt is handled out-of-band by the wake watcher; ignore here.
     interruptRun(tenant, sid)
+    return
+  }
+
+  if (item.msg_type === 'compact') {
+    // Manual compaction is queued through the mailbox so it runs UNDER THE RUN
+    // LEASE at a step boundary — exactly like a prompt — which serializes it
+    // against the turn's chain writes (a concurrent compact would fork the
+    // chain). `handleItem` is always called while this session's lease is held.
+    const r = await compactSession(deps, tenant, sid, 'manual')
+    if (r.isErr()) {
+      pushEvent(deps.bus, tenant, sid, 'error', { message: r.error })
+    }
     return
   }
 
@@ -390,9 +402,14 @@ async function runTurnOnce(
       // `persistStep` writes the SAME id, so a client groups the live stream by
       // id and never has to guess. The anchor is the current tip (already
       // reflecting any trigger drained at the previous boundary).
+      //
+      // `let`: an overflow compaction inside `attempt()` moves the tip onto the
+      // new checkpoint; the retry RE-ANCHORS this step onto it (re-reading the
+      // tip + re-announcing the same message id), so the checkpoint stays on
+      // the chain instead of becoming an orphan.
       const stepMessageId = randomUUID()
       const tipRes = await Sessions.tip(deps.db, tenant, sid)
-      const stepPrevId: string | null = tipRes.isErr() ? null : tipRes.value
+      let stepPrevId: string | null = tipRes.isErr() ? null : tipRes.value
       await pushMessageAddedNow(
         deps.bus,
         tenant,
@@ -495,10 +512,45 @@ async function runTurnOnce(
 
           // The error part keeps its special control-flow handling: a context
           // overflow is compacted and the step retried ONCE (transparent to
-          // the caller); any other error still ends the turn. It is published
-          // verbatim (sanitized) before the turn unwinds.
+          // the caller); any other error ends the turn. A genuine error is
+          // published verbatim (sanitized) before the turn unwinds; an overflow
+          // is NOT published as an error (it is recovered, not a failure — a
+          // stray error card would wrongly mark the turn failed in the UI).
           if (part.type === 'error') {
             const error = part.error
+            if (isContextOverflowFailure(error)) {
+              // Context overflow: compact and retry once with the trimmed
+              // context — transparent to the caller.
+              const compacted = await compactSession(
+                deps,
+                tenant,
+                sid,
+                'overflow',
+              )
+              if (compacted.isOk() && compacted.value) {
+                // The checkpoint moved the chain tip. RE-ANCHOR this step onto
+                // it and RE-ANNOUNCE the same message id with the new prevId
+                // (clients update the bubble's position instead of creating a
+                // second one) so the checkpoint stays on the chain rather than
+                // becoming an orphan sibling of the step.
+                const reTip = await Sessions.tip(deps.db, tenant, sid)
+                if (reTip.isOk()) stepPrevId = reTip.value
+                await pushMessageAddedNow(
+                  deps.bus,
+                  tenant,
+                  sid,
+                  {
+                    messageId: stepMessageId,
+                    prevId: stepPrevId ?? '',
+                    role: 'assistant',
+                    streaming: true,
+                  },
+                  runId,
+                )
+                stepMessages = await loadHistory(deps, tenant, sid)
+                return 'retry'
+              }
+            }
             pushEvent(
               deps.bus,
               tenant,
@@ -510,20 +562,6 @@ async function runTurnOnce(
               },
               runId,
             )
-            if (isContextOverflowFailure(error)) {
-              // Context overflow: compact and retry once with the trimmed
-              // context — transparent to the caller.
-              const compacted = await compactSession(
-                deps,
-                tenant,
-                sid,
-                'overflow',
-              )
-              if (compacted.isOk() && compacted.value) {
-                stepMessages = await loadHistory(deps, tenant, sid)
-                return 'retry'
-              }
-            }
             return `turn failed: ${String(error)}`
           }
 

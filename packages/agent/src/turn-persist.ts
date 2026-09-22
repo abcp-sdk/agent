@@ -7,6 +7,7 @@ import { Messages } from './db-messages.js'
 import { Parts } from './db-parts.js'
 import { Sessions } from './db-sessions.js'
 import { pushMessageAdded } from './events.js'
+import { compactSession } from './session-compact.js'
 import { ContentPayloadSchema, parse, type ToolResult } from './json.js'
 import { logger } from './logger.js'
 import type { AgentDeps } from './session-agent.js'
@@ -199,6 +200,14 @@ export async function drainAndInject(
     if (item === null) break
     if (item.msg_type === 'interrupt') {
       ctrl.abort()
+      continue
+    }
+    if (item.msg_type === 'compact') {
+      // A manual compaction queued while a turn was running: fold the prefix
+      // NOW, at a step boundary (we hold the lease). The next loop iteration
+      // re-reads the tip, so the step after this boundary anchors on the new
+      // checkpoint.
+      await compactSession(deps, tenant, sid, 'manual')
       continue
     }
     if (item.msg_type === 'trigger') {

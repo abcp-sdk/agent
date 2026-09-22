@@ -80,11 +80,14 @@ export function watchHandlers(
         }
         // Only the live runs' events (a prior turn's terminal marker may fall
         // inside the same time window); never resurface finished/revoked runs.
-        // EXEMPT out-of-band chain notifications (chain-changed, message-added):
-        // they carry no run_id and MUST reach viewers even while a turn is
-        // running, so a revert / a freshly-appended user message converges.
+        // EXEMPT out-of-band chain notifications (chain-changed, message-added,
+        // compacted): they carry no run_id and MUST reach viewers even while a
+        // turn is running, so a revert / a freshly-appended user message /
+        // an overflow compaction converges.
         const isOutOfBand =
-          raw?.event === 'chain-changed' || raw?.event === 'message-added'
+          raw?.event === 'chain-changed' ||
+          raw?.event === 'message-added' ||
+          raw?.event === 'compacted'
         if (!isOutOfBand && liveRuns.size > 0 && !liveRuns.has(rawRunId)) {
           continue
         }
