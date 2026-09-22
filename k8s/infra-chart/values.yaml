@@ -66,6 +66,13 @@ nats:
   workspace:
     user: workspace
     password: devpassword
+  # Separate JetStream account for the CLASS-AGENT stack (its own agent +
+  # extensions + skill-server). MUST be distinct from `agent`/`workspace`:
+  # agents would otherwise collide on the global `abc.discover` subject, the
+  # `abc-presence` KV keys, and the fixed ABC_MAILBOX/ABC_EVENTS/ABC_DLQ streams.
+  class:
+    user: class
+    password: devpassword
 
 # postgres — 官方镜像名
 postgres:

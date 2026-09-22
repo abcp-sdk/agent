@@ -25,6 +25,10 @@ data:
         jetstream: enabled
         users: [ { user: "{{ $svc.workspace.user }}", password: "{{ $svc.workspace.password }}" } ]
       }
+      class {
+        jetstream: enabled
+        users: [ { user: "{{ $svc.class.user }}", password: "{{ $svc.class.password }}" } ]
+      }
     }
 ---
 apiVersion: apps/v1
