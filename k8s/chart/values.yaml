@@ -45,7 +45,7 @@ infra:
 # ---- agent (h2c) ----
 agent:
   image:
-    repository: git.agent.fenjin.org/abcp/agent
+    repository: git.agent.svc.cluster.local/abcp/agent
     tag: "20260922113939"
     pullPolicy: IfNotPresent
   port: 8080
@@ -71,7 +71,7 @@ agent:
 webui:
   image:
     # Caddy with the webui static build baked into /srv.
-    repository: git.agent.fenjin.org/abcp/agent-webui
+    repository: git.agent.svc.cluster.local/abcp/agent-webui
     tag: "20260922105807"
     pullPolicy: IfNotPresent
   port: 8080
@@ -86,7 +86,7 @@ webui:
 playwright:
   enabled: true
   image:
-    repository: git.agent.fenjin.org/abcp/playwright-extension
+    repository: git.agent.svc.cluster.local/abcp/playwright-extension
     tag: "20260922031821"
     pullPolicy: IfNotPresent
   # Tenant the default is seeded for. `"*"` (default) seeds EVERY known tenant.
@@ -118,7 +118,7 @@ bundled:
 worker:
   enabled: true
   image:
-    repository: git.agent.fenjin.org/root/easyworker
+    repository: git.agent.svc.cluster.local/root/easyworker
     tag: "alpine3.24-v0.5.2-12-ge6e069d"
     pullPolicy: IfNotPresent
   service:
@@ -138,7 +138,7 @@ worker:
 workerExtension:
   enabled: true
   image:
-    repository: git.agent.fenjin.org/abcp/worker-extension
+    repository: git.agent.svc.cluster.local/abcp/worker-extension
     tag: "20260922031821"
     pullPolicy: IfNotPresent
   # Tenant the worker-url/-token defaults are seeded for. `"*"` = every tenant.
