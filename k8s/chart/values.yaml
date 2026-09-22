@@ -46,7 +46,7 @@ infra:
 agent:
   image:
     repository: git.agent.fenjin.org/abcp/agent
-    tag: "20260922042625"
+    tag: "20260922113939"
     pullPolicy: IfNotPresent
   port: 8080
   service:
