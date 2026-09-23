@@ -118,8 +118,8 @@ bundled:
 worker:
   enabled: true
   image:
-    repository: git.agent.svc.cluster.local/root/easyworker
-    tag: "alpine3.24-v0.5.2-12-ge6e069d"
+    repository: git.agent.svc.cluster.local/abcp/worker
+    tag: "20260923052519"
     pullPolicy: IfNotPresent
   service:
     name: worker
