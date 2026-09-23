@@ -28,8 +28,10 @@ spec:
           env:
             - name: WORKER_PORT
               value: {{ .Values.worker.port | quote }}
+            {{- if .Values.worker.workspace }}
             - name: WORKER_WORKSPACE
               value: {{ .Values.worker.workspace | quote }}
+            {{- end }}
             - name: WORKER_DB
               value: /data/jobs.db
             {{- if .Values.worker.token }}
