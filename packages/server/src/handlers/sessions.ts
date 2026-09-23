@@ -72,9 +72,13 @@ export function sessionsHandlers(
         variant: body.variant,
         preset,
         group: body.group,
-        // Pin the session language at creation (empty = follow the tenant
-        // default at turn time). Normalized so "ZH"/"zh_CN" collapse to "zh".
-        locale: normalizeLocale(body.locale ?? ''),
+        // Pin the session language at creation. An EMPTY request means "follow
+        // the tenant default at turn time", so it must stay UNSET — do NOT run
+        // it through normalizeLocale, whose `'' -> 'en'` fallback would pin the
+        // session to English and make it win over a zh tenant config in
+        // resolveLocale. A non-empty value is normalized so "ZH"/"zh_CN"
+        // collapse to "zh". (updateSettings already treats '' as "unset".)
+        locale: body.locale ? normalizeLocale(body.locale) : '',
       })
       if (name.isErr()) throw new Error(name.error)
       publishLifecycle(deps.bus, tenant, 'created', {
