@@ -127,7 +127,7 @@ const KNOBS: [string, string][] = [
   ['model.speech_clone', 'speech'],
   ['model.transcription', 'transcription'],
 ]
-const DEFAULT_TEXT_CONTEXT = 262144
+const DEFAULT_TEXT_CONTEXT = 1000000
 
 interface CatalogModel {
   id: string
