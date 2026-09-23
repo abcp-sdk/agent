@@ -119,7 +119,7 @@ worker:
   enabled: true
   image:
     repository: git.agent.svc.cluster.local/abcp/worker
-    tag: "20260923052519"
+    tag: "20260923061507"
     pullPolicy: IfNotPresent
   service:
     name: worker
@@ -139,7 +139,7 @@ workerExtension:
   enabled: true
   image:
     repository: git.agent.svc.cluster.local/abcp/worker-extension
-    tag: "20260922031821"
+    tag: "20260923061753"
     pullPolicy: IfNotPresent
   # Tenant the worker-url/-token defaults are seeded for. `"*"` = every tenant.
   seedTenant: "*"
