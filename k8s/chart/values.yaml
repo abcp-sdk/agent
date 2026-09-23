@@ -118,8 +118,8 @@ bundled:
 worker:
   enabled: true
   image:
-    repository: git.agent.svc.cluster.local/abcp/worker
-    tag: "20260923061507"
+    repository: git.agent.svc.cluster.local/abcp/agent-worker
+    tag: "20260923082822"
     pullPolicy: IfNotPresent
   service:
     name: worker
