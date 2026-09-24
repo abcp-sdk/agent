@@ -307,20 +307,12 @@ async function main(): Promise<void> {
         data: String(r['data'] ?? ''),
       }))
     },
-    todosEnsure: () =>
-      rawRun(
-        db,
-        `CREATE TABLE IF NOT EXISTS bundled_todos (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          tenant TEXT NOT NULL DEFAULT 'default',
-          session_id TEXT NOT NULL,
-          content TEXT NOT NULL,
-          status TEXT NOT NULL,
-          priority TEXT NOT NULL,
-          created_unix INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
-        );
-        CREATE INDEX IF NOT EXISTS idx_bundled_todos_session ON bundled_todos (tenant, session_id);`,
-      ),
+    // The `bundled_todos` table is now OWNED by the agent's schema bootstrap
+    // (db-client.ts DDL + additive migrations), which is the single migration
+    // authority. A lazy CREATE TABLE IF NOT EXISTS here could never add the
+    // `tenant` column to a legacy table (and rawRun would silently drop the
+    // trailing CREATE INDEX on sqlite). Nothing to do at tool-set time.
+    todosEnsure: async () => {},
     todosReplace: async (tenant, sid, rows) => {
       await rawRun(
         db,

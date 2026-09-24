@@ -167,6 +167,23 @@ CREATE TABLE IF NOT EXISTS agent_files (
     thumbhash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (tenant, sha256);
+
+-- Per-session TODO list written by the bundled extension's todo-write tool.
+-- Owned HERE (not lazily by the tool) so a legacy tenant-less table is migrated
+-- by the additive ALTER below; a lazy CREATE TABLE IF NOT EXISTS can never add
+-- the tenant column, which made every write fail with "no such column: tenant".
+CREATE TABLE IF NOT EXISTS bundled_todos (
+    id BIGSERIAL PRIMARY KEY,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    session_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    created_unix BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM now())::bigint)
+);
+-- NOTE: the (tenant, session_id) index is created by PG_MIGRATIONS, AFTER the
+-- additive tenant ALTER — a legacy table lacks the column, so indexing it here
+-- (before the migration runs) would fail at connect time.
 `
 
 // SQLite has no `NOW()::text`, supports table creation with the full column
@@ -287,6 +304,21 @@ CREATE TABLE IF NOT EXISTS agent_files (
     UNIQUE (tenant, sha256)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_files_sha ON agent_files (tenant, sha256);
+
+-- Per-session TODO list (bundled todo-write). Owned HERE so a legacy
+-- tenant-less table is migrated by SQLITE_MIGRATIONS below (a lazy
+-- CREATE TABLE IF NOT EXISTS cannot add the column).
+CREATE TABLE IF NOT EXISTS bundled_todos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant TEXT NOT NULL DEFAULT 'default',
+    session_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    created_unix INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+);
+-- NOTE: the (tenant, session_id) index is created by SQLITE_MIGRATIONS, AFTER
+-- the additive tenant ALTER (a legacy table lacks the column at DDL time).
 `
 
 // PG-specific additive migrations (safe to re-run; destructive-free). Kept as
@@ -324,6 +356,8 @@ const PG_MIGRATIONS = `
     CREATE INDEX IF NOT EXISTS idx_parts_tenant ON parts (tenant, message_id);
     DROP INDEX IF EXISTS idx_mb_sess;
     CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (tenant, session_name);
+    ALTER TABLE bundled_todos ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
+    CREATE INDEX IF NOT EXISTS idx_bundled_todos_session ON bundled_todos (tenant, session_id);
 `
 
 // Composite-primary-key swap for a pre-v2 (tenant-less) PG database. Guarded
@@ -381,6 +415,11 @@ const SQLITE_MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages (tenant, id)`,
   `CREATE INDEX IF NOT EXISTS idx_parts_tenant ON parts (tenant, message_id)`,
   `CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (tenant, session_name)`,
+  // bundled_todos was created lazily by the todo-write tool BEFORE it carried
+  // `tenant`; a legacy table needs the column added (CREATE TABLE IF NOT EXISTS
+  // never alters it). Duplicate-column on an already-migrated file is swallowed.
+  `ALTER TABLE bundled_todos ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
+  `CREATE INDEX IF NOT EXISTS idx_bundled_todos_session ON bundled_todos (tenant, session_id)`,
 ]
 
 /**
