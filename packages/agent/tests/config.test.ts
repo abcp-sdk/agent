@@ -67,3 +67,25 @@ describe('loadConfig extConfigSeed', () => {
     ).toEqual([])
   })
 })
+
+describe('loadConfig retry budgets', () => {
+  it('defaults maxRetries to 11 (request-start) and streamRetries to 3', () => {
+    const cfg = loadConfig({} as NodeJS.ProcessEnv)
+    expect(cfg.llmMaxRetries).toBe(11)
+    expect(cfg.llmStreamRetries).toBe(3)
+  })
+
+  it('honors LLM_MAX_RETRIES / LLM_STREAM_RETRIES overrides', () => {
+    const cfg = loadConfig({
+      LLM_MAX_RETRIES: '2',
+      LLM_STREAM_RETRIES: '5',
+    } as NodeJS.ProcessEnv)
+    expect(cfg.llmMaxRetries).toBe(2)
+    expect(cfg.llmStreamRetries).toBe(5)
+  })
+
+  it('falls back to the default on an invalid count', () => {
+    const cfg = loadConfig({ LLM_MAX_RETRIES: 'abc' } as NodeJS.ProcessEnv)
+    expect(cfg.llmMaxRetries).toBe(11)
+  })
+})

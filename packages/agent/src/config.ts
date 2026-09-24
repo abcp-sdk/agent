@@ -115,8 +115,20 @@ const DEFAULT_MAX_TURNS = 25
 /** Fixed tool-call timeout (10 minutes). */
 const TOOL_TIMEOUT_MS = 600_000
 
-/** Default provider retry budgets (request-start + mid-stream). */
-const DEFAULT_LLM_MAX_RETRIES = 3
+/**
+ * Default provider retry budgets.
+ *
+ * `LLM_MAX_RETRIES` covers request-start failures (the SDK's own retry loop,
+ * which is what throws `AI_RetryError: Failed after N attempts`). 11 retries =
+ * 12 total attempts, with the SDK's UNCAPPED exponential backoff
+ * (2,4,8,…,2048s; the last single wait is ~34 min, ~68 min cumulative). That
+ * long tail is deliberate: a persistently rate-limited upstream is better
+ * waited out than failed, and the user can interrupt the turn to stop it.
+ *
+ * `LLM_STREAM_RETRIES` covers mid-stream provider error events; those use OUR
+ * backoff (capped at 30s) and stay at 3.
+ */
+const DEFAULT_LLM_MAX_RETRIES = 11
 const DEFAULT_LLM_STREAM_RETRIES = 3
 
 /** Resolve the storage backend from DATABASE_URL scheme + explicit override. */
