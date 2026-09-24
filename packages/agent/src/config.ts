@@ -14,6 +14,19 @@ export interface ServerConfig {
   /** Max agent steps per turn when neither the session nor its preset sets one. */
   defaultMaxTurns: number
   /**
+   * Retries for a provider failure while STARTING a model call (429/5xx/network,
+   * before any output). The AI SDK honors `isRetryable` + `Retry-After`/
+   * `retry-after-ms`. Set via env `LLM_MAX_RETRIES` (default 3).
+   */
+  llmMaxRetries: number
+  /**
+   * Retries for a provider error AFTER streaming has begun (a mid-stream
+   * disconnect / 429 / 5xx). The AI SDK re-runs only the current step and
+   * DISCARDS tool parts from the failed attempt, so tools never re-execute.
+   * Set via env `LLM_STREAM_RETRIES` (default 3).
+   */
+  llmStreamRetries: number
+  /**
    * CORS allow-origin for browser (Flutter Web) clients. `*` allows any
    * origin; set an explicit origin to lock it down.
    */
@@ -102,6 +115,10 @@ const DEFAULT_MAX_TURNS = 25
 /** Fixed tool-call timeout (10 minutes). */
 const TOOL_TIMEOUT_MS = 600_000
 
+/** Default provider retry budgets (request-start + mid-stream). */
+const DEFAULT_LLM_MAX_RETRIES = 3
+const DEFAULT_LLM_STREAM_RETRIES = 3
+
 /** Resolve the storage backend from DATABASE_URL scheme + explicit override. */
 function resolveBackend(env: NodeJS.ProcessEnv): DbBackend {
   const explicit = env['DB_BACKEND']
@@ -121,6 +138,16 @@ function normalizeHttpProtocol(v: string): ServerConfig['httpProtocol'] {
   const lower = v.toLowerCase()
   if (lower === 'h1' || lower === 'h2c' || lower === 'auto') return lower
   return 'auto'
+}
+
+/** Parse a non-negative integer retry count; a bad value falls back to [def]. */
+function parseCount(raw: string, def: number): number {
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isInteger(n) || n < 0) {
+    logger.warn({ raw }, 'invalid retry count; using default')
+    return def
+  }
+  return n
 }
 
 /**
@@ -150,6 +177,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     natsUrl: or('NATS_URL', 'nats://nats.abcp.svc.cluster.local:4222'),
     toolTimeoutMs: TOOL_TIMEOUT_MS,
     defaultMaxTurns: DEFAULT_MAX_TURNS,
+    llmMaxRetries: parseCount(
+      or('LLM_MAX_RETRIES', String(DEFAULT_LLM_MAX_RETRIES)),
+      DEFAULT_LLM_MAX_RETRIES,
+    ),
+    llmStreamRetries: parseCount(
+      or('LLM_STREAM_RETRIES', String(DEFAULT_LLM_STREAM_RETRIES)),
+      DEFAULT_LLM_STREAM_RETRIES,
+    ),
     corsOrigin: or('AGENT_CORS_ORIGIN', '*'),
     authMode:
       or('AGENT_AUTH_MODE', 'required') === 'none' ? 'none' : 'required',

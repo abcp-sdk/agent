@@ -20,6 +20,7 @@ import {
   pushEvent,
   pushEventNow,
   pushMessageAddedNow,
+  pushRetryNow,
 } from './events.js'
 import type { BlobStore } from './files.js'
 import { clearRun, getAbortController, interruptRun } from './interrupt.js'
@@ -30,6 +31,11 @@ import {
   WakePayloadSchema,
 } from './json.js'
 import type { LlmRegistry } from './llm.js'
+import {
+  isRetryableThrown,
+  isToolChoiceViolation,
+  retryDelayMs,
+} from './llm-retry.js'
 import { logger } from './logger.js'
 import { compactSession } from './session-compact.js'
 import { type SanitizeDeps, sanitizeStreamPart } from './stream-parts.js'
@@ -336,7 +342,7 @@ function isForeignKeyViolation(errText: string): boolean {
  * (no `stopWhen`) so each step boundary is an opportunity to drain the mailbox
  * for interrupts or freshly-arrived events, and to cap the step count.
  */
-async function runTurnOnce(
+export async function runTurnOnce(
   deps: AgentDeps,
   tenant: string,
   sid: string,
@@ -435,174 +441,289 @@ async function runTurnOnce(
         | 'retry'
         | string
       > => {
-        const result = streamText({
-          model,
-          system,
-          messages: stepMessages,
-          tools,
-          abortSignal: ctrl.signal,
-          maxRetries: 0,
-          ...(providerOptions !== undefined ? { providerOptions } : {}),
-          ...(headers !== undefined ? { headers } : {}),
-        })
-
-        let text = ''
-        let reasoning = ''
-        const toolCalls: Array<{
-          id: string
-          name: string
-          input: unknown
-        }> = []
-        const toolResults: Array<{
-          id: string
-          name: string
-          result: ToolResult
-        }> = []
-        /** Streamed `file` / `reasoning-file` parts (already offloaded to the
-         *  blob store by sanitizeStreamPart), persisted as `file` parts. */
-        const fileParts: Array<{
-          type: string
-          code: string
-          name: string
-          mime: string
-          size: number
-        }> = []
-        let usage: { inputTokens: number; outputTokens: number } | null = null
-
-        for await (const part of result.fullStream) {
-          // ---- bookkeeping (never changes what is published) ----
-          if (part.type === 'text-delta') text += part.text
-          else if (part.type === 'reasoning-delta') reasoning += part.text
-          else if (part.type === 'tool-call') {
-            toolCalls.push({
-              id: part.toolCallId,
-              name: part.toolName,
-              input: part.input,
-            })
-          } else if (part.type === 'tool-result') {
-            toolResults.push({
-              id: part.toolCallId,
-              name: part.toolName,
-              result: part.output,
-            })
-          } else if (part.type === 'tool-error') {
-            // A tool that failed/aborted still pairs with its call id so the
-            // provider never sees a dangling tool-call.
-            toolResults.push({
-              id: part.toolCallId,
-              name: part.toolName,
-              result: { content: String(part.error), metadata: null },
-            })
-          } else if (part.type === 'tool-output-denied') {
-            toolResults.push({
-              id: part.toolCallId,
-              name: part.toolName,
-              result: { content: 'denied', metadata: null },
-            })
-          } else if (part.type === 'finish-step') {
-            usage = {
-              inputTokens: part.usage.inputTokens ?? 0,
-              outputTokens: part.usage.outputTokens ?? 0,
+        // One model call. Declares its own accumulators so a re-invocation
+        // (below) starts clean — the failed attempt's partial output is
+        // discarded, never merged into the retried attempt.
+        const runOneStream = async (): Promise<
+          | {
+              text: string
+              reasoning: string
+              toolCalls: ToolCallRec[]
+              toolResults: ToolResultRec[]
+              fileParts: FilePartRec[]
+              usage: { inputTokens: number; outputTokens: number } | null
             }
-          } else if (part.type === 'finish') {
-            finished = true
-          } else if (part.type === 'abort') {
-            interrupted = true
+          | 'retry'
+          | string
+        > => {
+          let text = ''
+          let reasoning = ''
+          const toolCalls: Array<{
+            id: string
+            name: string
+            input: unknown
+          }> = []
+          const toolResults: Array<{
+            id: string
+            name: string
+            result: ToolResult
+          }> = []
+          /** Streamed `file` / `reasoning-file` parts (already offloaded to the
+           *  blob store by sanitizeStreamPart), persisted as `file` parts. */
+          const fileParts: Array<{
+            type: string
+            code: string
+            name: string
+            mime: string
+            size: number
+          }> = []
+          let usage: { inputTokens: number; outputTokens: number } | null = null
+
+          // Reset every accumulator. Called from `onError` when the SDK is
+          // about to RETRY the current step: the failed attempt's deltas were
+          // already published (so the client is told to clear them via the
+          // durable `retry` event), and its tool parts are buffered/discarded
+          // by the SDK (tools never re-execute). Only the recovered attempt is
+          // persisted — exactly one chain row under `stepMessageId`.
+          const resetAttempt = () => {
+            text = ''
+            reasoning = ''
+            toolCalls.length = 0
+            toolResults.length = 0
+            fileParts.length = 0
+            usage = null
           }
 
-          // The error part keeps its special control-flow handling: a context
-          // overflow is compacted and the step retried ONCE (transparent to
-          // the caller); any other error ends the turn. A genuine error is
-          // published verbatim (sanitized) before the turn unwinds; an overflow
-          // is NOT published as an error (it is recovered, not a failure — a
-          // stray error card would wrongly mark the turn failed in the UI).
-          if (part.type === 'error') {
-            const error = part.error
-            if (isContextOverflowFailure(error)) {
-              // Context overflow: compact and retry once with the trimmed
-              // context — transparent to the caller.
-              const compacted = await compactSession(
-                deps,
+          // Retry budgets (config guarantees them in production; `?? 0` keeps
+          // partial test configs hermetic — no retry).
+          const maxRetries = deps.config.llmMaxRetries ?? 0
+          const streamRetries = deps.config.llmStreamRetries ?? 0
+
+          // Counts mid-stream error events the SDK is about to retry. The SDK
+          // retries while `count <= streamRetries`; the count is incremented
+          // here BEFORE the decision so the terminal error is not misread as a
+          // retry.
+          let streamRetryCount = 0
+
+          const result = streamText({
+            model,
+            system,
+            messages: stepMessages,
+            tools,
+            abortSignal: ctrl.signal,
+            // Request-start failures (429/5xx/network before any output): the
+            // SDK retries, honoring `isRetryable` + Retry-After.
+            maxRetries,
+            // Mid-stream provider error events: the SDK re-runs only this step
+            // and DISCARDS the failed attempt's tool parts (no tool re-exec).
+            streamRetries,
+            // Awaited by the SDK BEFORE each stream retry: reset our
+            // accumulators, announce the reset durably (same message id), and
+            // back off (the SDK applies no delay for stream retries).
+            onError: async ({ error }: { error: unknown }) => {
+              if (ctrl.signal.aborted || isToolChoiceViolation(error)) return
+              streamRetryCount++
+              if (streamRetryCount > streamRetries) return
+              resetAttempt()
+              const delay = retryDelayMs(streamRetryCount, error)
+              await pushRetryNow(
+                deps.bus,
                 tenant,
                 sid,
-                'overflow',
+                stepMessageId,
+                streamRetryCount,
+                delay,
+                String(error),
+                runId,
               )
-              if (compacted.isOk() && compacted.value) {
-                // The checkpoint moved the chain tip. RE-ANCHOR this step onto
-                // it and RE-ANNOUNCE the same message id with the new prevId
-                // (clients update the bubble's position instead of creating a
-                // second one) so the checkpoint stays on the chain rather than
-                // becoming an orphan sibling of the step.
-                const reTip = await Sessions.tip(deps.db, tenant, sid)
-                if (reTip.isOk()) stepPrevId = reTip.value
-                await pushMessageAddedNow(
-                  deps.bus,
+              await sleep(delay)
+            },
+            ...(providerOptions !== undefined ? { providerOptions } : {}),
+            ...(headers !== undefined ? { headers } : {}),
+          })
+
+          for await (const part of result.fullStream) {
+            // ---- bookkeeping (never changes what is published) ----
+            if (part.type === 'text-delta') text += part.text
+            else if (part.type === 'reasoning-delta') reasoning += part.text
+            else if (part.type === 'tool-call') {
+              toolCalls.push({
+                id: part.toolCallId,
+                name: part.toolName,
+                input: part.input,
+              })
+            } else if (part.type === 'tool-result') {
+              toolResults.push({
+                id: part.toolCallId,
+                name: part.toolName,
+                result: part.output,
+              })
+            } else if (part.type === 'tool-error') {
+              // A tool that failed/aborted still pairs with its call id so the
+              // provider never sees a dangling tool-call.
+              toolResults.push({
+                id: part.toolCallId,
+                name: part.toolName,
+                result: { content: String(part.error), metadata: null },
+              })
+            } else if (part.type === 'tool-output-denied') {
+              toolResults.push({
+                id: part.toolCallId,
+                name: part.toolName,
+                result: { content: 'denied', metadata: null },
+              })
+            } else if (part.type === 'finish-step') {
+              usage = {
+                inputTokens: part.usage.inputTokens ?? 0,
+                outputTokens: part.usage.outputTokens ?? 0,
+              }
+            } else if (part.type === 'finish') {
+              finished = true
+            } else if (part.type === 'abort') {
+              interrupted = true
+            }
+
+            // The error part keeps its special control-flow handling: a context
+            // overflow is compacted and the step retried ONCE (transparent to
+            // the caller); any other error ends the turn. A genuine error is
+            // published verbatim (sanitized) before the turn unwinds; an overflow
+            // is NOT published as an error (it is recovered, not a failure — a
+            // stray error card would wrongly mark the turn failed in the UI).
+            if (part.type === 'error') {
+              const error = part.error
+              if (isContextOverflowFailure(error)) {
+                // Context overflow: compact and retry once with the trimmed
+                // context — transparent to the caller.
+                const compacted = await compactSession(
+                  deps,
                   tenant,
                   sid,
-                  {
-                    messageId: stepMessageId,
-                    prevId: stepPrevId ?? '',
-                    role: 'assistant',
-                    streaming: true,
-                  },
-                  runId,
+                  'overflow',
                 )
-                stepMessages = await loadHistory(deps, tenant, sid)
-                return 'retry'
+                if (compacted.isOk() && compacted.value) {
+                  // The checkpoint moved the chain tip. RE-ANCHOR this step onto
+                  // it and RE-ANNOUNCE the same message id with the new prevId
+                  // (clients update the bubble's position instead of creating a
+                  // second one) so the checkpoint stays on the chain rather than
+                  // becoming an orphan sibling of the step.
+                  const reTip = await Sessions.tip(deps.db, tenant, sid)
+                  if (reTip.isOk()) stepPrevId = reTip.value
+                  await pushMessageAddedNow(
+                    deps.bus,
+                    tenant,
+                    sid,
+                    {
+                      messageId: stepMessageId,
+                      prevId: stepPrevId ?? '',
+                      role: 'assistant',
+                      streaming: true,
+                    },
+                    runId,
+                  )
+                  stepMessages = await loadHistory(deps, tenant, sid)
+                  return 'retry'
+                }
               }
+              pushEvent(
+                deps.bus,
+                tenant,
+                sid,
+                'error',
+                {
+                  error: String(error),
+                  message: String(error),
+                },
+                runId,
+              )
+              return `turn failed: ${String(error)}`
             }
-            pushEvent(
+
+            // ---- verbatim pass-through ----
+            // EVERY other AI SDK fullStream part is published under its OWN
+            // event name (start-step, tool-input-start/delta/end, source, file,
+            // custom, finish, abort, raw, tool-approval-*, ...), sanitized to be
+            // JSON-safe. This is the "fully transparent" contract: the event
+            // vocabulary is the AI SDK's, not a hand-maintained subset.
+            const sanitized = await sanitizeStreamPart(
+              part as { type: string } & Record<string, unknown>,
+              sanitizeDeps,
+            )
+            // A streamed media part is already in the blob store; record its
+            // `file:<code>` so it is also persisted into the message history.
+            if (
+              (part.type === 'file' || part.type === 'reasoning-file') &&
+              typeof sanitized['code'] === 'string' &&
+              sanitized['code'] !== ''
+            ) {
+              fileParts.push({
+                type: part.type,
+                code: sanitized['code'],
+                name:
+                  (sanitized['name'] as string | undefined) ??
+                  `model-${part.type}`,
+                mime:
+                  (sanitized['mediaType'] as string | undefined) ??
+                  'application/octet-stream',
+                size: Number(sanitized['size'] ?? 0),
+              })
+            }
+            // Tag every part with the step's server id so the client routes the
+            // streamed deltas into the right bubble without guessing.
+            sanitized['message_id'] = stepMessageId
+            pushEvent(deps.bus, tenant, sid, part.type, sanitized, runId)
+          }
+          return { text, reasoning, toolCalls, toolResults, fileParts, usage }
+        }
+
+        // Transport-level retry: the SDK turns provider failures into `error`
+        // parts (handled by `streamRetries` above), but a raw throw while
+        // reading the stream (socket torn down mid-body) escapes it. Retry a
+        // bounded number of times, resetting accumulators and announcing the
+        // reset under the SAME step id (so persistence stays single-row).
+        const transportRetries = deps.config.llmStreamRetries ?? 0
+        for (let transportAttempt = 1; ; transportAttempt++) {
+          try {
+            return await runOneStream()
+          } catch (err) {
+            if (
+              ctrl.signal.aborted ||
+              transportAttempt > transportRetries ||
+              !isRetryableThrown(err)
+            ) {
+              throw err
+            }
+            const delay = retryDelayMs(transportAttempt, err)
+            await pushRetryNow(
               deps.bus,
               tenant,
               sid,
-              'error',
-              {
-                error: String(error),
-                message: String(error),
-              },
+              stepMessageId,
+              transportAttempt,
+              delay,
+              String(err),
               runId,
             )
-            return `turn failed: ${String(error)}`
+            await sleep(delay)
           }
-
-          // ---- verbatim pass-through ----
-          // EVERY other AI SDK fullStream part is published under its OWN
-          // event name (start-step, tool-input-start/delta/end, source, file,
-          // custom, finish, abort, raw, tool-approval-*, ...), sanitized to be
-          // JSON-safe. This is the "fully transparent" contract: the event
-          // vocabulary is the AI SDK's, not a hand-maintained subset.
-          const sanitized = await sanitizeStreamPart(
-            part as { type: string } & Record<string, unknown>,
-            sanitizeDeps,
-          )
-          // A streamed media part is already in the blob store; record its
-          // `file:<code>` so it is also persisted into the message history.
-          if (
-            (part.type === 'file' || part.type === 'reasoning-file') &&
-            typeof sanitized['code'] === 'string' &&
-            sanitized['code'] !== ''
-          ) {
-            fileParts.push({
-              type: part.type,
-              code: sanitized['code'],
-              name:
-                (sanitized['name'] as string | undefined) ??
-                `model-${part.type}`,
-              mime:
-                (sanitized['mediaType'] as string | undefined) ??
-                'application/octet-stream',
-              size: Number(sanitized['size'] ?? 0),
-            })
-          }
-          // Tag every part with the step's server id so the client routes the
-          // streamed deltas into the right bubble without guessing.
-          sanitized['message_id'] = stepMessageId
-          pushEvent(deps.bus, tenant, sid, part.type, sanitized, runId)
         }
-        return { text, reasoning, toolCalls, toolResults, fileParts, usage }
       }
 
-      let stepResult = await attempt()
+      let stepResult: Awaited<ReturnType<typeof attempt>>
+      try {
+        stepResult = await attempt()
+      } catch (err) {
+        // A transport error that survived the retry budget (or a non-retryable
+        // throw): surface it as a turn failure rather than crashing the drain.
+        pushEvent(
+          deps.bus,
+          tenant,
+          sid,
+          'error',
+          { error: String(err), message: String(err) },
+          runId,
+        )
+        return `turn failed: ${String(err)}`
+      }
       if (stepResult === 'retry') {
         // Seamless retry once after an overflow compaction.
         stepResult = await attempt()

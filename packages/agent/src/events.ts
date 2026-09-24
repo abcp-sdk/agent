@@ -100,6 +100,47 @@ export function pushEvent(
 }
 
 /**
+ * Announce that the CURRENT step is being RETRIED after a transient provider
+ * failure (mid-stream disconnect / 429 / 5xx). This is a durable, run-scoped
+ * event carrying the SAME `message_id` the step already announced, so clients
+ * CLEAR that streaming bubble's partial parts before the retried attempt's
+ * deltas arrive — otherwise the two attempts' text would concatenate
+ * ("onetwo"). No new message id is minted: the step keeps its identity, so the
+ * eventual `persistStep` writes exactly ONE chain row.
+ *
+ * Awaited so the reset is durably ordered BEFORE the retry's first delta (the
+ * caller emits it from `onError`, which the SDK awaits before re-calling the
+ * provider).
+ */
+export async function pushRetryNow(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+  messageId: string,
+  attempt: number,
+  delayMs: number,
+  reason: string,
+  runId?: string,
+): Promise<void> {
+  const params: Record<string, unknown> = {
+    message_id: messageId,
+    attempt,
+    delay_ms: delayMs,
+    reason,
+  }
+  if (runId !== undefined) params['run_id'] = runId
+  try {
+    await bus.inboxPublish(
+      sseSubject(tenant, sid),
+      { event: 'retry', params, eid: randomUUID() },
+      { id: randomUUID(), tenant },
+    )
+  } catch (err) {
+    logger.warn({ tenant, sid, err: String(err) }, 'retry publish failed')
+  }
+}
+
+/**
  * Awaited variant of [pushEvent]. Ordered publication matters for the
  * session-terminal `status:idle`: it must be durably enqueued BEFORE the run
  * lease is released, otherwise a mailbox wake for the next turn can claim the
