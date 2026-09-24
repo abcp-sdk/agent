@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AgentDeps, Bus, LlmRegistry } from '@abcp-agent/agent'
+import type { AgentDeps, Bus } from '@abcp-agent/agent'
 import { connectDb, Messages, Presets, Sessions } from '@abcp-agent/agent'
 import { createContextValues, type HandlerContext } from '@connectrpc/connect'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -65,7 +65,9 @@ async function fixture() {
 }
 
 /** Seed `parent` with a `user -> assistant -> user` chain and return the ids. */
-async function seedChain(db: never): Promise<{ u1: string; a1: string; u2: string }> {
+async function seedChain(
+  db: never,
+): Promise<{ u1: string; a1: string; u2: string }> {
   await Messages.insertWithId(db, T, 'u1', 'user', null)
   await Messages.insertWithId(db, T, 'a1', 'assistant', 'u1')
   await Messages.insertWithId(db, T, 'u2', 'user', 'a1')
