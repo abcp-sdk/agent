@@ -17,6 +17,7 @@ import {
   loadConfig,
   logger,
   Mailbox,
+  Messages,
   makeBlobStore,
   natsToken,
   Presets,
@@ -248,17 +249,37 @@ async function main(): Promise<void> {
       )
       return rows.map(r => String(r['n'] ?? '')).filter(n => n !== '')
     },
-    forkSession: (tenant, parent, child) =>
-      rawRun(
+    forkSession: async (tenant, parent, child) => {
+      // Anchor the child at the message BEFORE the parent's current-turn prompt.
+      // The assistant step that is invoking this tool is not persisted yet, so
+      // the parent tip IS the prompt that started this turn (e.g. "start 10
+      // subsessions"). Inheriting it made every child believe it owned that
+      // instruction. forkBase() steps back over that prompt; the child then
+      // receives its own task as the handoff trigger.
+      const parentTip = await rawAll(
+        db,
+        'SELECT tip_id AS t FROM sessions WHERE tenant = ? AND name = ?',
+        [tenant, parent],
+      )
+      const tip = parentTip.length > 0 ? String(parentTip[0]!['t'] ?? '') : ''
+      const baseRes = await Messages.forkBase(
+        db,
+        tenant,
+        tip === '' ? null : tip,
+      )
+      if (baseRes.isErr()) throw new Error(baseRes.error)
+      const forkTip = baseRes.value
+      await rawRun(
         db,
         `INSERT INTO sessions
            (tenant, name, model, variant, preset, tip_id, max_turns,
             system_prompt, locale, "group", created_at, updated_at)
-         SELECT tenant, ?, model, variant, preset, tip_id, max_turns,
+         SELECT tenant, ?, model, variant, preset, ?, max_turns,
                 system_prompt, locale, ?, datetime('now'), datetime('now')
          FROM sessions WHERE tenant = ? AND name = ?`,
-        [child, parent, tenant, parent],
-      ),
+        [child, forkTip, parent, tenant, parent],
+      )
+    },
     deleteSessionRow: (tenant, sid) =>
       rawRun(db, 'DELETE FROM sessions WHERE tenant = ? AND name = ?', [
         tenant,

@@ -109,6 +109,31 @@ export const Messages = {
   },
 
   /**
+   * The chain anchor a FORK should start from, given a session's current tip.
+   *
+   * When the tip is a `user` message it is the PROMPT that started the current
+   * turn (the assistant step that is calling the tool is not persisted yet), so
+   * the fork anchors at that prompt's PARENT — the child must NOT inherit the
+   * instruction that spawned it (e.g. "start 10 subsessions", which otherwise
+   * makes each child believe it must do all 10). Otherwise the tip is anchored
+   * as-is (a plain continuation of the shared history).
+   *
+   * Returns null when the resulting base is the very start of the chain.
+   */
+  forkBase(
+    db: Db,
+    tenant: string,
+    tipId: string | null,
+  ): ResultAsync<string | null, string> {
+    if (tipId === null || tipId === '') {
+      return ResultAsync.fromSafePromise(Promise.resolve<string | null>(null))
+    }
+    return this.get(db, tenant, tipId).map(row =>
+      row !== null && row.role === 'user' ? (row.prev_id ?? null) : tipId,
+    )
+  },
+
+  /**
    * True when `target` is reachable by walking `prev_id` backwards from
    * `tip` — i.e. `target` belongs to this session's chain (COW forks share
    * ancestors, so a message from another session's chain must not move our
