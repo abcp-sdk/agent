@@ -116,6 +116,14 @@ export function sessionsHandlers(
       const exists = await Sessions.exists(deps.db, tenant, name)
       if (exists.isErr()) throw new Error(exists.error)
       if (exists.value) throw new Error('Session already exists')
+      // Anchor the child at the message BEFORE the parent's current-turn
+      // prompt when no explicit fork point is given. The assistant step that is
+      // invoking the caller's tool is not persisted yet, so a parent tip that is
+      // a `user` message IS the prompt that started this turn (e.g. "create
+      // branch X"). Copying it onto the child would hand the child its parent's
+      // own instruction — the same defect the subsession fork fixed in
+      // `Messages.forkBase`. An explicit `messageId` always wins (fork-at-a-
+      // message).
       let forkTip: string | null = p.tip_id
       if (messageId !== undefined && messageId !== '') {
         const target = await Messages.get(deps.db, tenant, messageId)
@@ -133,12 +141,25 @@ export function sessionsHandlers(
             throw new Error('fork message not in this session chain')
         }
         forkTip = messageId
+      } else {
+        const base = await Messages.forkBase(deps.db, tenant, p.tip_id)
+        if (base.isErr()) throw new Error(base.error)
+        forkTip = base.value
       }
+      // A fork that CHANGES the preset must not inherit the parent's
+      // session-level system-prompt override: that text belongs to the parent's
+      // role and would shadow the new preset's prompt (a maintainer's text
+      // leaking into a developer branch). Carry it over only when the preset is
+      // unchanged (a same-role continuation, e.g. a subsession fork).
+      const parentPreset = p.preset !== '' ? p.preset : DEFAULT_PRESET
+      const childPreset = preset ?? parentPreset
+      const childSystemPrompt =
+        childPreset === parentPreset ? p.system_prompt : ''
       const created = await Sessions.create(deps.db, tenant, {
         name,
         model: p.model,
-        preset: preset ?? (p.preset !== '' ? p.preset : DEFAULT_PRESET),
-        systemPrompt: p.system_prompt,
+        preset: childPreset,
+        systemPrompt: childSystemPrompt,
         maxTurns: p.max_turns,
         locale: p.locale,
         tipId: forkTip,
