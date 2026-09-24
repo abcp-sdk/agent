@@ -62,9 +62,10 @@ function fullStream(
 }
 
 const textDelta = (text: string) => ({ type: 'text-delta', text, id: 't1' })
-const finishStep = () => ({
+const finishStep = (finishReason = 'stop') => ({
   type: 'finish-step',
   usage: { inputTokens: 1, outputTokens: 1 },
+  finishReason,
 })
 const finish = () => ({ type: 'finish' })
 
@@ -211,5 +212,56 @@ describe('runTurnOnce provider retry', () => {
     // 1 initial + 2 retries = 3 streamText calls.
     expect(streamCalls.length).toBe(3)
     expect(published.filter(p => p.event === 'retry').length).toBe(2)
+  })
+
+  it('ends the turn with a clear error on finish_reason:length (truncated output)', async () => {
+    const { deps, db, sid } = await setup()
+    const { runTurnOnce } = await import('../src/session-agent.js')
+
+    // The step streamed tool calls, then hit the output limit: the SDK emits
+    // the tool-call parts but never executes them (finishReason 'length').
+    streamFactory = () => ({
+      fullStream: fullStream([
+        textDelta('working…'),
+        {
+          type: 'tool-call',
+          toolCallId: 'tc1',
+          toolName: 'subsession-create',
+          input: { name: 'x' },
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'tc2',
+          toolName: 'subsession-create',
+          input: { name: 'y' },
+        },
+        finishStep('length'),
+        finish(),
+      ]),
+    })
+
+    const err = await runTurnOnce(deps as never, 't', sid)
+    expect(typeof err).toBe('string')
+    expect(err).toContain('truncated')
+
+    // A single model call — truncation is terminal, not retried.
+    expect(streamCalls.length).toBe(1)
+
+    // An explicit, user-visible error was published (not a cryptic SDK error).
+    const errors = published.filter(p => p.event === 'error')
+    expect(errors.length).toBe(1)
+    expect(String(errors[0]!.params['message'])).toContain('truncated')
+
+    // The partial step IS persisted with fully-paired tool results (one per
+    // call), so the chain stays valid for any later turn.
+    const tip = await Sessions.tip(db, 't', sid)
+    const tipId = tip.isOk() ? tip.value : null
+    expect(tipId).not.toBeNull()
+    const parts = await Parts.listByMessages(db, 't', [tipId as string])
+    const rows = parts.isOk() ? parts.value : []
+    const calls = rows.filter(p => p.type === 'tool')
+    const results = rows.filter(p => p.type === 'tool_result')
+    expect(calls).toHaveLength(2)
+    expect(results).toHaveLength(2)
   })
 })

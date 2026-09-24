@@ -317,7 +317,18 @@ export async function persistUserPrompt(
   })
 }
 
-/** Append a completed step to the in-memory message list for the next step. */
+/**
+ * Append a completed step to the in-memory message list for the next step.
+ *
+ * The `role:"tool"` message is built to pair EXACTLY with the assistant's
+ * tool-calls: one result per call, in call order. A call with no result (the
+ * provider truncated the step — `finish_reason:"length"` — so the SDK emitted
+ * the call but never executed it) gets a synthesized placeholder. This is
+ * mandatory: the AI SDK's `standardizePrompt` throws `MissingToolResultsError`
+ * when a tool-call has no matching result, which would abort the NEXT step of
+ * the same turn. `persistStep` writes the same placeholder, so the in-memory
+ * and persisted histories stay consistent.
+ */
 export function appendStep(
   messages: ModelMessage[],
   text: string,
@@ -344,15 +355,22 @@ export function appendStep(
   }
   const next: ModelMessage[] = [...messages]
   next.push({ role: 'assistant', content })
-  if (toolResults.length > 0) {
+  if (toolCalls.length > 0) {
+    const byId = new Map(toolResults.map(r => [r.id, r]))
     next.push({
       role: 'tool',
-      content: toolResults.map(r => ({
-        type: 'tool-result',
-        toolCallId: r.id,
-        toolName: r.name,
-        output: { type: 'text', value: r.result.content },
-      })),
+      content: toolCalls.map(tc => {
+        const r = byId.get(tc.id)
+        return {
+          type: 'tool-result' as const,
+          toolCallId: tc.id,
+          toolName: tc.name,
+          output: {
+            type: 'text' as const,
+            value: r?.result.content ?? `tool '${tc.name}' produced no output`,
+          },
+        }
+      }),
     })
   }
   return next

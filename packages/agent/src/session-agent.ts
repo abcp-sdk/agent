@@ -437,6 +437,7 @@ export async function runTurnOnce(
             toolResults: ToolResultRec[]
             fileParts: FilePartRec[]
             usage: { inputTokens: number; outputTokens: number } | null
+            finishReason: string | null
           }
         | 'retry'
         | string
@@ -452,6 +453,7 @@ export async function runTurnOnce(
               toolResults: ToolResultRec[]
               fileParts: FilePartRec[]
               usage: { inputTokens: number; outputTokens: number } | null
+              finishReason: string | null
             }
           | 'retry'
           | string
@@ -478,6 +480,8 @@ export async function runTurnOnce(
             size: number
           }> = []
           let usage: { inputTokens: number; outputTokens: number } | null = null
+          /** Provider finish reason of this step ('stop' | 'length' | ...). */
+          let finishReason: string | null = null
 
           // Reset every accumulator. Called from `onError` when the SDK is
           // about to RETRY the current step: the failed attempt's deltas were
@@ -492,6 +496,7 @@ export async function runTurnOnce(
             toolResults.length = 0
             fileParts.length = 0
             usage = null
+            finishReason = null
           }
 
           // Retry budgets (config guarantees them in production; `?? 0` keeps
@@ -577,6 +582,7 @@ export async function runTurnOnce(
                 inputTokens: part.usage.inputTokens ?? 0,
                 outputTokens: part.usage.outputTokens ?? 0,
               }
+              finishReason = part.finishReason
             } else if (part.type === 'finish') {
               finished = true
             } else if (part.type === 'abort') {
@@ -672,7 +678,15 @@ export async function runTurnOnce(
             sanitized['message_id'] = stepMessageId
             pushEvent(deps.bus, tenant, sid, part.type, sanitized, runId)
           }
-          return { text, reasoning, toolCalls, toolResults, fileParts, usage }
+          return {
+            text,
+            reasoning,
+            toolCalls,
+            toolResults,
+            fileParts,
+            usage,
+            finishReason,
+          }
         }
 
         // Transport-level retry: the SDK turns provider failures into `error`
@@ -735,8 +749,15 @@ export async function runTurnOnce(
       // Persist this step (reasoning + text + fully-paired tool calls/results
       // + streamed files) and advance the chain tip before considering the
       // next iteration.
-      const { text, reasoning, toolCalls, toolResults, fileParts, usage } =
-        stepResult
+      const {
+        text,
+        reasoning,
+        toolCalls,
+        toolResults,
+        fileParts,
+        usage,
+        finishReason,
+      } = stepResult
       await persistStep(
         deps,
         tenant,
@@ -757,6 +778,30 @@ export async function runTurnOnce(
           usage.inputTokens,
           usage.outputTokens,
         )
+      }
+
+      // The provider stopped because it hit the OUTPUT token limit
+      // (`finish_reason: length`). Any tool calls emitted in this step were
+      // NEVER executed (the SDK only runs tools on `stop`/`tool-calls`), so
+      // continuing would feed the model a step whose calls produced only
+      // placeholders. End the turn with an explicit, honest error instead of
+      // silently continuing or crashing with a cryptic SDK validation error.
+      // The partial step is already persisted above (text + paired results),
+      // so the user sees what was produced.
+      if (finishReason === 'length') {
+        const msg =
+          toolCalls.length > 0
+            ? `model output was truncated (finish_reason: length) after ${toolCalls.length} tool call(s); the tool calls were not executed — retry or reduce the response size`
+            : 'model output was truncated (finish_reason: length)'
+        pushEvent(
+          deps.bus,
+          tenant,
+          sid,
+          'error',
+          { error: msg, message: msg },
+          runId,
+        )
+        return msg
       }
 
       step += 1
