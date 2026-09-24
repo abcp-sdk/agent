@@ -229,6 +229,51 @@ describe('system presets are immutable', () => {
     const list2 = await Presets.list(bus, T)
     expect(list2.value.find(p => p.id === 'user1')?.is_system).toBe(false)
   })
+
+  it('serves a repeated list from the short-lived cache', async () => {
+    // The cache is keyed by BUS identity, so count reads on THIS bus only.
+    let reads = 0
+    const bus = {
+      kvGet: async (b: string, key: string) => {
+        if (b !== BUCKET) return null
+        reads++
+        if (key === PKEY) return JSON.stringify(['default'])
+        if (key === pk('default'))
+          return JSON.stringify({
+            id: 'default',
+            system_prompt: 's',
+            system_prompt_i18n: '{}',
+            tools: '[]',
+            max_turns: 1,
+          })
+        return null
+      },
+      kvPut: async () => {},
+      kvCreate: async () => null,
+      kvDelete: async () => {},
+    } as unknown as Bus
+    await Presets.list(bus, T)
+    const afterFirst = reads
+    const again = await Presets.list(bus, T)
+    expect(again.isOk() && again.value[0]?.id).toBe('default')
+    // A cache hit performs ZERO additional KV reads.
+    expect(reads).toBe(afterFirst)
+  })
+
+  it('invalidates the list cache on upsert', async () => {
+    const { bus } = fakeBus()
+    await Presets.seedDefaults(bus, T)
+    await Presets.list(bus, T) // prime the cache
+    await Presets.upsert(bus, T, {
+      id: 'fresh',
+      systemPrompt: 's',
+      systemPromptI18n: '{}',
+      tools: '[]',
+      maxTurns: 1,
+    })
+    const list = await Presets.list(bus, T)
+    expect(list.value.find(p => p.id === 'fresh')).toBeDefined()
+  })
 })
 
 describe('retired system presets are cleaned on seed', () => {

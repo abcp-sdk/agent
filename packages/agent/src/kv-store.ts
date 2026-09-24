@@ -97,6 +97,24 @@ async function readPresetIndex(bus: Bus, tenant: string): Promise<string[]> {
 }
 
 /**
+ * Short-lived cache of a tenant's preset list. `listPresets` is called on
+ * EVERY Chat mount and provider-form open; without this each call paid the KV
+ * round-trips again. A few seconds of staleness is invisible (presets are
+ * immutable system rows in this deployment) and every write path clears the
+ * entry, so a change is never masked beyond the TTL. Keyed by BUS identity
+ * first so two transports (or tests) with the same tenant never share rows.
+ */
+const PRESET_LIST_TTL_MS = 5_000
+const presetListCache = new WeakMap<
+  Bus,
+  Map<string, { at: number; rows: PresetRow[] }>
+>()
+
+function invalidatePresetList(bus: Bus, tenant: string): void {
+  presetListCache.get(bus)?.delete(tenant)
+}
+
+/**
  * Read-merge-put index maintenance. Preset writes are rare single-admin
  * operations, so the microsecond read/write race between two concurrent
  * upserts (losing one id from the index) is accepted; re-running the
@@ -182,16 +200,31 @@ export const Presets = {
   list(bus: Bus, tenant: string): ResultAsync<PresetRow[], string> {
     return ra(
       (async () => {
-        const ids = await readPresetIndex(bus, tenant)
-        const out: PresetRow[] = []
-        for (const id of ids) {
-          const raw = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, id))
-          if (raw === null) continue
-          const row = jsonToRow(raw)
-          if (row === null) continue
-          out.push(toRow(row))
+        const cache = presetListCache.get(bus)
+        const hit = cache?.get(tenant)
+        if (hit !== undefined && Date.now() - hit.at < PRESET_LIST_TTL_MS) {
+          return hit.rows
         }
-        return out.sort((a, b) => (a.id < b.id ? -1 : 1))
+        const ids = await readPresetIndex(bus, tenant)
+        // Read the rows in PARALLEL: a sequential loop made one KV round-trip
+        // per preset, so the RPC latency grew with the preset count (the
+        // client then queued behind the chat stream and looked stalled).
+        const rows = await Promise.all(
+          ids.map(async id => {
+            const raw = await bus.kvGet(BUCKET_PRESETS, presetKey(tenant, id))
+            if (raw === null) return null
+            const row = jsonToRow(raw)
+            return row === null ? null : toRow(row)
+          }),
+        )
+        const out = rows
+          .filter((r): r is PresetRow => r !== null)
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+        const next =
+          cache ?? new Map<string, { at: number; rows: PresetRow[] }>()
+        next.set(tenant, { at: Date.now(), rows: out })
+        presetListCache.set(bus, next)
+        return out
       })(),
       'list presets',
     )
@@ -240,6 +273,7 @@ export const Presets = {
           NO_TTL,
         )
         await addToPresetIndex(bus, tenant, row.id)
+        invalidatePresetList(bus, tenant)
       })(),
       'upsert preset',
     )
@@ -257,6 +291,7 @@ export const Presets = {
         }
         await bus.kvDelete(BUCKET_PRESETS, presetKey(tenant, id))
         await removeFromPresetIndex(bus, tenant, id)
+        invalidatePresetList(bus, tenant)
       })(),
       'delete preset',
     )
@@ -315,6 +350,7 @@ export const Presets = {
             await removeFromPresetIndex(bus, tenant, id)
           }
         }
+        invalidatePresetList(bus, tenant)
       })(),
       'seed default presets',
     )
