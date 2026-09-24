@@ -63,7 +63,6 @@ spec:
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.text" "value" .Values.bundled.model.text)
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.image" "value" .Values.bundled.model.image)
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.image_edit" "value" .Values.bundled.model.imageEdit)
-                (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.video" "value" .Values.bundled.model.video)
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.speech" "value" .Values.bundled.model.speech)
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.speech_clone" "value" .Values.bundled.model.speechClone)
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.transcription" "value" .Values.bundled.model.transcription)
