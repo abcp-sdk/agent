@@ -7,6 +7,7 @@ import {
   COMPACTION_PREVIEW,
   COMPACTION_ROLE,
   checkpointContent,
+  entryCost,
   foldQA,
   splitScan,
 } from './compaction.js'
@@ -17,7 +18,13 @@ import { Providers } from './db-providers.js'
 import { Sessions } from './db-sessions.js'
 import { pushEvent } from './events.js'
 import { rebuildHistory } from './history.js'
-import { parse, SummaryPartDataSchema, TextPartDataSchema } from './json.js'
+import {
+  parse,
+  SummaryPartDataSchema,
+  TextPartDataSchema,
+  ToolPartDataSchema,
+  ToolResultPartDataSchema,
+} from './json.js'
 import { parseProviderModelRef } from './llm.js'
 import type { AgentDeps } from './session-agent.js'
 import { factFromPersist, projectMessageFact } from './session-state.js'
@@ -125,34 +132,67 @@ export async function compactSession(
   if (partsRes.isErr()) return err(partsRes.error)
   const parts = partsRes.value
 
-  // Fold entries: text per message + tool-call count.
+  // Fold entries: text per message, tool-call count, and the token weight of
+  // the tool ARGUMENTS + RESULTS (which dominate an agent conversation's
+  // context). Reasoning is deliberately not counted — it never enters the
+  // rebuilt model context.
   const textByMsg = new Map<string, string>()
-  for (const p of parts) {
-    if (p.type !== 'text') continue
-    const d = parse(TextPartDataSchema, p.data)
-    if (d.isOk()) {
-      textByMsg.set(
-        p.message_id,
-        (textByMsg.get(p.message_id) ?? '') + d.value.text,
-      )
-    }
-  }
   const toolCountByMsg = new Map<string, number>()
+  const toolInputTokensByMsg = new Map<string, number>()
+  const toolResultTokensByMsg = new Map<string, number>()
+  const toolResultSnippetsByMsg = new Map<string, string[]>()
   for (const p of parts) {
-    if (p.type === 'tool') {
+    if (p.type === 'text') {
+      const d = parse(TextPartDataSchema, p.data)
+      if (d.isOk()) {
+        textByMsg.set(
+          p.message_id,
+          (textByMsg.get(p.message_id) ?? '') + d.value.text,
+        )
+      }
+    } else if (p.type === 'tool') {
       toolCountByMsg.set(
         p.message_id,
         (toolCountByMsg.get(p.message_id) ?? 0) + 1,
       )
+      const d = parse(ToolPartDataSchema, p.data)
+      if (d.isOk()) {
+        const input =
+          typeof d.value.input === 'string'
+            ? d.value.input
+            : JSON.stringify(d.value.input ?? {})
+        toolInputTokensByMsg.set(
+          p.message_id,
+          (toolInputTokensByMsg.get(p.message_id) ?? 0) + estimateTokens(input),
+        )
+      }
+    } else if (p.type === 'tool_result') {
+      const d = parse(ToolResultPartDataSchema, p.data)
+      if (d.isOk()) {
+        toolResultTokensByMsg.set(
+          p.message_id,
+          (toolResultTokensByMsg.get(p.message_id) ?? 0) +
+            estimateTokens(d.value.content),
+        )
+        const list = toolResultSnippetsByMsg.get(p.message_id) ?? []
+        list.push(d.value.content)
+        toolResultSnippetsByMsg.set(p.message_id, list)
+      }
     }
   }
 
-  const entries = chain.value.map(m => ({
-    id: m.id,
-    role: m.role,
-    text: textByMsg.get(m.id) ?? '',
-    toolCalls: toolCountByMsg.get(m.id) ?? 0,
-  }))
+  const entries = chain.value.map(m => {
+    const snippets = toolResultSnippetsByMsg.get(m.id)
+    return {
+      id: m.id,
+      role: m.role,
+      text: textByMsg.get(m.id) ?? '',
+      toolCalls: toolCountByMsg.get(m.id) ?? 0,
+      toolInputTokens: toolInputTokensByMsg.get(m.id) ?? 0,
+      toolResultTokens: toolResultTokensByMsg.get(m.id) ?? 0,
+      ...(snippets !== undefined ? { toolResultSnippets: snippets } : {}),
+    }
+  })
 
   const limit = await contextLimit(deps, tenant, modelId)
   // No configured context window for this provider/model ⇒ cannot compute
@@ -167,10 +207,7 @@ export async function compactSession(
   // tail is oldest-first; its first entry marks the verbatim boundary kept
   // after this checkpoint.
   const tailFromId = tail[0]?.id ?? null
-  const foldedTokens = folded.reduce(
-    (n, e) => n + estimateTokens(e.text) + e.toolCalls * 4,
-    0,
-  )
+  const foldedTokens = folded.reduce((n, e) => n + entryCost(e), 0)
 
   const insert = await Messages.insert(deps.db, tenant, COMPACTION_ROLE, tipId)
   if (insert.isErr()) return err(insert.error)

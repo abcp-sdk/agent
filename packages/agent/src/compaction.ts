@@ -35,6 +35,25 @@ export interface FoldEntry {
   text: string
   /** Number of `tool` parts on this message. */
   toolCalls: number
+  /**
+   * Estimated tokens of the tool-call ARGUMENTS (the `input` JSON) on this
+   * message. Tool traffic dominates an agent conversation's context, so the
+   * budget MUST count it — otherwise a huge session measures as tiny and
+   * compaction wrongly reports "nothing to fold".
+   */
+  toolInputTokens: number
+  /**
+   * Estimated tokens of the tool RESULTS (`tool_result.content`) on this
+   * message. Excluded from the fold summary by design, but counted here so the
+   * size decision reflects what actually occupies the model's context.
+   */
+  toolResultTokens: number
+  /**
+   * Raw tool-result contents for the fold summary (optional; absent means the
+   * fold keeps no trace of this turn's tool output). `foldQA` truncates each to
+   * a short snippet.
+   */
+  toolResultSnippets?: string[]
 }
 
 export interface SplitResult {
@@ -44,7 +63,18 @@ export interface SplitResult {
   folded: FoldEntry[]
 }
 
-const costOf = (e: FoldEntry) => estimateTokens(e.text) + e.toolCalls * 4
+/**
+ * Size of one entry as it occupies the model's context: text + tool-call
+ * arguments + tool results, plus a small per-call framing cost. `reasoning`
+ * is intentionally NOT represented (it never enters the rebuilt context).
+ */
+export const entryCost = (e: FoldEntry) =>
+  estimateTokens(e.text) +
+  e.toolInputTokens +
+  e.toolResultTokens +
+  e.toolCalls * 4
+
+const costOf = entryCost
 
 /**
  * Split oldest-first entries (which may include compaction messages) into a
@@ -95,15 +125,35 @@ export function splitScan(
   return { tail, folded }
 }
 
+/** Max characters of a single tool-result snippet kept in the fold summary. */
+const TOOL_SNIPPET_CHARS = 200
+
+/** Collapse whitespace and truncate a tool result for the fold summary. */
+function snippet(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim()
+  return oneLine.length > TOOL_SNIPPET_CHARS
+    ? `${oneLine.slice(0, TOOL_SNIPPET_CHARS)}…`
+    : oneLine
+}
+
 /** Fold a message run (oldest-first) into Q&A blocks. */
 export function foldQA(region: readonly FoldEntry[]): string {
   const blocks: string[] = []
   let user = ''
   let toolCalls = 0
   const texts: string[] = []
+  /** Per-tool-result snippets, in order, for the current assistant turn. */
+  const toolResults: string[] = []
 
   const flush = () => {
-    if (user === '' && toolCalls === 0 && texts.length === 0) return
+    if (
+      user === '' &&
+      toolCalls === 0 &&
+      texts.length === 0 &&
+      toolResults.length === 0
+    ) {
+      return
+    }
     const assistant = texts.join('\n').trim()
     if (user !== '') blocks.push(`User: ${user}`)
     if (toolCalls > 0 || assistant !== '') {
@@ -111,9 +161,15 @@ export function foldQA(region: readonly FoldEntry[]): string {
         `Assistant: [After ${toolCalls} tool calls] ${assistant}`.trim(),
       )
     }
+    // Keep a truncated trace of what the tools returned, so the fold does not
+    // discard the tool RESULTS entirely (they dominate the context).
+    if (toolResults.length > 0) {
+      blocks.push(`Tool results: ${toolResults.join(' | ')}`)
+    }
     user = ''
     toolCalls = 0
     texts.length = 0
+    toolResults.length = 0
   }
 
   for (const e of region) {
@@ -124,6 +180,11 @@ export function foldQA(region: readonly FoldEntry[]): string {
     } else if (e.role === 'assistant') {
       toolCalls += e.toolCalls
       if (e.text !== '') texts.push(e.text)
+      if (e.toolResultSnippets !== undefined) {
+        for (const s of e.toolResultSnippets) {
+          if (s !== '') toolResults.push(snippet(s))
+        }
+      }
     }
   }
   flush()

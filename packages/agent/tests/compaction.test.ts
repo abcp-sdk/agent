@@ -12,8 +12,10 @@ function entry(
   role: string,
   text: string,
   toolCalls = 0,
+  toolInputTokens = 0,
+  toolResultTokens = 0,
 ): FoldEntry {
-  return { id, role, text, toolCalls }
+  return { id, role, text, toolCalls, toolInputTokens, toolResultTokens }
 }
 
 describe('foldQA', () => {
@@ -83,6 +85,59 @@ describe('splitScan', () => {
     const r = splitScan(entries, 60, 60)
     expect(r.tail.length).toBeGreaterThan(0)
     expect(r.tail[0]!.role).toBe('user')
+  })
+
+  it('counts tool input/result weight so a tool-heavy turn folds (regression)', () => {
+    // A turn whose TEXT is tiny but whose tool RESULTS are huge (the real bug:
+    // 868k-context sessions measured ~40k and were declared "too short").
+    const entries = [
+      entry('u1', 'user', 'run it', 0, 0, 0),
+      entry('a1', 'assistant', 'done', 5, 500, 50_000),
+      entry('u2', 'user', 'again', 0, 0, 0),
+      entry('a2', 'assistant', 'done', 3, 300, 40_000),
+    ]
+    // Small tail budget: the tool-heavy turn MUST land in `folded`, not be
+    // silently ignored for having little text.
+    const r = splitScan(entries, 100, 100)
+    expect(r.folded.map(e => e.id)).toContain('a1')
+    expect(r.folded.length).toBeGreaterThan(0)
+  })
+})
+
+describe('foldQA tool-result trace', () => {
+  it('keeps a truncated snippet of each tool result', () => {
+    const long = 'Z'.repeat(500)
+    const entries: FoldEntry[] = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: 'working',
+        toolCalls: 1,
+        toolInputTokens: 10,
+        toolResultTokens: 200,
+        toolResultSnippets: [long],
+      },
+    ]
+    const out = foldQA(entries)
+    expect(out).toContain('Tool results:')
+    // Truncated to the snippet cap (200 chars + ellipsis), not the full 500.
+    expect(out).toContain('ZZZ')
+    expect(out.length).toBeLessThan(400)
+    expect(out).toContain('…')
+  })
+
+  it('omits the tool-result line when there are no snippets', () => {
+    const entries: FoldEntry[] = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: 'plain',
+        toolCalls: 0,
+        toolInputTokens: 0,
+        toolResultTokens: 0,
+      },
+    ]
+    expect(foldQA(entries)).not.toContain('Tool results:')
   })
 })
 
