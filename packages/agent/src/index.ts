@@ -34,9 +34,12 @@ export * from './session-agent.js'
 export {
   calibrateMessageFacts,
   factFromPersist,
+  LEASE_BUCKET,
   projectMessageFact,
   readMessageFacts,
+  readSessionStatuses,
   type SessionMessageFact,
+  type SessionStatus,
   writeMessageFact,
 } from './session-state.js'
 export {

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { Bus } from '../src/bus.js'
+import { natsToken } from '../src/bus.js'
 import {
   factFromPersist,
   projectMessageFact,
   readMessageFacts,
+  readSessionStatuses,
 } from '../src/session-state.js'
 
 const T = 't1'
@@ -89,5 +91,27 @@ describe('projectMessageFact', () => {
     // The list watcher lives on the KV bucket; no extra pub (which would
     // yield a duplicate upsert per message).
     expect(published).not.toContain('abc.session.changed')
+  })
+})
+
+describe('readSessionStatuses', () => {
+  it('maps the presence of a run lease to busy, absence to idle', async () => {
+    const { bus, kv } = fakeBus()
+    // Seed a lease key for 'busy-sess' using the same token hash the lease uses.
+    kv.set(`t.${T}.${natsToken('busy-sess')}`, 'running')
+    const statuses = await readSessionStatuses(bus, T, [
+      'busy-sess',
+      'idle-sess',
+    ])
+    expect(statuses.get('busy-sess')).toBe('busy')
+    expect(statuses.get('idle-sess')).toBe('idle')
+  })
+
+  it('is best-effort: a KV error reads as idle, never throws', async () => {
+    const bus = {
+      kvGet: () => Promise.reject(new Error('nats down')),
+    } as unknown as Bus
+    const statuses = await readSessionStatuses(bus, T, ['s'])
+    expect(statuses.get('s')).toBe('idle')
   })
 })

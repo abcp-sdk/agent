@@ -222,6 +222,36 @@ export async function readMessageFacts(
 }
 
 /**
+ * Runtime status of a session, derived from its cross-replica run LEASE
+ * (`abc-session-state` bucket, same key hash as the lease helper). "busy"
+ * while a turn holds the lease, "idle" otherwise. This is the SAME signal the
+ * `State` RPC returns; it is surfaced on list rows so a list view needs no
+ * per-row State poll. A session mid-retry (429/5xx backoff) is "busy".
+ */
+export type SessionStatus = 'busy' | 'idle'
+
+/** The lease KV bucket (mirrors the SDK's LEASE_BUCKET). */
+export const LEASE_BUCKET = 'abc-session-state'
+
+/** Batch-read the runtime status for many sessions (one KV read each, parallel). */
+export async function readSessionStatuses(
+  bus: Bus,
+  tenant: string,
+  sids: readonly string[],
+): Promise<Map<string, SessionStatus>> {
+  const out = new Map<string, SessionStatus>()
+  await Promise.all(
+    sids.map(async sid => {
+      const raw = await bus
+        .kvGet(LEASE_BUCKET, tenantKVKey(tenant, natsToken(sid)))
+        .catch(() => null)
+      out.set(sid, raw !== null && raw !== undefined ? 'busy' : 'idle')
+    }),
+  )
+  return out
+}
+
+/**
  * One-time startup calibration: refresh the KV projection from PG so facts
  * are correct even if earlier writes were missed (agent down, KV wiped,
  * historical sessions predating this feature). One query per session tip is

@@ -2,9 +2,12 @@ import { Agent as AbcAgent } from '@abc-protocol/sdk'
 import {
   type AgentDeps,
   BUCKET_SESSION_STATE,
+  LEASE_BUCKET,
   Messages,
+  natsToken,
   readActiveRun,
   readMessageFacts,
+  readSessionStatuses,
   Sessions,
 } from '@abcp-agent/agent'
 import {
@@ -114,12 +117,37 @@ export function watchHandlers(
       // is therefore delivered exactly once (bounded replay), closing the
       // core-subscribe gap that used to drop nudges on a transient hiccup.
       const anchorMs = Date.now()
-      // Build one Session snapshot (facts + row) for a name; null if gone.
+      // Runtime status per session (busy/idle), from the run lease. Seeded from
+      // the initial snapshot and updated by the lease watcher; only a CHANGE is
+      // re-emitted (the lease is renewed every ~10s, so emitting on every KV
+      // event would flood the stream).
+      const statusOf = new Map<string, 'busy' | 'idle'>()
+      // Reverse map for the lease key hash: `natsToken(name)` -> name, so a
+      // lease event (keyed by the hash) can be resolved to a session. Built
+      // from the snapshot list; a miss falls back to a DB scan (rare: only a
+      // session created after the snapshot but before its lifecycle nudge).
+      const tokenToName = new Map<string, string>()
+      const nameOfToken = async (token: string): Promise<string | null> => {
+        const hit = tokenToName.get(token)
+        if (hit !== undefined) return hit
+        const all = await Sessions.list(deps.db, tenant)
+        if (all.isErr()) return null
+        for (const s of all.value) tokenToName.set(natsToken(s.name), s.name)
+        return tokenToName.get(token) ?? null
+      }
+
+      // Build one Session snapshot (facts + row + status) for a name; null if
+      // gone.
       const snapshotOf = async (name: string) => {
         const r = await Sessions.get(deps.db, tenant, name)
         if (r.isErr() || r.value === null) return null
-        const facts = await readMessageFacts(deps.bus, tenant, [name])
-        return sessionToMsg(r.value, facts.get(name))
+        const [facts, statuses] = await Promise.all([
+          readMessageFacts(deps.bus, tenant, [name]),
+          readSessionStatuses(deps.bus, tenant, [name]),
+        ])
+        const status = statuses.get(name) ?? 'idle'
+        statusOf.set(name, status)
+        return sessionToMsg(r.value, facts.get(name), status)
       }
 
       // A queue serializes the three independent watchers into one stream.
@@ -209,19 +237,48 @@ export function watchHandlers(
         }
       })()
 
+      // 4) runtime status (run lease). The lease bucket holds one key per
+      //    ACTIVE session, keyed `t.<tenant>.<token>`; its create/renew/delete
+      //    is the busy/idle signal. We emit a row ONLY on a status TRANSITION
+      //    (the lease renews every ~10s — emitting per event would flood).
+      const leasePrefix = `t.${tenant}.`
+      const leaseWatch = await deps.bus
+        .kvWatch(LEASE_BUCKET, `${leasePrefix}>`)
+        .catch(() => null)
+      const leaseTask = (async () => {
+        if (leaseWatch === null) return
+        for await (const ev of leaseWatch.stream) {
+          const token = ev.key.startsWith(leasePrefix)
+            ? ev.key.slice(leasePrefix.length)
+            : ev.key
+          const name = await nameOfToken(token)
+          if (name === null) continue
+          const next: 'busy' | 'idle' = ev.deleted ? 'idle' : 'busy'
+          if (statusOf.get(name) === next) continue // no transition
+          await pushUpsert(name)
+        }
+      })()
+
       try {
-        // Initial full snapshot (the client replaces its whole list).
+        // Initial full snapshot (the client replaces its whole list). Seed the
+        // status + token maps so the lease watcher only reports TRANSITIONS.
         const all = await Sessions.list(deps.db, tenant)
         if (all.isErr()) throw new Error(all.error)
-        const facts = await readMessageFacts(
-          deps.bus,
-          tenant,
-          all.value.map(s => s.name),
-        )
+        const names = all.value.map(s => s.name)
+        const [facts, statuses] = await Promise.all([
+          readMessageFacts(deps.bus, tenant, names),
+          readSessionStatuses(deps.bus, tenant, names),
+        ])
+        for (const s of all.value) {
+          tokenToName.set(natsToken(s.name), s.name)
+          statusOf.set(s.name, statuses.get(s.name) ?? 'idle')
+        }
         yield create(WatchSessionsResponseSchema, {
           snapshot: true,
           removed: [],
-          upserts: all.value.map(s => sessionToMsg(s, facts.get(s.name))),
+          upserts: all.value.map(s =>
+            sessionToMsg(s, facts.get(s.name), statuses.get(s.name) ?? 'idle'),
+          ),
         })
         for (;;) {
           while (queue.length > 0) {
@@ -237,8 +294,10 @@ export function watchHandlers(
         void factTask.catch(() => {})
         await lcSub?.close().catch(() => {})
         await chSub?.close().catch(() => {})
+        await leaseWatch?.stop().catch(() => {})
         void lcTask.catch(() => {})
         void chTask.catch(() => {})
+        void leaseTask.catch(() => {})
       }
     },
   }

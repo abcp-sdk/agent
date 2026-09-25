@@ -14,6 +14,7 @@ import {
   publishSessionChanged,
   pushChainChanged,
   readMessageFacts,
+  readSessionStatuses,
   Sessions,
 } from '@abcp-agent/agent'
 import type { AgentService } from '@abcp-agent/schema'
@@ -44,13 +45,17 @@ export function sessionsHandlers(
       const tenant = tenantOf(ctx)
       const r = await Sessions.list(deps.db, tenant)
       if (r.isErr()) throw new Error(r.error)
-      const facts = await readMessageFacts(
-        deps.bus,
-        tenant,
-        r.value.map(s => s.name),
-      )
+      const names = r.value.map(s => s.name)
+      // Batch-read the message facts AND the runtime status (run lease) so the
+      // list rows carry busy/idle without a per-row State poll.
+      const [facts, statuses] = await Promise.all([
+        readMessageFacts(deps.bus, tenant, names),
+        readSessionStatuses(deps.bus, tenant, names),
+      ])
       return {
-        sessions: r.value.map(s => sessionToMsg(s, facts.get(s.name))),
+        sessions: r.value.map(s =>
+          sessionToMsg(s, facts.get(s.name), statuses.get(s.name) ?? 'idle'),
+        ),
       }
     },
 

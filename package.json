@@ -34,7 +34,8 @@
   "allowScripts": {
     "esbuild@0.28.2": true,
     "@abcp/client-sdk@0.1.1": true,
-    "@abcp/agent-sdk@0.19.0": true
+    "@abcp/agent-sdk@0.19.0": true,
+    "@abcp/agent-sdk@0.25.0": true
   },
   "overrides": {
     "@ai-sdk/gateway": "4.0.78",

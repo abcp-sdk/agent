@@ -173,6 +173,8 @@ export type SessionRow = RowOf<
   | 'last_message_at'
   | 'last_message_preview'
   | 'message_seq'
+  // Runtime status is derived from the run LEASE, not a persisted column.
+  | 'status'
 >
 export type MessageRow = RowOf<
   typeof MessageDesc,

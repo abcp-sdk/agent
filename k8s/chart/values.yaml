@@ -46,7 +46,7 @@ infra:
 agent:
   image:
     repository: git.agent.svc.cluster.local/abcp/agent
-    tag: "20260925134926"
+    tag: "20260925151235"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -72,7 +72,7 @@ webui:
   image:
     # Caddy with the webui static build baked into /srv.
     repository: git.agent.svc.cluster.local/abcp/agent-webui
-    tag: "20260924092027"
+    tag: "20260925151314"
     pullPolicy: IfNotPresent
   port: 8080
   service:

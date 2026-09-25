@@ -55,6 +55,9 @@ export function sessionToMsg(
     last_message_preview: string
     message_seq: number
   },
+  /** Runtime status from the run lease; omitted means "idle" (a single-session
+   *  reply, e.g. rename, where the caller did not read the lease). */
+  status: 'busy' | 'idle' = 'idle',
 ) {
   return {
     name: s.name,
@@ -81,6 +84,7 @@ export function sessionToMsg(
     lastMessageAt: fact?.last_message_at ?? '',
     lastMessagePreview: fact?.last_message_preview ?? '',
     messageSeq: fact?.message_seq ?? 0,
+    status,
   }
 }
 
