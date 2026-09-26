@@ -385,9 +385,18 @@ export async function loadHistory(
   const tipId = tipRes.isErr() ? null : tipRes.value
   if (tipId === null) return []
 
-  // Cache hit: use the cached id list to fetch rows + parts directly.
+  // Cache hit: use the cached id list to fetch rows + parts directly. The
+  // cache is only trusted when its NEWEST id is the current tip — a stale
+  // cache (a step persisted via fire-and-forget `appendSessionId` that has not
+  // landed yet, or a chain rewrite) would otherwise make a turn operate on a
+  // history missing its own last step. On a mismatch fall through to the
+  // authoritative bounded walk.
   const cached = await getSessionIds(deps.bus, tenant, sid)
-  if (cached !== null) {
+  if (
+    cached !== null &&
+    cached.length > 0 &&
+    cached[cached.length - 1] === tipId
+  ) {
     const rows = await Messages.byIds(deps.db, tenant, cached)
     const parts = await Parts.listByMessages(deps.db, tenant, cached)
     if (rows.isOk() && parts.isOk()) {
@@ -395,7 +404,7 @@ export async function loadHistory(
     }
   }
 
-  // Cache miss: bounded scan from tip, then backfill.
+  // Cache miss / stale: bounded scan from tip, then backfill.
   const chain = await Messages.chain(deps.db, tenant, tipId, 100_000, null)
   if (chain.isErr()) return []
   const ids = chain.value.map(m => m.id)

@@ -15,8 +15,11 @@ export interface ServerConfig {
   defaultMaxTurns: number
   /**
    * Retries for a provider failure while STARTING a model call (429/5xx/network,
-   * before any output). The AI SDK honors `isRetryable` + `Retry-After`/
-   * `retry-after-ms`. Set via env `LLM_MAX_RETRIES` (default 3).
+   * before any output). MANAGED BY THE AGENT (not the SDK) so the backoff is
+   * CAPPED and each retry is announced to clients via a `retry` event — the AI
+   * SDK's own retry loop uses an uncapped exponential backoff that can stall a
+   * turn for ~an hour with no UI feedback. Honors `Retry-After`/`retry-after-ms`.
+   * Set via env `LLM_MAX_RETRIES` (default 5).
    */
   llmMaxRetries: number
   /**
@@ -26,6 +29,18 @@ export interface ServerConfig {
    * Set via env `LLM_STREAM_RETRIES` (default 3).
    */
   llmStreamRetries: number
+  /**
+   * Abort a step when no FIRST content chunk arrives within this many ms
+   * (a half-open provider socket would otherwise hang the turn forever).
+   * Set via env `LLM_FIRST_CHUNK_TIMEOUT_MS` (default 120000).
+   */
+  llmFirstChunkTimeoutMs: number
+  /** Abort a step when the gap between content chunks exceeds this (ms).
+   *  Set via env `LLM_CHUNK_TIMEOUT_MS` (default 120000). */
+  llmChunkTimeoutMs: number
+  /** Abort a whole step after this many ms. Set via env
+   *  `LLM_STEP_TIMEOUT_MS` (default 900000 = 15 min). */
+  llmStepTimeoutMs: number
   /**
    * CORS allow-origin for browser (Flutter Web) clients. `*` allows any
    * origin; set an explicit origin to lock it down.
@@ -118,18 +133,23 @@ const TOOL_TIMEOUT_MS = 600_000
 /**
  * Default provider retry budgets.
  *
- * `LLM_MAX_RETRIES` covers request-start failures (the SDK's own retry loop,
- * which is what throws `AI_RetryError: Failed after N attempts`). 11 retries =
- * 12 total attempts, with the SDK's UNCAPPED exponential backoff
- * (2,4,8,…,2048s; the last single wait is ~34 min, ~68 min cumulative). That
- * long tail is deliberate: a persistently rate-limited upstream is better
- * waited out than failed, and the user can interrupt the turn to stop it.
+ * `LLM_MAX_RETRIES` covers request-start failures. The AGENT drives this loop
+ * (the SDK's own loop is disabled by passing `maxRetries: 0`) so the backoff is
+ * CAPPED at 30s per wait and every retry is surfaced to clients. 5 retries =
+ * 6 total attempts; worst case ~2.5 min, versus the SDK's uncapped ~68 min of
+ * silent waiting that made a turn look "stuck".
  *
  * `LLM_STREAM_RETRIES` covers mid-stream provider error events; those use OUR
  * backoff (capped at 30s) and stay at 3.
+ *
+ * The chunk/step timeouts abort a half-open provider stream so a dead socket
+ * cannot hang a turn forever.
  */
-const DEFAULT_LLM_MAX_RETRIES = 11
+const DEFAULT_LLM_MAX_RETRIES = 5
 const DEFAULT_LLM_STREAM_RETRIES = 3
+const DEFAULT_LLM_FIRST_CHUNK_TIMEOUT_MS = 120_000
+const DEFAULT_LLM_CHUNK_TIMEOUT_MS = 120_000
+const DEFAULT_LLM_STEP_TIMEOUT_MS = 900_000
 
 /** Resolve the storage backend from DATABASE_URL scheme + explicit override. */
 function resolveBackend(env: NodeJS.ProcessEnv): DbBackend {
@@ -196,6 +216,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     llmStreamRetries: parseCount(
       or('LLM_STREAM_RETRIES', String(DEFAULT_LLM_STREAM_RETRIES)),
       DEFAULT_LLM_STREAM_RETRIES,
+    ),
+    llmFirstChunkTimeoutMs: parseCount(
+      or(
+        'LLM_FIRST_CHUNK_TIMEOUT_MS',
+        String(DEFAULT_LLM_FIRST_CHUNK_TIMEOUT_MS),
+      ),
+      DEFAULT_LLM_FIRST_CHUNK_TIMEOUT_MS,
+    ),
+    llmChunkTimeoutMs: parseCount(
+      or('LLM_CHUNK_TIMEOUT_MS', String(DEFAULT_LLM_CHUNK_TIMEOUT_MS)),
+      DEFAULT_LLM_CHUNK_TIMEOUT_MS,
+    ),
+    llmStepTimeoutMs: parseCount(
+      or('LLM_STEP_TIMEOUT_MS', String(DEFAULT_LLM_STEP_TIMEOUT_MS)),
+      DEFAULT_LLM_STEP_TIMEOUT_MS,
     ),
     corsOrigin: or('AGENT_CORS_ORIGIN', '*'),
     authMode:

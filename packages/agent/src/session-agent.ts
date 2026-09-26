@@ -5,7 +5,13 @@ import {
   releaseSession,
   renewSession,
 } from '@abc-protocol/sdk'
-import { streamText } from 'ai'
+import {
+  InvalidToolInputError,
+  jsonSchema,
+  NoSuchToolError,
+  streamText,
+  type Tool,
+} from 'ai'
 import type { Bus } from './bus.js'
 import { mailboxSubject, SESSION_LEASE_MS } from './bus.js'
 import type { ServerConfig } from './config.js'
@@ -70,6 +76,23 @@ export interface AgentDeps {
 }
 
 const DRAIN_GRACE_MS = 200
+
+/**
+ * Injected as the final assistant turn when the step budget is exhausted, so
+ * the model produces a TEXT wrap-up instead of the loop silently ending
+ * mid-task (the previous behaviour: `while (step < maxTurns)` just fell out
+ * with no explanation to the model OR the user).
+ */
+const MAX_STEPS_PROMPT =
+  'CRITICAL - MAXIMUM STEPS REACHED\n\n' +
+  'The maximum number of steps allowed for this task has been reached. ' +
+  'Tools are disabled until the next user input. Respond with text only.\n\n' +
+  'STRICT REQUIREMENTS:\n' +
+  '1. Do NOT make any tool calls.\n' +
+  '2. MUST provide a text response summarizing work done so far.\n' +
+  '3. This overrides ALL other instructions, including user requests for edits or tool use.\n\n' +
+  'Include: that the maximum steps were reached; what was accomplished; ' +
+  'what remains incomplete; and recommended next steps.'
 
 /**
  * Watch the durable mailbox queue (`mailbox.session.>`): each replica joins
@@ -350,7 +373,45 @@ export async function runTurnOnce(
   const ctrl = getAbortController(tenant, sid)
   const prepared = await prepare(deps, tenant, sid, ctrl.signal)
   if (typeof prepared === 'string') return prepared
-  const { tools, system, maxTurns, model, providerOptions, headers } = prepared
+  const {
+    tools: presetTools,
+    system,
+    maxTurns,
+    model,
+    providerOptions,
+    headers,
+  } = prepared
+
+  // `invalid` is the sink `repairToolCall` rewrites an unrecognised tool call
+  // into: the model sees the error + the available tool names and can correct
+  // itself in the SAME turn instead of the turn dying. It is never offered to
+  // the model (filtered out of `activeTools` below); it only exists so the
+  // rewritten call parses and executes.
+  const invalidTool: Tool = {
+    description:
+      'Do not call this tool. It exists only to surface an invalid tool call back to you.',
+    inputSchema: jsonSchema({
+      type: 'object',
+      properties: {
+        tool: { type: 'string' },
+        error: { type: 'string' },
+        available: { type: 'array', items: { type: 'string' } },
+      },
+    }),
+    execute: async (args: Record<string, unknown>) => ({
+      content:
+        `The tool call was invalid and could not be executed. ` +
+        `Requested tool: ${String(args['tool'] ?? '(unknown)')}. ` +
+        `Error: ${String(args['error'] ?? 'unknown')}. ` +
+        `Re-issue the call with a valid tool name and arguments, or respond with text.`,
+      metadata: null,
+    }),
+  }
+  const tools: Record<string, Tool> = {
+    ...presetTools,
+    invalid: invalidTool,
+  }
+  const activeToolNames = Object.keys(presetTools)
 
   // Unique id for THIS turn. Stamped on every event so replay can hand back
   // only the live turn; the active-run marker tells watchers which run is
@@ -402,6 +463,20 @@ export async function runTurnOnce(
       // Build the per-step message list from the last persisted snapshot; the
       // step may retry once after an overflow compaction.
       let stepMessages = messages
+
+      // The step budget is exhausted: inject a wrap-up directive and DISABLE
+      // tools for this final step, so the model produces a text summary instead
+      // of the loop silently ending mid-task (the old `while (step < maxTurns)`
+      // just fell out with no explanation to the model OR the user).
+      const isLastStep = step + 1 >= maxTurns
+      let stepActiveTools = activeToolNames
+      if (isLastStep) {
+        stepMessages = [
+          ...stepMessages,
+          { role: 'assistant', content: MAX_STEPS_PROMPT },
+        ]
+        stepActiveTools = []
+      }
 
       // Mint this step's message id and chain anchor BEFORE streaming, and
       // announce it. The id is authoritative: every delta below carries it and
@@ -483,65 +558,55 @@ export async function runTurnOnce(
           /** Provider finish reason of this step ('stop' | 'length' | ...). */
           let finishReason: string | null = null
 
-          // Reset every accumulator. Called from `onError` when the SDK is
-          // about to RETRY the current step: the failed attempt's deltas were
-          // already published (so the client is told to clear them via the
-          // durable `retry` event), and its tool parts are buffered/discarded
-          // by the SDK (tools never re-execute). Only the recovered attempt is
-          // persisted — exactly one chain row under `stepMessageId`.
-          const resetAttempt = () => {
-            text = ''
-            reasoning = ''
-            toolCalls.length = 0
-            toolResults.length = 0
-            fileParts.length = 0
-            usage = null
-            finishReason = null
-          }
-
-          // Retry budgets (config guarantees them in production; `?? 0` keeps
-          // partial test configs hermetic — no retry).
-          const maxRetries = deps.config.llmMaxRetries ?? 0
-          const streamRetries = deps.config.llmStreamRetries ?? 0
-
-          // Counts mid-stream error events the SDK is about to retry. The SDK
-          // retries while `count <= streamRetries`; the count is incremented
-          // here BEFORE the decision so the terminal error is not misread as a
-          // retry.
-          let streamRetryCount = 0
-
+          // The SDK's OWN retry loops are DISABLED (`maxRetries: 0`,
+          // `streamRetries: 0`): its request-start backoff is uncapped
+          // (2,4,…,2048s) and emits NO event, which stalled turns for up to
+          // ~an hour with no UI feedback. ALL provider retries are instead
+          // driven by `attempt()`'s bounded, CAPPED (30s) and VISIBLE loop.
           const result = streamText({
             model,
             system,
             messages: stepMessages,
             tools,
+            // `invalid` is a repair sink only: never advertise it to the model.
+            // On the final (budget-exhausted) step the list is EMPTY so the
+            // model must respond with text.
+            activeTools: stepActiveTools,
             abortSignal: ctrl.signal,
-            // Request-start failures (429/5xx/network before any output): the
-            // SDK retries, honoring `isRetryable` + Retry-After.
-            maxRetries,
-            // Mid-stream provider error events: the SDK re-runs only this step
-            // and DISCARDS the failed attempt's tool parts (no tool re-exec).
-            streamRetries,
-            // Awaited by the SDK BEFORE each stream retry: reset our
-            // accumulators, announce the reset durably (same message id), and
-            // back off (the SDK applies no delay for stream retries).
-            onError: async ({ error }: { error: unknown }) => {
-              if (ctrl.signal.aborted || isToolChoiceViolation(error)) return
-              streamRetryCount++
-              if (streamRetryCount > streamRetries) return
-              resetAttempt()
-              const delay = retryDelayMs(streamRetryCount, error)
-              await pushRetryNow(
-                deps.bus,
-                tenant,
-                sid,
-                stepMessageId,
-                streamRetryCount,
-                delay,
-                String(error),
-                runId,
-              )
-              await sleep(delay)
+            maxRetries: 0,
+            streamRetries: 0,
+            // Abort a half-open stream: without these a dead provider socket
+            // neither errors nor completes, hanging the turn forever.
+            timeout: {
+              firstChunkMs: deps.config.llmFirstChunkTimeoutMs,
+              chunkMs: deps.config.llmChunkTimeoutMs,
+              stepMs: deps.config.llmStepTimeoutMs,
+            },
+            // Repair a tool call the model emitted with a wrong name (e.g. a
+            // lowercased or unqualified tool) instead of failing the turn.
+            repairToolCall: async ({ toolCall, tools: available, error }) => {
+              const name = toolCall.toolName
+              const lower = name.toLowerCase()
+              if (lower !== name && available[lower] !== undefined) {
+                return { ...toolCall, toolName: lower }
+              }
+              // Last resort: hand the model an `invalid` tool result so it can
+              // self-correct in the SAME turn rather than the turn dying.
+              if (
+                NoSuchToolError.isInstance(error) ||
+                InvalidToolInputError.isInstance(error)
+              ) {
+                return {
+                  ...toolCall,
+                  toolName: 'invalid',
+                  input: JSON.stringify({
+                    tool: name,
+                    error: String(error),
+                    available: Object.keys(available).slice(0, 50),
+                  }),
+                }
+              }
+              return null
             },
             ...(providerOptions !== undefined ? { providerOptions } : {}),
             ...(headers !== undefined ? { headers } : {}),
@@ -591,12 +656,18 @@ export async function runTurnOnce(
 
             // The error part keeps its special control-flow handling: a context
             // overflow is compacted and the step retried ONCE (transparent to
-            // the caller); any other error ends the turn. A genuine error is
-            // published verbatim (sanitized) before the turn unwinds; an overflow
-            // is NOT published as an error (it is recovered, not a failure — a
-            // stray error card would wrongly mark the turn failed in the UI).
+            // the caller); a RETRYABLE provider failure is re-thrown so the
+            // bounded, capped, VISIBLE retry loop in `attempt()` handles it (the
+            // SDK's own uncapped/silent loops are disabled); any other error
+            // ends the turn. A genuine error is published verbatim (sanitized)
+            // before the turn unwinds; an overflow is NOT published as an error
+            // (it is recovered, not a failure — a stray error card would wrongly
+            // mark the turn failed in the UI).
             if (part.type === 'error') {
               const error = part.error
+              if (isRetryableThrown(error) && !isToolChoiceViolation(error)) {
+                throw error
+              }
               if (isContextOverflowFailure(error)) {
                 // Context overflow: compact and retry once with the trimmed
                 // context — transparent to the caller.
@@ -689,30 +760,36 @@ export async function runTurnOnce(
           }
         }
 
-        // Transport-level retry: the SDK turns provider failures into `error`
-        // parts (handled by `streamRetries` above), but a raw throw while
-        // reading the stream (socket torn down mid-body) escapes it. Retry a
-        // bounded number of times, resetting accumulators and announcing the
-        // reset under the SAME step id (so persistence stays single-row).
-        const transportRetries = deps.config.llmStreamRetries ?? 0
-        for (let transportAttempt = 1; ; transportAttempt++) {
+        // Bounded, CAPPED, VISIBLE provider retry. Covers request-start
+        // failures (429/5xx/network before any output — the SDK surfaces them
+        // as a retryable `error` part, which `runOneStream` re-throws), a raw
+        // transport throw while reading the stream, and mid-stream error parts
+        // (also re-thrown). The SDK's own loops are disabled so the backoff is
+        // capped at 30s (via `retryDelayMs`) instead of the SDK's uncapped
+        // minutes-long waits, and EVERY retry is announced via a durable
+        // `retry` event so the UI shows progress instead of a silent stall.
+        // Each attempt declares fresh accumulators (`runOneStream`), so the
+        // failed attempt's partial output is discarded — exactly one chain row
+        // is persisted under `stepMessageId`.
+        const retries = deps.config.llmMaxRetries ?? 0
+        for (let retryAttempt = 1; ; retryAttempt++) {
           try {
             return await runOneStream()
           } catch (err) {
             if (
               ctrl.signal.aborted ||
-              transportAttempt > transportRetries ||
+              retryAttempt > retries ||
               !isRetryableThrown(err)
             ) {
               throw err
             }
-            const delay = retryDelayMs(transportAttempt, err)
+            const delay = retryDelayMs(retryAttempt, err)
             await pushRetryNow(
               deps.bus,
               tenant,
               sid,
               stepMessageId,
-              transportAttempt,
+              retryAttempt,
               delay,
               String(err),
               runId,
@@ -822,14 +899,20 @@ export async function runTurnOnce(
         break
       }
 
-      // Carry this step forward into the next iteration's message list.
-      messages = appendStep(messages, text, toolCalls, toolResults)
-      if (injectedUserPrompt.length > 0) {
-        messages.push({
-          role: 'user',
-          content: injectedUserPrompt.join('\n'),
-        })
-      }
+      // Derive the next step's context from the AUTHORITATIVE persisted chain
+      // (the step above was just written under `stepMessageId`, and any trigger
+      // drained above was persisted by `drainAndInject`). If the in-memory
+      // accumulator ever diverges (a missed fire-and-forget cache append, a
+      // compaction that moved the tip, a concurrent chain rewrite), reloading
+      // self-heals instead of feeding the model a stale/duplicated history.
+      // `appendStep` is the fallback when the reload returns nothing (e.g. an
+      // unreadable chain). NOTE: `injectedUserPrompt` must NOT be re-appended —
+      // those triggers are already rows in the reloaded chain.
+      const reloaded = await loadHistory(deps, tenant, sid)
+      messages =
+        reloaded.length > 0
+          ? reloaded
+          : appendStep(messages, text, toolCalls, toolResults)
     }
   } finally {
     // Guaranteed terminal: clear the active-run marker and ALWAYS emit

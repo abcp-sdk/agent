@@ -124,7 +124,14 @@ describe('runTurnOnce provider retry', () => {
     const deps = {
       db,
       bus: fakeBus,
-      config: { llmMaxRetries: 0, llmStreamRetries: 3, toolTimeoutMs: 1000 },
+      config: {
+        llmMaxRetries: 3,
+        llmStreamRetries: 3,
+        toolTimeoutMs: 1000,
+        llmFirstChunkTimeoutMs: 120_000,
+        llmChunkTimeoutMs: 120_000,
+        llmStepTimeoutMs: 900_000,
+      },
       llm: {},
     }
     return { deps, db, sid }
@@ -197,9 +204,7 @@ describe('runTurnOnce provider retry', () => {
 
   it('stops after the transport retry budget and reports failure', async () => {
     const { deps, sid } = await setup()
-    ;(
-      deps as { config: { llmStreamRetries: number } }
-    ).config.llmStreamRetries = 2
+    ;(deps as { config: { llmMaxRetries: number } }).config.llmMaxRetries = 2
     const { runTurnOnce } = await import('../src/session-agent.js')
 
     // Every attempt throws a retryable transport error.
@@ -212,6 +217,94 @@ describe('runTurnOnce provider retry', () => {
     // 1 initial + 2 retries = 3 streamText calls.
     expect(streamCalls.length).toBe(3)
     expect(published.filter(p => p.event === 'retry').length).toBe(2)
+  })
+
+  it('retries a request-start failure surfaced as a retryable error PART', async () => {
+    const { deps, sid } = await setup()
+    const { runTurnOnce } = await import('../src/session-agent.js')
+
+    // The SDK (with maxRetries:0) surfaces a request-start failure as an error
+    // PART carrying a retryable APICallError, not a throw. The loop must treat
+    // it like a thrown retryable error: announce + retry.
+    const { APICallError } = await import('@ai-sdk/provider')
+    const retryable = new APICallError({
+      message: 'Cannot connect to API',
+      url: 'http://x/v1',
+      requestBodyValues: {},
+      isRetryable: true,
+    })
+    streamFactory = call => {
+      if (call === 0) {
+        return { fullStream: fullStream([{ type: 'error', error: retryable }]) }
+      }
+      return {
+        fullStream: fullStream([
+          textDelta('recovered'),
+          finishStep(),
+          finish(),
+        ]),
+      }
+    }
+
+    const err = await runTurnOnce(deps as never, 't', sid)
+    expect(err).toBeNull()
+    expect(streamCalls.length).toBe(2)
+    expect(published.filter(p => p.event === 'retry').length).toBe(1)
+  })
+
+  it('disables the SDK retry loops and passes capped timeouts to streamText', async () => {
+    const { deps, sid } = await setup()
+    const { runTurnOnce } = await import('../src/session-agent.js')
+    streamFactory = () => ({
+      fullStream: fullStream([textDelta('ok'), finishStep(), finish()]),
+    })
+    await runTurnOnce(deps as never, 't', sid)
+    const opts = streamCalls[0]!.opts
+    // Our own bounded loop owns retries; the SDK's uncapped/silent loops are off.
+    expect(opts['maxRetries']).toBe(0)
+    expect(opts['streamRetries']).toBe(0)
+    // A half-open stream is bounded by the chunk/step timeouts.
+    expect(opts['timeout']).toMatchObject({
+      firstChunkMs: 120_000,
+      chunkMs: 120_000,
+      stepMs: 900_000,
+    })
+    // `invalid` is a repair sink only — never advertised to the model.
+    expect(Array.isArray(opts['activeTools'])).toBe(true)
+    expect((opts['activeTools'] as string[]).includes('invalid')).toBe(false)
+  })
+
+  it('injects a wrap-up directive and disables tools on the final step', async () => {
+    const { deps, sid } = await setup()
+    // Force the budget to ONE step so the first step IS the last.
+    const { runTurnOnce } = await import('../src/session-agent.js')
+    const prepareMod = await import('../src/turn-prepare.js')
+    vi.spyOn(prepareMod, 'prepare').mockResolvedValue({
+      tools: {},
+      system: 'sys',
+      maxTurns: 1,
+      model: { provider: 'test', modelId: 'm' },
+      providerOptions: undefined,
+      headers: undefined,
+    } as never)
+
+    streamFactory = () => ({
+      fullStream: fullStream([textDelta('summary'), finishStep(), finish()]),
+    })
+    await runTurnOnce(deps as never, 't', sid)
+
+    const opts = streamCalls[0]!.opts
+    // Tools are disabled for the final step, and a wrap-up directive was added.
+    expect(opts['activeTools']).toEqual([])
+    const msgs = opts['messages'] as Array<{ role: string; content: unknown }>
+    expect(
+      msgs.some(
+        m =>
+          m.role === 'assistant' &&
+          typeof m.content === 'string' &&
+          m.content.includes('MAXIMUM STEPS REACHED'),
+      ),
+    ).toBe(true)
   })
 
   it('ends the turn with a clear error on finish_reason:length (truncated output)', async () => {

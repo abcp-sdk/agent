@@ -13,6 +13,36 @@ export interface AgentEventDeps {
 }
 
 /**
+ * Best-effort durable publish with a bounded retry. JetStream publish has a 5s
+ * timeout; under a transient NATS stall (leader election, slow disk) a single
+ * attempt can time out. These events are fire-and-forget notifications that
+ * consumers tolerate missing, but retrying once or twice recovers the common
+ * transient case instead of dropping the nudge entirely (which left, e.g., a
+ * forked workspace's branch unmaterialized until the next reconcile).
+ */
+async function publishBestEffort(
+  bus: Bus,
+  subject: string,
+  payload: unknown,
+  opts: { id: string; tenant: string },
+  label: string,
+  attempts = 3,
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await bus.inboxPublish(subject, payload, opts)
+      return
+    } catch (err) {
+      if (attempt >= attempts) {
+        logger.warn({ tenant: opts.tenant, err: String(err) }, label)
+        return
+      }
+      await new Promise(r => setTimeout(r, 100 * attempt))
+    }
+  }
+}
+
+/**
  * Record the session's ACTIVE turn (run-id + wall-clock start). Replay uses
  * the start time to window exactly one turn (independent of how many events
  * other sessions produced); it is cleared when the turn ends.
@@ -155,15 +185,15 @@ export async function pushEventNow(
   event: string,
   params: unknown = {},
 ): Promise<void> {
-  try {
-    await bus.inboxPublish(
-      sseSubject(tenant, sid),
-      { event, params, eid: randomUUID() },
-      { id: randomUUID(), tenant },
-    )
-  } catch (err) {
-    logger.warn({ tenant, sid, err: String(err) }, 'sse publish failed')
-  }
+  // Awaited AND retried: ordering matters (see above), and a transient 5s
+  // JetStream publish timeout must not drop the terminal/ordering event.
+  await publishBestEffort(
+    bus,
+    sseSubject(tenant, sid),
+    { event, params, eid: randomUUID() },
+    { id: randomUUID(), tenant },
+    'sse publish failed',
+  )
 }
 
 /**
@@ -181,22 +211,17 @@ export function pushChainChanged(
   tipId: string | null,
   reason: string,
 ): void {
-  void bus
-    .inboxPublish(
-      sseSubject(tenant, sid),
-      {
-        event: 'chain-changed',
-        params: { tip_id: tipId ?? '', reason },
-        eid: randomUUID(),
-      },
-      { id: randomUUID(), tenant },
-    )
-    .catch(err => {
-      logger.warn(
-        { tenant, sid, err: String(err) },
-        'chain-changed publish failed',
-      )
-    })
+  void publishBestEffort(
+    bus,
+    sseSubject(tenant, sid),
+    {
+      event: 'chain-changed',
+      params: { tip_id: tipId ?? '', reason },
+      eid: randomUUID(),
+    },
+    { id: randomUUID(), tenant },
+    'chain-changed publish failed',
+  )
 }
 
 /**
@@ -305,18 +330,13 @@ export function publishSessionChanged(
   tenant: string,
   sid: string,
 ): void {
-  void bus
-    .inboxPublish(
-      `abc.${tenant}.session.changed`,
-      { session_name: sid },
-      { id: randomUUID(), tenant },
-    )
-    .catch(err => {
-      logger.warn(
-        { tenant, sid, err: String(err) },
-        'session-changed publish failed',
-      )
-    })
+  void publishBestEffort(
+    bus,
+    `abc.${tenant}.session.changed`,
+    { session_name: sid },
+    { id: randomUUID(), tenant },
+    'session-changed publish failed',
+  )
 }
 
 /**
@@ -331,20 +351,15 @@ export function publishLifecycle(
   event: LifecycleEvent,
   payload: Record<string, unknown>,
 ): void {
-  void bus
-    .inboxPublish(
-      `abc.${tenant}.session.lifecycle.${event}`,
-      {
-        kind: event,
-        tenant,
-        ...payload,
-      },
-      { id: randomUUID(), tenant },
-    )
-    .catch(err => {
-      logger.warn(
-        { tenant, event, err: String(err) },
-        'lifecycle publish failed',
-      )
-    })
+  void publishBestEffort(
+    bus,
+    `abc.${tenant}.session.lifecycle.${event}`,
+    {
+      kind: event,
+      tenant,
+      ...payload,
+    },
+    { id: randomUUID(), tenant },
+    'lifecycle publish failed',
+  )
 }
