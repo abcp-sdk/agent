@@ -72,7 +72,7 @@ webui:
   image:
     # Caddy with the webui static build baked into /srv.
     repository: git.agent.svc.cluster.local/abcp/agent-webui
-    tag: "20260925151314"
+    tag: "20260926073337"
     pullPolicy: IfNotPresent
   port: 8080
   service:
