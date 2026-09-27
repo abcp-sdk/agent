@@ -75,13 +75,6 @@ describe('loadConfig retry budgets', () => {
     expect(cfg.llmStreamRetries).toBe(3)
   })
 
-  it('defaults the chunk/step timeouts', () => {
-    const cfg = loadConfig({} as NodeJS.ProcessEnv)
-    expect(cfg.llmFirstChunkTimeoutMs).toBe(120_000)
-    expect(cfg.llmChunkTimeoutMs).toBe(120_000)
-    expect(cfg.llmStepTimeoutMs).toBe(900_000)
-  })
-
   it('honors LLM_MAX_RETRIES / LLM_STREAM_RETRIES overrides', () => {
     const cfg = loadConfig({
       LLM_MAX_RETRIES: '2',

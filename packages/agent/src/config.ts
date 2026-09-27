@@ -30,18 +30,6 @@ export interface ServerConfig {
    */
   llmStreamRetries: number
   /**
-   * Abort a step when no FIRST content chunk arrives within this many ms
-   * (a half-open provider socket would otherwise hang the turn forever).
-   * Set via env `LLM_FIRST_CHUNK_TIMEOUT_MS` (default 120000).
-   */
-  llmFirstChunkTimeoutMs: number
-  /** Abort a step when the gap between content chunks exceeds this (ms).
-   *  Set via env `LLM_CHUNK_TIMEOUT_MS` (default 120000). */
-  llmChunkTimeoutMs: number
-  /** Abort a whole step after this many ms. Set via env
-   *  `LLM_STEP_TIMEOUT_MS` (default 900000 = 15 min). */
-  llmStepTimeoutMs: number
-  /**
    * CORS allow-origin for browser (Flutter Web) clients. `*` allows any
    * origin; set an explicit origin to lock it down.
    */
@@ -147,9 +135,6 @@ const TOOL_TIMEOUT_MS = 600_000
  */
 const DEFAULT_LLM_MAX_RETRIES = 5
 const DEFAULT_LLM_STREAM_RETRIES = 3
-const DEFAULT_LLM_FIRST_CHUNK_TIMEOUT_MS = 120_000
-const DEFAULT_LLM_CHUNK_TIMEOUT_MS = 120_000
-const DEFAULT_LLM_STEP_TIMEOUT_MS = 900_000
 
 /** Resolve the storage backend from DATABASE_URL scheme + explicit override. */
 function resolveBackend(env: NodeJS.ProcessEnv): DbBackend {
@@ -216,21 +201,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     llmStreamRetries: parseCount(
       or('LLM_STREAM_RETRIES', String(DEFAULT_LLM_STREAM_RETRIES)),
       DEFAULT_LLM_STREAM_RETRIES,
-    ),
-    llmFirstChunkTimeoutMs: parseCount(
-      or(
-        'LLM_FIRST_CHUNK_TIMEOUT_MS',
-        String(DEFAULT_LLM_FIRST_CHUNK_TIMEOUT_MS),
-      ),
-      DEFAULT_LLM_FIRST_CHUNK_TIMEOUT_MS,
-    ),
-    llmChunkTimeoutMs: parseCount(
-      or('LLM_CHUNK_TIMEOUT_MS', String(DEFAULT_LLM_CHUNK_TIMEOUT_MS)),
-      DEFAULT_LLM_CHUNK_TIMEOUT_MS,
-    ),
-    llmStepTimeoutMs: parseCount(
-      or('LLM_STEP_TIMEOUT_MS', String(DEFAULT_LLM_STEP_TIMEOUT_MS)),
-      DEFAULT_LLM_STEP_TIMEOUT_MS,
     ),
     corsOrigin: or('AGENT_CORS_ORIGIN', '*'),
     authMode:

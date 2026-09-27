@@ -128,9 +128,6 @@ describe('runTurnOnce provider retry', () => {
         llmMaxRetries: 3,
         llmStreamRetries: 3,
         toolTimeoutMs: 1000,
-        llmFirstChunkTimeoutMs: 120_000,
-        llmChunkTimeoutMs: 120_000,
-        llmStepTimeoutMs: 900_000,
       },
       llm: {},
     }
@@ -252,7 +249,7 @@ describe('runTurnOnce provider retry', () => {
     expect(published.filter(p => p.event === 'retry').length).toBe(1)
   })
 
-  it('disables the SDK retry loops and passes capped timeouts to streamText', async () => {
+  it('disables the SDK retry loops and sets NO SDK timeout', async () => {
     const { deps, sid } = await setup()
     const { runTurnOnce } = await import('../src/session-agent.js')
     streamFactory = () => ({
@@ -263,12 +260,10 @@ describe('runTurnOnce provider retry', () => {
     // Our own bounded loop owns retries; the SDK's uncapped/silent loops are off.
     expect(opts['maxRetries']).toBe(0)
     expect(opts['streamRetries']).toBe(0)
-    // A half-open stream is bounded by the chunk/step timeouts.
-    expect(opts['timeout']).toMatchObject({
-      firstChunkMs: 120_000,
-      chunkMs: 120_000,
-      stepMs: 900_000,
-    })
+    // NO SDK timeout: `chunkMs` would abort the step while a blocking tool
+    // (time-wait / sandbox-job-wait) starves the model stream, discarding the
+    // tool result.
+    expect(opts['timeout']).toBeUndefined()
     // `invalid` is a repair sink only — never advertised to the model.
     expect(Array.isArray(opts['activeTools'])).toBe(true)
     expect((opts['activeTools'] as string[]).includes('invalid')).toBe(false)

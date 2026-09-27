@@ -575,13 +575,13 @@ export async function runTurnOnce(
             abortSignal: ctrl.signal,
             maxRetries: 0,
             streamRetries: 0,
-            // Abort a half-open stream: without these a dead provider socket
-            // neither errors nor completes, hanging the turn forever.
-            timeout: {
-              firstChunkMs: deps.config.llmFirstChunkTimeoutMs,
-              chunkMs: deps.config.llmChunkTimeoutMs,
-              stepMs: deps.config.llmStepTimeoutMs,
-            },
+            // NOTE: no SDK `timeout` is set. Its `chunkMs` (inter-chunk) does
+            // NOT pause while a BLOCKING tool runs, so a long tool (time-wait,
+            // sandbox-job-wait) starves the model stream, trips the chunk
+            // timeout, and aborts the step — DISCARDING the tool's result
+            // (persisted as "produced no output"). A half-open provider socket
+            // is instead bounded by: the 600s per-tool deadline, our bounded
+            // visible transport retry, the webui stream watchdog, and idlewatch.
             // Repair a tool call the model emitted with a wrong name (e.g. a
             // lowercased or unqualified tool) instead of failing the turn.
             repairToolCall: async ({ toolCall, tools: available, error }) => {
