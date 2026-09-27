@@ -112,8 +112,14 @@ export const DEFAULT_PRESET = 'default'
 export const CONFIG_DEFAULT_MODEL = 'default_model'
 export const CONFIG_DEFAULT_PRESET = 'default_preset'
 
-/** Fallback max turns when neither the session nor its preset sets a value. */
-const DEFAULT_MAX_TURNS = 25
+/**
+ * Fallback max turns when neither the session nor its preset sets a value.
+ * 0 = UNLIMITED: like opencode, the loop runs until the model stops, the user
+ * interrupts, or the DOOM-LOOP guard fires (see session-agent). A hard step cap
+ * silently truncated long legitimate tasks; the doom-loop guard is the real
+ * runaway protection.
+ */
+const DEFAULT_MAX_TURNS = 0
 
 /** Fixed tool-call timeout (10 minutes). */
 const TOOL_TIMEOUT_MS = 600_000

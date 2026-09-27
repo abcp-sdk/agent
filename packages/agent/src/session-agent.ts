@@ -95,6 +95,28 @@ const MAX_STEPS_PROMPT =
   'what remains incomplete; and recommended next steps.'
 
 /**
+ * DOOM-LOOP guard: when the SAME tool call (identical name AND arguments)
+ * repeats this many times consecutively across the turn's steps, the model is
+ * stuck and the turn is ended (an error event names the repeating call). This
+ * is the runaway protection that lets `maxTurns` be unlimited (opencode
+ * parity): a hard step cap truncated long legitimate tasks, while a repeated
+ * identical call is the real "no progress" signal. Deliberately conservative
+ * (3 in a row) so a legitimate retry-after-edit is not misread as a loop.
+ */
+const DOOM_LOOP_THRESHOLD = 3
+
+/** Stable identity of one tool call: name + canonicalised arguments. */
+function toolCallSignature(name: string, input: unknown): string {
+  let args: string
+  try {
+    args = JSON.stringify(input ?? {})
+  } catch {
+    args = String(input)
+  }
+  return `${name}\u0000${args}`
+}
+
+/**
  * Watch the durable mailbox queue (`mailbox.session.>`): each replica joins
  * the same durable consumer + queue group, so every message is delivered to
  * exactly one replica. The handler parses the envelope, persists it into the
@@ -457,6 +479,10 @@ export async function runTurnOnce(
   let interrupted = false
   let finished = false
   let step = 0
+  // Doom-loop tracking: the signature of the most recent step's FIRST tool
+  // call and how many consecutive steps have repeated that exact call.
+  let lastToolSignature = ''
+  let repeatedSignatureCount = 0
 
   try {
     while (step < maxTurns && !ctrl.signal.aborted) {
@@ -879,6 +905,42 @@ export async function runTurnOnce(
           runId,
         )
         return msg
+      }
+
+      // DOOM-LOOP guard: if this step's tool call(s) are IDENTICAL to the
+      // previous step's (same names AND arguments), the model is repeating
+      // itself with no progress. After DOOM_LOOP_THRESHOLD consecutive
+      // identical steps, end the turn with an explicit error naming the
+      // repeating call. This is what makes an unlimited step budget safe.
+      if (toolCalls.length > 0) {
+        const signature = toolCalls
+          .map(tc => toolCallSignature(tc.name, tc.input))
+          .join('\u0001')
+        if (signature === lastToolSignature) {
+          repeatedSignatureCount += 1
+        } else {
+          lastToolSignature = signature
+          repeatedSignatureCount = 1
+        }
+        if (repeatedSignatureCount >= DOOM_LOOP_THRESHOLD) {
+          const names = [...new Set(toolCalls.map(tc => tc.name))].join(', ')
+          const msg =
+            `stopped: the model repeated the same tool call ${repeatedSignatureCount} times ` +
+            `in a row with identical arguments (${names}); ending the turn to avoid a loop`
+          pushEvent(
+            deps.bus,
+            tenant,
+            sid,
+            'error',
+            { error: msg, message: msg },
+            runId,
+          )
+          return msg
+        }
+      } else {
+        // A text-only step breaks any repeat run.
+        lastToolSignature = ''
+        repeatedSignatureCount = 0
       }
 
       step += 1

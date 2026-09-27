@@ -134,17 +134,16 @@ export async function prepare(
     sessionName,
   )
 
-  // Max steps per turn: session override → preset → fixed default. A
-  // resolved value of 0 is invalid (the loop would never run).
-  const maxTurns =
+  // Max steps per turn: session override → preset → fixed default.
+  // A resolved value of 0 means UNLIMITED (opencode parity): the loop runs
+  // until the model stops, the user interrupts, or the doom-loop guard fires.
+  const resolvedMaxTurns =
     session.max_turns > 0
       ? session.max_turns
       : presetRow !== null && presetRow.max_turns > 0
         ? presetRow.max_turns
         : deps.config.defaultMaxTurns
-  if (maxTurns <= 0) {
-    return `max_turns must be > 0 (session/preset/default all resolved to 0)`
-  }
+  const maxTurns = resolvedMaxTurns > 0 ? resolvedMaxTurns : Infinity
 
   const resolved = await deps.llm.resolve(deps.db, tenant, session.model)
   if (resolved.isErr()) return resolved.error
