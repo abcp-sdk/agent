@@ -466,10 +466,16 @@ export function rowsOf(res: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Raw SQL with positional `?` params for sqlite and `$n` for pg. Each backend
- * writes its own statements; here we just dispatch to the underlying driver
- * and normalize the result to plain row records.
+ * Raw SQL with positional `?` params for sqlite and `$n` for pg. For pg the
+ * `?` placeholders are translated to `$1..$n` here, so shared statements
+ * written in sqlite style keep working (statements that already use `$n`
+ * contain no `?` and pass through unchanged).
  */
+export function toPgPlaceholders(sql: string): string {
+  let i = 0
+  return sql.replace(/\?/g, () => `$${++i}`)
+}
+
 export async function rawAll(
   db: Db,
   sql: string,
@@ -480,7 +486,10 @@ export async function rawAll(
     const stmt = (client as DatabaseSync).prepare(sql)
     return stmt.all(...(params as never[])) as DbRow[]
   }
-  const rows = await (client as Sql).unsafe(sql, params as never[])
+  const rows = await (client as Sql).unsafe(
+    toPgPlaceholders(sql),
+    params as never[],
+  )
   return rowsOf(rows)
 }
 
@@ -498,7 +507,7 @@ export async function rawRun(
     ;(client as DatabaseSync).prepare(sql).run(...(params as never[]))
     return
   }
-  await (client as Sql).unsafe(sql, params as never[])
+  await (client as Sql).unsafe(toPgPlaceholders(sql), params as never[])
 }
 
 /**
