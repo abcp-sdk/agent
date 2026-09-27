@@ -73,9 +73,14 @@ describe('runTurnOnce provider retry', () => {
   const dbs: Db[] = []
   const published: Array<{ event: string; params: Record<string, unknown> }> =
     []
+  // Captured KV puts (bucket -> key -> raw value), for the turn-end marker.
+  const kvPuts: Array<{ bucket: string; key: string; value: string }> = []
 
   const fakeBus = {
-    kvPut: () => Promise.resolve(),
+    kvPut: (bucket: string, key: string, value: string) => {
+      kvPuts.push({ bucket, key, value })
+      return Promise.resolve()
+    },
     kvGet: () => Promise.resolve(null),
     kvDelete: () => Promise.resolve(),
     kvCreate: () => Promise.resolve(1),
@@ -103,6 +108,7 @@ describe('runTurnOnce provider retry', () => {
   beforeEach(() => {
     streamCalls.length = 0
     published.length = 0
+    kvPuts.length = 0
   })
 
   afterEach(async () => {
@@ -413,5 +419,45 @@ describe('runTurnOnce provider retry', () => {
     const results = rows.filter(p => p.type === 'tool_result')
     expect(calls).toHaveLength(2)
     expect(results).toHaveLength(2)
+  })
+
+  it('writes the turn-end marker (reason=stop) on a normal turn end', async () => {
+    const { deps, sid } = await setup()
+    const { runTurnOnce } = await import('../src/session-agent.js')
+    streamFactory = () => ({
+      fullStream: fullStream([textDelta('done'), finishStep('stop'), finish()]),
+    })
+
+    await runTurnOnce(deps as never, 't', sid)
+
+    const marker = kvPuts.find(p => p.bucket === 'abc-session-turn')
+    expect(marker).toBeDefined()
+    const parsed = JSON.parse(marker!.value) as {
+      reason: string
+      finish: string
+      tip: string
+    }
+    expect(parsed.reason).toBe('stop')
+    expect(parsed.finish).toBe('stop')
+    expect(typeof parsed.tip).toBe('string')
+  })
+
+  it('writes the turn-end marker with reason=interrupted when aborted', async () => {
+    const { deps, sid } = await setup()
+    const { runTurnOnce } = await import('../src/session-agent.js')
+    const { interruptRun } = await import('../src/interrupt.js')
+    // Abort the run before the stream yields its finish.
+    streamFactory = () => {
+      interruptRun('t', sid)
+      return { fullStream: fullStream([{ type: 'abort' }]) }
+    }
+
+    await runTurnOnce(deps as never, 't', sid)
+
+    const marker = kvPuts.find(p => p.bucket === 'abc-session-turn')
+    expect(marker).toBeDefined()
+    expect((JSON.parse(marker!.value) as { reason: string }).reason).toBe(
+      'interrupted',
+    )
   })
 })

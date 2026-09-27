@@ -13,7 +13,13 @@ import {
   type Tool,
 } from 'ai'
 import type { Bus } from './bus.js'
-import { mailboxSubject, SESSION_LEASE_MS } from './bus.js'
+import {
+  BUCKET_SESSION_TURN,
+  mailboxSubject,
+  natsToken,
+  SESSION_LEASE_MS,
+  tenantKVKey,
+} from './bus.js'
 import type { ServerConfig } from './config.js'
 import { isContextOverflowFailure } from './context-overflow.js'
 import type { Db } from './db-client.js'
@@ -483,6 +489,9 @@ export async function runTurnOnce(
   // call and how many consecutive steps have repeated that exact call.
   let lastToolSignature = ''
   let repeatedSignatureCount = 0
+  // The AI SDK finish reason of the LAST persisted step ('tool-calls' | 'stop'
+  // | ...). Recorded on the turn-end marker for observability.
+  let lastFinishReason = ''
 
   try {
     while (step < maxTurns && !ctrl.signal.aborted) {
@@ -882,6 +891,7 @@ export async function runTurnOnce(
           usage.outputTokens,
         )
       }
+      lastFinishReason = finishReason ?? ''
 
       // The provider stopped because it hit the OUTPUT token limit
       // (`finish_reason: length`). Any tool calls emitted in this step were
@@ -984,6 +994,11 @@ export async function runTurnOnce(
     if (unsub !== null) unsub()
     clearRun(tenant, sid)
     clearActiveRun(deps.bus, tenant, sid)
+    // Persist the turn-END marker (reason/finish/tip) BEFORE the terminal
+    // status:idle that `runSessionTurn` emits after this returns. The gateway's
+    // idlewatch reads it to tell a user-stopped session from one the model left
+    // hanging after a tool call. AWAITED so the marker is durable before idle.
+    await markTurnEnd(deps, tenant, sid, interrupted, lastFinishReason)
     // AWAIT this terminal: the client uses `turn-complete` to close the run,
     // and a following mailbox turn publishes its `status:busy` + deltas on the
     // same subject. A fire-and-forget publish could be reordered after that
@@ -995,6 +1010,39 @@ export async function runTurnOnce(
     })
   }
   return null
+}
+
+/**
+ * Persist the turn-END marker to the `abc-session-turn` KV bucket:
+ * `{ reason, finish, tip }`, keyed `tenantKVKey(tenant, natsToken(sid))` (the
+ * SAME derivation the gateway's idlewatch uses via `protocol.TenantKVKey` +
+ * `protocol.SessionToken`). `reason` is `interrupted` when the user aborted the
+ * turn (or a delete did), else `stop`. Best-effort: a KV failure is logged, not
+ * fatal — the idlewatch treats a MISSING marker as "not interrupted".
+ */
+async function markTurnEnd(
+  deps: AgentDeps,
+  tenant: string,
+  sid: string,
+  interrupted: boolean,
+  finishReason: string,
+): Promise<void> {
+  const tipRes = await Sessions.tip(deps.db, tenant, sid)
+  const tip = tipRes.isErr() ? '' : (tipRes.value ?? '')
+  const value = JSON.stringify({
+    reason: interrupted ? 'interrupted' : 'stop',
+    finish: finishReason,
+    tip,
+    at: new Date().toISOString(),
+  })
+  await deps.bus
+    .kvPut(BUCKET_SESSION_TURN, tenantKVKey(tenant, natsToken(sid)), value, 0)
+    .catch(err => {
+      logger.warn(
+        { tenant, sid, err: String(err) },
+        'turn-end marker put failed',
+      )
+    })
 }
 
 function sleep(ms: number): Promise<void> {
