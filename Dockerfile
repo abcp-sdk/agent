@@ -35,8 +35,8 @@ RUN --mount=type=cache,target=/root/.npm \
 # SEA single executable, but a separate binary can. One toolchain covers
 # image + video + audio.
 FROM ${REGISTRY}/root/alpine:3.24
-RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
-    && apk add --no-cache ca-certificates libstdc++ ffmpeg
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g; s|https://mirrors.aliyun.com|http://mirrors.aliyun.com|g' /etc/apk/repositories \
+    && env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy apk add --no-cache ca-certificates libstdc++ ffmpeg
 COPY --from=build /build/.sea/abcp-agent /usr/local/bin/abcp-agent
 EXPOSE 8080
 ENTRYPOINT ["abcp-agent"]

@@ -1,3 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: buildkitd-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: buildkitd
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
+---
 {{- $svc := .Values.buildkitd -}}
 {{- $g := .Values.global -}}
 {{- if $svc.enabled }}
@@ -102,9 +116,8 @@ spec:
       - name: run
         emptyDir: {}
       - name: data
-        hostPath:
-          path: {{ $svc.dataPath }}
-          type: DirectoryOrCreate
+        persistentVolumeClaim:
+          claimName: buildkitd-data
 ---
 apiVersion: v1
 kind: Service

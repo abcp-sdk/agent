@@ -133,6 +133,10 @@ worker:
   workspace: ""
   # Bearer the worker requires; the extension is seeded with the SAME token.
   token: "devworker-token"
+  # Local-path PVC size for the workspace + job history (survives pod
+  # recreation; replaces the former emptyDir).
+  persistence:
+    size: "10Gi"
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "1", memory: 1Gi }

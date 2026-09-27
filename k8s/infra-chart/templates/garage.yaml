@@ -1,3 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: garage-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: garage
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
 {{- $svc := .Values.garage -}}
 {{- $g := .Values.global -}}
 {{- if $svc.enabled }}
@@ -68,9 +82,8 @@ spec:
       - name: config
         configMap: { name: garage-config }
       - name: data
-        hostPath:
-          path: {{ $svc.dataPath }}
-          type: DirectoryOrCreate
+        persistentVolumeClaim:
+          claimName: garage-data
 ---
 apiVersion: v1
 kind: Service

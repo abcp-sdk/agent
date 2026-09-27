@@ -1,3 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: forgejo-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: forgejo
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
 {{- $svc := .Values.forgejo -}}
 {{- $g := .Values.global -}}
 {{- if $svc.enabled }}
@@ -91,9 +105,8 @@ spec:
           mountPath: /data
       volumes:
       - name: data
-        hostPath:
-          path: {{ $svc.dataPath }}
-          type: DirectoryOrCreate
+        persistentVolumeClaim:
+          claimName: forgejo-data
       - name: config
         configMap:
           name: forgejo-config

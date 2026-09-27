@@ -1,3 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nats-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: nats
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
 {{- $svc := .Values.nats -}}
 {{- $g := .Values.global -}}
 {{- if $svc.enabled }}
@@ -58,9 +72,8 @@ spec:
         - { name: config, mountPath: /etc/nats, readOnly: true }
       volumes:
       - name: data
-        hostPath:
-          path: {{ $svc.dataPath }}
-          type: DirectoryOrCreate
+        persistentVolumeClaim:
+          claimName: nats-data
       - name: config
         configMap: { name: nats-config }
 ---

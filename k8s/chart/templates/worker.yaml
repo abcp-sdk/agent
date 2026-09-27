@@ -1,7 +1,37 @@
 {{- if .Values.worker.enabled }}
 # Fixed easyworker sandbox the `worker` extension drives over Connect RPC
-# (worker.v1.WorkerService). Ephemeral (emptyDir): the workspace and job
-# history are wiped when the pod is recreated.
+# (worker.v1.WorkerService). Workspace and job history live on a local-path
+# PVC so they survive pod recreation.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: worker-data
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: worker
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: {{ .Values.worker.persistence.size | default "10Gi" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: worker-tools
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: worker
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: {{ .Values.worker.toolsPvcSize | default "5Gi" }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,12 +50,23 @@ spec:
         {{- include "abcp-agent.labels" . | nindent 8 }}
         app: worker
     spec:
-      securityContext: {}
+      # Hardening: RuntimeDefault seccomp; container keeps the default cap
+      # set minus NET_RAW (SYS_ADMIN/privileged were never present, and PSA
+      # baseline on the namespace rejects them at admission anyway).
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: worker
+          securityContext:
+            capabilities:
+              drop: [ "NET_RAW" ]
           image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           env:
+            # Tools PVC first on PATH: anything installed under
+            # /opt/tools/bin survives pod recreation (kubectl, helm, ...).
+            - name: PATH
+              value: /opt/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             - name: WORKER_PORT
               value: {{ .Values.worker.port | quote }}
             {{- if .Values.worker.workspace }}
@@ -48,7 +89,9 @@ spec:
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
           volumeMounts:
-            - { mountPath: /data, name: data }
+            - { mountPath: /root, name: data }
+            - { mountPath: /data, name: tmp }
+            - { mountPath: /opt/tools, name: tools }
           livenessProbe:
             httpGet: { path: /healthz, port: {{ .Values.worker.port }} }
             initialDelaySeconds: 10
@@ -59,7 +102,13 @@ spec:
             periodSeconds: 5
       volumes:
         - name: data
+          persistentVolumeClaim:
+            claimName: worker-data
+        - name: tmp
           emptyDir: {}
+        - name: tools
+          persistentVolumeClaim:
+            claimName: worker-tools
 ---
 apiVersion: v1
 kind: Service

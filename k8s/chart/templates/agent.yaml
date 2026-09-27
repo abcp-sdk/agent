@@ -1,3 +1,19 @@
+{{- if .Values.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-data
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -81,9 +97,8 @@ spec:
       {{- if .Values.persistence.enabled }}
       volumes:
         - name: data
-          hostPath:
-            path: {{ .Values.persistence.hostPath }}
-            type: {{ .Values.persistence.type }}
+          persistentVolumeClaim:
+            claimName: agent-data
       {{- end }}
 ---
 apiVersion: v1
