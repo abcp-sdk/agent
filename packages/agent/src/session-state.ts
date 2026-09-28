@@ -2,7 +2,9 @@ import { fireAndForget } from './async.js'
 import type { Bus } from './bus.js'
 import { BUCKET_SESSION_STATE, natsToken, tenantKVKey } from './bus.js'
 import type { Db } from './db-client.js'
-import { dbBackend, rawAll } from './db-client.js'
+import { dbBackend, rawAll, rawRun } from './db-client.js'
+import { Messages } from './db-messages.js'
+import { Sessions } from './db-sessions.js'
 import { logger } from './logger.js'
 
 /**
@@ -35,12 +37,6 @@ export interface SessionMessageFact {
   /** Role of the newest message (user | assistant | event | compaction). */
   last_message_role: string
   /**
-   * Monotonic per-session message counter, bumped once per appended message.
-   * Clients subtract their locally-persisted read watermark to get the unread
-   * count (read state stays client-local).
-   */
-  message_seq: number
-  /**
    * The LAST FINISHED turn's outcome (durable, written when a turn ends).
    * Replaces the former `abc-session-turn` KV bucket: idlewatch reads `reason`
    * to tell a user-stopped session from one the model left hanging after a tool
@@ -58,17 +54,6 @@ const PREVIEW_MAX = 80
 function nowIso(): string {
   return new Date().toISOString()
 }
-
-/**
- * In-process cache of the last projected `message_seq` per session. The KV
- * read-modify-write would race when two persist sites bump near-simultaneously
- * (a user prompt lands while the turn appends a step); serializing through a
- * cache keeps the counter strictly monotonic. Seeded from KV on first use and
- * by calibration at startup.
- */
-const seqCache = new Map<string, number>()
-/** Per-session serialization of the seq read-modify-write. */
-const seqLocks = new Map<string, Promise<number>>()
 
 /**
  * Per-session serialization of FACT writes. `projectMessageFact` (a new
@@ -94,26 +79,6 @@ function factKey(tenant: string, sid: string): string {
   return tenantKVKey(tenant, natsToken(sid))
 }
 
-function bumpSeq(bus: Bus, tenant: string, sid: string): Promise<number> {
-  const prev = seqLocks.get(sid) ?? Promise.resolve(seqCache.get(sid) ?? 0)
-  const next = prev
-    .catch(() => 0)
-    .then(async cur => {
-      let base = seqCache.get(sid)
-      if (base === undefined) {
-        const raw = await bus
-          .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
-          .catch(() => null)
-        base = raw === null ? 0 : (parseFact(raw)?.message_seq ?? 0)
-      }
-      const seq = Math.max(cur, base) + 1
-      seqCache.set(sid, seq)
-      return seq
-    })
-  seqLocks.set(sid, next)
-  return next
-}
-
 function parseFact(raw: string): SessionMessageFact | null {
   try {
     const v = JSON.parse(raw) as Partial<SessionMessageFact>
@@ -123,7 +88,6 @@ function parseFact(raw: string): SessionMessageFact | null {
       last_message_at: String(v.last_message_at ?? ''),
       last_message_preview: String(v.last_message_preview ?? ''),
       last_message_role: String(v.last_message_role ?? ''),
-      message_seq: Number(v.message_seq ?? 0),
       ...(v.last_turn_reason !== undefined
         ? { last_turn_reason: String(v.last_turn_reason) }
         : {}),
@@ -162,15 +126,15 @@ export function projectMessageFact(
   bus: Bus,
   tenant: string,
   sid: string,
-  fact: Omit<SessionMessageFact, 'tenant' | 'session_name' | 'message_seq'>,
+  fact: Omit<SessionMessageFact, 'tenant' | 'session_name'>,
   opts?: {
     /**
-     * Keep the EXISTING preview/time/role, bumping only `message_seq`. Used for
-     * SYNTHETIC triggers (`source` = `system:*`, e.g. the gateway idlewatch
-     * nudge): they are not user-visible messages, so they must not become the
-     * chat-list preview. Without this, a synthetic nudge that fails to produce
-     * an assistant step leaves its own text (or a stale user line) as the
-     * visible preview instead of the last real assistant reply.
+     * Keep the EXISTING preview/time/role. Used for SYNTHETIC triggers
+     * (`source` = `system:*`, e.g. the gateway idlewatch nudge): they are not
+     * user-visible messages, so they must not become the chat-list preview.
+     * Without this, a synthetic nudge that fails to produce an assistant step
+     * leaves its own text (or a stale user line) as the visible preview instead
+     * of the last real assistant reply.
      */
     preservePreview?: boolean
   },
@@ -181,7 +145,6 @@ export function projectMessageFact(
         bucketEnsured = true
         await ensureBucket(bus)
       }
-      const seq = await bumpSeq(bus, tenant, sid)
       // Read the existing fact once: it carries the durable last-turn fields
       // (idlewatch) and, for a synthetic trigger, the prior preview to keep.
       const raw = await bus
@@ -208,7 +171,6 @@ export function projectMessageFact(
       const full: SessionMessageFact = {
         tenant,
         session_name: sid,
-        message_seq: seq,
         ...fields,
         // The last-turn outcome is orthogonal to the message preview: carry it
         // forward on every projection so a new message does not erase it.
@@ -254,7 +216,7 @@ export function factFromPersist(
   createdAt: string,
   role: string,
   previewText: string,
-): Omit<SessionMessageFact, 'tenant' | 'session_name' | 'message_seq'> {
+): Omit<SessionMessageFact, 'tenant' | 'session_name'> {
   return {
     last_message_at: createdAt,
     last_message_preview: previewText.slice(0, PREVIEW_MAX),
@@ -263,18 +225,14 @@ export function factFromPersist(
 }
 
 /**
- * Overwrite the message-fact projection for one session WITHOUT bumping the
- * monotonic `message_seq`. Used when the tip MOVES BACKWARDS (undo/revert):
- * the preview/time must reflect the new tip, but clients' unread watermarks
- * (which subtract from `message_seq`) must NOT be inflated — a withdraw is not
- * a new message. Seq is preserved from the existing KV entry; it is never
- * decremented either, so the counter stays strictly monotonic.
+ * Overwrite the message-fact projection for one session (used when the tip
+ * MOVES BACKWARDS on undo/revert, so the preview/time reflect the new tip).
  */
 export async function writeMessageFact(
   bus: Bus,
   tenant: string,
   sid: string,
-  fact: Omit<SessionMessageFact, 'tenant' | 'session_name' | 'message_seq'>,
+  fact: Omit<SessionMessageFact, 'tenant' | 'session_name'>,
 ): Promise<void> {
   return serializeFact(tenant, sid, async () => {
     if (!bucketEnsured) {
@@ -285,12 +243,9 @@ export async function writeMessageFact(
       .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
       .catch(() => null)
     const existing = raw === null ? null : parseFact(raw)
-    const seq = existing?.message_seq ?? seqCache.get(sid) ?? 0
-    seqCache.set(sid, seq)
     const full: SessionMessageFact = {
       tenant,
       session_name: sid,
-      message_seq: seq,
       ...fact,
       // Preserve the durable last-turn outcome across a preview-only rewrite.
       ...(existing?.last_turn_reason !== undefined
@@ -319,7 +274,7 @@ export async function writeMessageFact(
  * Record the LAST FINISHED turn's outcome on the message fact (durable).
  * Replaces the former `abc-session-turn` KV bucket: idlewatch reads `reason`
  * to tell a user-stopped session from one the model left hanging after a tool
- * call. Read-modify-writes the fact so the message preview/seq are preserved.
+ * call. Read-modify-writes the fact so the message preview is preserved.
  */
 export async function setTurnEnd(
   bus: Bus,
@@ -336,12 +291,9 @@ export async function setTurnEnd(
       .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
       .catch(() => null)
     const existing = raw === null ? null : parseFact(raw)
-    const seq = existing?.message_seq ?? seqCache.get(sid) ?? 0
-    seqCache.set(sid, seq)
     const full: SessionMessageFact = {
       tenant,
       session_name: sid,
-      message_seq: seq,
       last_message_at: existing?.last_message_at ?? '',
       last_message_preview: existing?.last_message_preview ?? '',
       last_message_role: existing?.last_message_role ?? '',
@@ -365,7 +317,6 @@ export function deleteMessageFact(
   tenant: string,
   sid: string,
 ): Promise<void> {
-  seqCache.delete(sid)
   return bus.kvDelete(BUCKET_SESSION_STATE, factKey(tenant, sid))
 }
 
@@ -435,19 +386,10 @@ export async function calibrateMessageFacts(
     const rows = await rawCalibrationRows(db, tenant, PREVIEW_MAX)
     for (const r of rows) {
       const sid = String(r.name)
-      // Preserve a pre-existing message_seq: calibration repairs the PREVIEW
-      // only. Resetting the counter would make clients' persisted read
-      // watermarks exceed it and temporarily hide genuinely-new messages.
-      const existingRaw = await bus
-        .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
-        .catch(() => null)
-      const existing = existingRaw === null ? null : parseFact(existingRaw)
-      const seq = existing?.message_seq ?? seqCache.get(sid) ?? 0
-      seqCache.set(sid, seq)
+      // Repair the PREVIEW only. The counter lives on the DB row now.
       const fact: SessionMessageFact = {
         tenant,
         session_name: sid,
-        message_seq: seq,
         last_message_at: String(r.last_message_at),
         last_message_preview: String(r.last_message_preview ?? ''),
         last_message_role: String(r.last_message_role),
@@ -468,6 +410,91 @@ export async function calibrateMessageFacts(
     // Non-fatal: projections self-heal on the next message per session.
     logger.warn({ err: String(err) }, 'message-fact calibration failed')
   }
+}
+
+/**
+ * One-time migration: seed `sessions.message_seq` from the legacy KV fact
+ * counter (which used to be the authority). Guarded by a marker in
+ * `abcp-agent-config`; runs on EVERY boot until it succeeds. For each session
+ * it takes `MAX(current DB value, KV value)` so it is idempotent and never
+ * regresses a counter that already advanced on the DB. MUST run before serving
+ * turns (awaited at boot) so a turn does not start from 0 and reset clients'
+ * read watermarks.
+ */
+export async function backfillMessageSeqFromKv(
+  db: Db,
+  bus: Bus,
+  tenants: readonly string[],
+): Promise<void> {
+  const markerBucket = 'abcp-agent-config'
+  const markerKey = '__message_seq_backfill__'
+  if ((await bus.kvGet(markerBucket, markerKey).catch(() => null)) !== null) {
+    return
+  }
+  let failed = false
+  for (const tenant of tenants) {
+    try {
+      const names = await rawAll(
+        db,
+        `SELECT name FROM sessions WHERE tenant = ?`,
+        [tenant],
+      )
+      for (const row of names) {
+        const sid = String(row.name ?? '')
+        if (sid === '') continue
+        const raw = await bus
+          .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
+          .catch(() => null)
+        const kvSeq =
+          raw === null
+            ? 0
+            : Number(
+                (JSON.parse(raw) as { message_seq?: number }).message_seq ?? 0,
+              )
+        // Fallback ONLY when the KV counter is missing: the CHAIN LENGTH is a
+        // safe LOWER bound for the counter (undo does not decrement it; forks
+        // share ancestors). This repairs a session whose KV counter was lost or
+        // already overwritten by calibration, without a chain walk in the
+        // common case. Bounded by the same cap the history walk uses.
+        let chainLen = 0
+        if (kvSeq <= 0) {
+          try {
+            const tipRes = await Sessions.tip(db, tenant, sid)
+            const tipId = tipRes.isOk() ? tipRes.value : null
+            if (tipId !== null && tipId !== '') {
+              const chain = await Messages.chain(
+                db,
+                tenant,
+                tipId,
+                100_000,
+                null,
+              )
+              if (chain.isOk()) chainLen = chain.value.length
+            }
+          } catch {
+            chainLen = 0
+          }
+        }
+        const target = Math.max(kvSeq, chainLen)
+        if (target <= 0) continue
+        // `message_seq < ?` keeps it idempotent and never regresses an advanced
+        // value (a concurrent turn may have already bumped the DB counter).
+        const sql = `UPDATE sessions SET message_seq = ? WHERE tenant = ? AND name = ? AND message_seq < ?`
+        await rawRun(db, sql, [target, tenant, sid, target]).catch(() => {})
+      }
+    } catch (err) {
+      failed = true
+      logger.warn(
+        { tenant, err: String(err) },
+        'message_seq backfill failed (will retry next boot)',
+      )
+    }
+  }
+  // Only mark done when every tenant succeeded, so a partial failure retries.
+  if (!failed) {
+    await bus.kvPut(markerBucket, markerKey, '1', 0).catch(() => {})
+  }
+  logger.info({ failed }, 'message_seq backfill from KV done')
 }
 
 /**

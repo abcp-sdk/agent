@@ -34,6 +34,7 @@ export * from './object-store-s3.js'
 export * from './session-agent.js'
 export * from './session-lock.js'
 export {
+  backfillMessageSeqFromKv,
   calibrateMessageFacts,
   deleteMessageFact,
   factFromPersist,

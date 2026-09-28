@@ -221,7 +221,8 @@ export async function compactSession(
     { reason, foldedCount: folded.length, foldedTokens },
   )
   if (part.isErr()) return err(part.error)
-  await Sessions.setTip(deps.db, tenant, sid, cmId)
+  // A compaction checkpoint is a new chain row: append it (tip + seq bump).
+  await Sessions.appendMessageTip(deps.db, tenant, sid, cmId)
   // The list preview shows a FIXED sentinel for a compaction tip (the raw
   // summary would leak a wall of folded Q&A into the chat list). Clients map
   // this sentinel to a localized "History compacted" label.

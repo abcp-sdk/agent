@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_tokens BIGINT NOT NULL DEFAULT 0,
     last_input_tokens BIGINT NOT NULL DEFAULT 0,
     last_output_tokens BIGINT NOT NULL DEFAULT 0,
+    message_seq BIGINT NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (NOW()::text),
     updated_at TEXT NOT NULL DEFAULT (NOW()::text),
     last_used_at TEXT,
@@ -204,6 +205,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_tokens INTEGER NOT NULL DEFAULT 0,
     last_input_tokens INTEGER NOT NULL DEFAULT 0,
     last_output_tokens INTEGER NOT NULL DEFAULT 0,
+    message_seq INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_used_at TEXT,
@@ -329,6 +331,7 @@ const PG_MIGRATIONS = `
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS variant TEXT NOT NULL DEFAULT '';
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_input_tokens BIGINT NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_output_tokens BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS message_seq BIGINT NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS "group" TEXT NOT NULL DEFAULT '';
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default';
@@ -394,6 +397,7 @@ const SQLITE_MIGRATIONS = [
   `ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE sessions ADD COLUMN last_input_tokens INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE sessions ADD COLUMN last_output_tokens INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE sessions ADD COLUMN message_seq INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE sessions ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
   `ALTER TABLE sessions ADD COLUMN "group" TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE messages ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'`,
@@ -767,6 +771,7 @@ const SQLITE_TABLE_DDL: Record<string, string> = {
     total_tokens INTEGER NOT NULL DEFAULT 0,
     last_input_tokens INTEGER NOT NULL DEFAULT 0,
     last_output_tokens INTEGER NOT NULL DEFAULT 0,
+    message_seq INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_used_at TEXT,

@@ -134,7 +134,9 @@ export async function persistStep(
       size: f.size,
     })
   }
-  await Sessions.setTip(deps.db, tenant, sid, messageId)
+  // Move the tip AND bump the authoritative message_seq atomically (DB is the
+  // source of truth for the counter).
+  await Sessions.appendMessageTip(deps.db, tenant, sid, messageId)
   // Keep the per-session context id cache in step with the write.
   fireAndForget(
     appendSessionId(deps.bus, tenant, sid, messageId),
@@ -166,7 +168,7 @@ export async function persistEvent(
   const insert = await Messages.insert(deps.db, tenant, 'event', tipId)
   if (insert.isOk()) {
     await Parts.insert(deps.db, tenant, insert.value, 'text', 0, { text })
-    await Sessions.setTip(deps.db, tenant, sid, insert.value)
+    await Sessions.appendMessageTip(deps.db, tenant, sid, insert.value)
     fireAndForget(
       appendSessionId(deps.bus, tenant, sid, insert.value),
       'appendSessionIds',
@@ -296,7 +298,7 @@ export async function persistUserPrompt(
   if (text !== '') {
     await Parts.insert(deps.db, tenant, id, 'text', seq++, { text })
   }
-  await Sessions.setTip(deps.db, tenant, sid, id)
+  await Sessions.appendMessageTip(deps.db, tenant, sid, id)
   fireAndForget(appendSessionId(deps.bus, tenant, sid, id), 'appendSessionIds')
   const preview =
     text !== ''

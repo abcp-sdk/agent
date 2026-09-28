@@ -248,6 +248,9 @@ export function sessionsHandlers(
         maxTurns: p.max_turns,
         locale: p.locale,
         tipId: p.tip_id,
+        // A rename is the SAME conversation under a new name: carry the
+        // authoritative counter so clients' read watermarks stay valid.
+        messageSeq: p.message_seq,
       })
       if (created.isErr()) throw new Error(created.error)
       const removed = await Sessions.delete(deps.db, tenant, id)

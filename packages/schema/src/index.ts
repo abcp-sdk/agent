@@ -172,7 +172,6 @@ export type SessionRow = RowOf<
   | 'unread_count'
   | 'last_message_at'
   | 'last_message_preview'
-  | 'message_seq'
   // Runtime status is derived from the run LEASE, not a persisted column.
   | 'status'
 >

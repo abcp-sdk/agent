@@ -42,7 +42,7 @@ function fakeBus() {
 const settle = () => new Promise(r => setImmediate(r))
 
 describe('projectMessageFact', () => {
-  it('bumps message_seq monotonically and mirrors the preview', async () => {
+  it('mirrors the preview/time/role (no counter — the DB owns message_seq)', async () => {
     const { bus } = fakeBus()
     projectMessageFact(
       bus,
@@ -61,13 +61,14 @@ describe('projectMessageFact', () => {
 
     const facts = await readMessageFacts(bus, T, ['sess-seq-a'])
     const f = facts.get('sess-seq-a')
-    expect(f?.message_seq).toBe(2)
     expect(f?.last_message_role).toBe('assistant')
     expect(f?.last_message_preview).toBe('hi there')
     expect(f?.session_name).toBe('sess-seq-a')
+    // The fact no longer carries a counter.
+    expect((f as Record<string, unknown>)?.message_seq).toBeUndefined()
   })
 
-  it('keeps concurrent bumps for one session distinct', async () => {
+  it('serializes concurrent projections so the last preview wins', async () => {
     const { bus } = fakeBus()
     const sid = 'sess-seq-b'
     for (let i = 0; i < 5; i++) {
@@ -81,7 +82,7 @@ describe('projectMessageFact', () => {
     await settle()
     await settle()
     const facts = await readMessageFacts(bus, T, [sid])
-    expect(facts.get(sid)?.message_seq).toBe(5)
+    expect(facts.get(sid)?.last_message_preview).toBe('m4')
   })
 
   it('does not double-signal: the KV watch is the only list trigger', async () => {
@@ -149,7 +150,7 @@ describe('synthetic-source preview suppression', () => {
     expect(isSyntheticSource('')).toBe(false)
   })
 
-  it('preservePreview keeps the prior preview while bumping seq', async () => {
+  it('preservePreview keeps the prior preview', async () => {
     const { bus } = fakeBus()
     const sid = 'sess-preserve'
     projectMessageFact(
@@ -169,12 +170,10 @@ describe('synthetic-source preview suppression', () => {
     await settle()
 
     const f = (await readMessageFacts(bus, T, [sid])).get(sid)
-    // Preview/time/role stay from the REAL message...
+    // Preview/time/role stay from the REAL message.
     expect(f?.last_message_preview).toBe('real reply')
     expect(f?.last_message_role).toBe('assistant')
     expect(f?.last_message_at).toBe('2026-01-01T00:00:00Z')
-    // ...but the monotonic counter still advances (a message WAS appended).
-    expect(f?.message_seq).toBe(2)
   })
 
   it('preservePreview with no prior fact yields empty preview', async () => {
@@ -190,7 +189,6 @@ describe('synthetic-source preview suppression', () => {
     await settle()
     const f = (await readMessageFacts(bus, T, [sid])).get(sid)
     expect(f?.last_message_preview).toBe('')
-    expect(f?.message_seq).toBe(1)
   })
 })
 

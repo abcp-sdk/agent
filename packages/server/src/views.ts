@@ -23,6 +23,8 @@ export interface SessionRowView {
   unread_count?: number | null | undefined
   last_message_at?: string | null | undefined
   last_message_preview?: string | null | undefined
+  /** Authoritative per-session message counter (DB column). */
+  message_seq?: number | null | undefined
   group?: string | null | undefined
 }
 
@@ -53,7 +55,6 @@ export function sessionToMsg(
   fact?: {
     last_message_at: string
     last_message_preview: string
-    message_seq: number
   },
   /** Runtime status from the run lock; omitted means "idle" (a single-session
    *  reply, e.g. rename, where the caller did not read the lock). `unknown`
@@ -61,6 +62,13 @@ export function sessionToMsg(
    *  renders no badge for it rather than a misleading idle. */
   status: 'busy' | 'idle' | 'unknown' = 'idle',
 ) {
+  // The authoritative message counter lives on the DB row. `unread_count` is
+  // reported as this TOTAL: the agent deliberately stores no read state (the
+  // read watermark is CLIENT-local), so the server cannot compute a true unread
+  // count — a client subtracts its own watermark from `message_seq`. Reporting
+  // the total keeps the field consistent with the single source instead of the
+  // former hardcoded 0.
+  const seq = s.message_seq ?? 0
   return {
     name: s.name,
     model: s.model ?? '',
@@ -82,10 +90,10 @@ export function sessionToMsg(
     org: s.org ?? '',
     repo: s.repo ?? '',
     branch: s.branch ?? '',
-    unreadCount: 0,
+    unreadCount: seq,
     lastMessageAt: fact?.last_message_at ?? '',
     lastMessagePreview: fact?.last_message_preview ?? '',
-    messageSeq: fact?.message_seq ?? 0,
+    messageSeq: seq,
     status,
   }
 }

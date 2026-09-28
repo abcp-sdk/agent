@@ -6,6 +6,7 @@ import {
   type AgentDeps,
   type Bus,
   backfillKvFromPg,
+  backfillMessageSeqFromKv,
   backfillModelRefs,
   calibrateMessageFacts,
   configureFileMetaStore,
@@ -145,6 +146,13 @@ async function main(): Promise<void> {
   // abc-files-meta KV; `s3` puts it in the `agent_files` DB table so file
   // state (bytes + metadata) leaves NATS together.
   configureFileMetaStore(config.blobBackend === 's3' ? 'db' : 'nats', db)
+
+  // One-time seed of the authoritative `sessions.message_seq` from the legacy
+  // KV fact counter. AWAITED and BEFORE calibration (which rewrites facts
+  // WITHOUT the legacy counter, so it must not run first). A turn must not start
+  // from 0 and reset clients' persisted read watermarks. Idempotent
+  // (marker-guarded, never regresses an advanced value).
+  await backfillMessageSeqFromKv(db, bus, tenants)
 
   // One-time message-fact calibration: refresh the abc-session-state KV
   // projection from PG so chat-list previews are correct even for sessions

@@ -24,6 +24,7 @@ const toRow = (r: Row): SessionRow => ({
   total_tokens: Number(r.totalTokens),
   last_input_tokens: Number(r.lastInputTokens),
   last_output_tokens: Number(r.lastOutputTokens),
+  message_seq: Number(r.messageSeq),
   created_at: r.createdAt,
   updated_at: r.updatedAt,
   last_used_at: r.lastUsedAt,
@@ -92,6 +93,9 @@ export const Sessions = {
       maxTurns?: number | undefined
       locale?: string | undefined
       group?: string | undefined
+      /** Initial message counter. Defaults to 0; a fork carries the parent's
+       *  value only when explicitly asked (a fresh fork starts at 0). */
+      messageSeq?: number | undefined
     },
   ): ResultAsync<string, string> {
     return q(
@@ -107,11 +111,47 @@ export const Sessions = {
           maxTurns: input.maxTurns ?? 0,
           locale: input.locale ?? '',
           group: input.group ?? '',
+          messageSeq: input.messageSeq ?? 0,
           createdAt: nowStr(),
           updatedAt: nowStr(),
         }),
       'create session',
     ).map(() => input.name)
+  },
+
+  /**
+   * Append a message to a session's chain and bump the authoritative
+   * `message_seq` in ONE atomic statement (the DB is the source of truth).
+   * Returns the NEW counter value. A tip move WITHOUT a bump (undo) uses
+   * {@link setTip} instead. Backend-neutral: `UPDATE ... RETURNING` is
+   * supported by both sqlite and pg (already used by `insertWithId`/`drainOne`).
+   */
+  appendMessageTip(
+    db: Db,
+    tenant: string,
+    name: string,
+    messageId: string,
+  ): ResultAsync<number, string> {
+    const now = nowStr()
+    const pgSQL = `UPDATE sessions SET tip_id = $3, message_seq = message_seq + 1, updated_at = $4
+       WHERE tenant = $1 AND name = $2 RETURNING message_seq`
+    const sqliteSQL = `UPDATE sessions SET tip_id = ?, message_seq = message_seq + 1, updated_at = ?
+       WHERE tenant = ? AND name = ? RETURNING message_seq`
+    const isPg = dbBackend(db) === 'pg'
+    return q(
+      () =>
+        rawAll(
+          db,
+          isPg ? pgSQL : sqliteSQL,
+          isPg
+            ? [tenant, name, messageId, now]
+            : [messageId, now, tenant, name],
+        ).then(rows => {
+          const v = rows[0]?.message_seq
+          return v === undefined ? 0 : Number(v)
+        }),
+      'append message tip',
+    )
   },
 
   delete(db: Db, tenant: string, name: string): ResultAsync<void, string> {

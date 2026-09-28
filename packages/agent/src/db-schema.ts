@@ -36,6 +36,11 @@ export const sessions = sqliteTable(
     // footer shows the most recent request's context size.
     lastInputTokens: integer('last_input_tokens').notNull().default(0),
     lastOutputTokens: integer('last_output_tokens').notNull().default(0),
+    // Monotonic per-session message counter, bumped +1 on every chain append
+    // (user/assistant/event/compaction). The DB is the AUTHORITY (clients derive
+    // unread as `message_seq - <local read watermark>`). Not decremented on
+    // undo (a withdraw is not a new message); a fork starts at 0.
+    messageSeq: integer('message_seq').notNull().default(0),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
     lastUsedAt: text('last_used_at'),
