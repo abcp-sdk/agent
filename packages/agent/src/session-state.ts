@@ -40,9 +40,24 @@ export interface SessionMessageFact {
    * count (read state stays client-local).
    */
   message_seq: number
+  /**
+   * The LAST FINISHED turn's outcome (durable, written when a turn ends).
+   * Replaces the former `abc-session-turn` KV bucket: idlewatch reads `reason`
+   * to tell a user-stopped session from one the model left hanging after a tool
+   * call. Absent until the session's first completed turn.
+   */
+  last_turn_reason?: string
+  last_turn_finish?: string
+  last_turn_tip?: string
+  last_turn_at?: string
 }
 
 const PREVIEW_MAX = 80
+
+/** ISO timestamp for fact fields (matches the DB's `nowStr` shape). */
+function nowIso(): string {
+  return new Date().toISOString()
+}
 
 /**
  * In-process cache of the last projected `message_seq` per session. The KV
@@ -54,6 +69,26 @@ const PREVIEW_MAX = 80
 const seqCache = new Map<string, number>()
 /** Per-session serialization of the seq read-modify-write. */
 const seqLocks = new Map<string, Promise<number>>()
+
+/**
+ * Per-session serialization of FACT writes. `projectMessageFact` (a new
+ * message) and `setTurnEnd` (turn outcome) are both read-modify-writes of the
+ * SAME KV key; without a lock their interleaving could lose one side (e.g. the
+ * turn outcome written from a stale read that drops a concurrent preview).
+ * Keyed `tenant\nsid`.
+ */
+const factLocks = new Map<string, Promise<unknown>>()
+function serializeFact<T>(
+  tenant: string,
+  sid: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = `${tenant}\n${sid}`
+  const prev = factLocks.get(key) ?? Promise.resolve()
+  const next = prev.catch(() => {}).then(fn)
+  factLocks.set(key, next)
+  return next
+}
 
 function factKey(tenant: string, sid: string): string {
   return tenantKVKey(tenant, natsToken(sid))
@@ -89,6 +124,18 @@ function parseFact(raw: string): SessionMessageFact | null {
       last_message_preview: String(v.last_message_preview ?? ''),
       last_message_role: String(v.last_message_role ?? ''),
       message_seq: Number(v.message_seq ?? 0),
+      ...(v.last_turn_reason !== undefined
+        ? { last_turn_reason: String(v.last_turn_reason) }
+        : {}),
+      ...(v.last_turn_finish !== undefined
+        ? { last_turn_finish: String(v.last_turn_finish) }
+        : {}),
+      ...(v.last_turn_tip !== undefined
+        ? { last_turn_tip: String(v.last_turn_tip) }
+        : {}),
+      ...(v.last_turn_at !== undefined
+        ? { last_turn_at: String(v.last_turn_at) }
+        : {}),
     }
   } catch {
     return null
@@ -129,18 +176,20 @@ export function projectMessageFact(
   },
 ): void {
   fireAndForget(
-    (async () => {
+    serializeFact(tenant, sid, async () => {
       if (!bucketEnsured) {
         bucketEnsured = true
         await ensureBucket(bus)
       }
       const seq = await bumpSeq(bus, tenant, sid)
+      // Read the existing fact once: it carries the durable last-turn fields
+      // (idlewatch) and, for a synthetic trigger, the prior preview to keep.
+      const raw = await bus
+        .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
+        .catch(() => null)
+      const existing = raw === null ? null : parseFact(raw)
       let fields = fact
       if (opts?.preservePreview === true) {
-        const raw = await bus
-          .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
-          .catch(() => null)
-        const existing = raw === null ? null : parseFact(raw)
         // Keep the prior real preview; with NO prior fact, blank it entirely so
         // a synthetic nudge can never surface as a session's preview.
         fields =
@@ -161,6 +210,20 @@ export function projectMessageFact(
         session_name: sid,
         message_seq: seq,
         ...fields,
+        // The last-turn outcome is orthogonal to the message preview: carry it
+        // forward on every projection so a new message does not erase it.
+        ...(existing?.last_turn_reason !== undefined
+          ? { last_turn_reason: existing.last_turn_reason }
+          : {}),
+        ...(existing?.last_turn_finish !== undefined
+          ? { last_turn_finish: existing.last_turn_finish }
+          : {}),
+        ...(existing?.last_turn_tip !== undefined
+          ? { last_turn_tip: existing.last_turn_tip }
+          : {}),
+        ...(existing?.last_turn_at !== undefined
+          ? { last_turn_at: existing.last_turn_at }
+          : {}),
       }
       await bus.kvPut(
         BUCKET_SESSION_STATE,
@@ -171,7 +234,7 @@ export function projectMessageFact(
       // No explicit nudge here: the list watcher observes this KV write
       // directly (abc-session-meta watch), so a second signal would only
       // produce a duplicate upsert.
-    })().catch(err => {
+    }).catch(err => {
       logger.warn({ sid, err: String(err) }, 'session-state kvPut failed')
     }),
     'projectMessageFact',
@@ -213,28 +276,97 @@ export async function writeMessageFact(
   sid: string,
   fact: Omit<SessionMessageFact, 'tenant' | 'session_name' | 'message_seq'>,
 ): Promise<void> {
-  if (!bucketEnsured) {
-    bucketEnsured = true
-    await ensureBucket(bus)
-  }
-  const raw = await bus
-    .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
-    .catch(() => null)
-  const existing = raw === null ? null : parseFact(raw)
-  const seq = existing?.message_seq ?? seqCache.get(sid) ?? 0
-  seqCache.set(sid, seq)
-  const full: SessionMessageFact = {
-    tenant,
-    session_name: sid,
-    message_seq: seq,
-    ...fact,
-  }
-  await bus.kvPut(
-    BUCKET_SESSION_STATE,
-    factKey(tenant, sid),
-    JSON.stringify(full),
-    0,
-  )
+  return serializeFact(tenant, sid, async () => {
+    if (!bucketEnsured) {
+      bucketEnsured = true
+      await ensureBucket(bus)
+    }
+    const raw = await bus
+      .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
+      .catch(() => null)
+    const existing = raw === null ? null : parseFact(raw)
+    const seq = existing?.message_seq ?? seqCache.get(sid) ?? 0
+    seqCache.set(sid, seq)
+    const full: SessionMessageFact = {
+      tenant,
+      session_name: sid,
+      message_seq: seq,
+      ...fact,
+      // Preserve the durable last-turn outcome across a preview-only rewrite.
+      ...(existing?.last_turn_reason !== undefined
+        ? { last_turn_reason: existing.last_turn_reason }
+        : {}),
+      ...(existing?.last_turn_finish !== undefined
+        ? { last_turn_finish: existing.last_turn_finish }
+        : {}),
+      ...(existing?.last_turn_tip !== undefined
+        ? { last_turn_tip: existing.last_turn_tip }
+        : {}),
+      ...(existing?.last_turn_at !== undefined
+        ? { last_turn_at: existing.last_turn_at }
+        : {}),
+    }
+    await bus.kvPut(
+      BUCKET_SESSION_STATE,
+      factKey(tenant, sid),
+      JSON.stringify(full),
+      0,
+    )
+  })
+}
+
+/**
+ * Record the LAST FINISHED turn's outcome on the message fact (durable).
+ * Replaces the former `abc-session-turn` KV bucket: idlewatch reads `reason`
+ * to tell a user-stopped session from one the model left hanging after a tool
+ * call. Read-modify-writes the fact so the message preview/seq are preserved.
+ */
+export async function setTurnEnd(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+  outcome: { reason: string; finish: string; tip: string },
+): Promise<void> {
+  return serializeFact(tenant, sid, async () => {
+    if (!bucketEnsured) {
+      bucketEnsured = true
+      await ensureBucket(bus)
+    }
+    const raw = await bus
+      .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
+      .catch(() => null)
+    const existing = raw === null ? null : parseFact(raw)
+    const seq = existing?.message_seq ?? seqCache.get(sid) ?? 0
+    seqCache.set(sid, seq)
+    const full: SessionMessageFact = {
+      tenant,
+      session_name: sid,
+      message_seq: seq,
+      last_message_at: existing?.last_message_at ?? '',
+      last_message_preview: existing?.last_message_preview ?? '',
+      last_message_role: existing?.last_message_role ?? '',
+      last_turn_reason: outcome.reason,
+      last_turn_finish: outcome.finish,
+      last_turn_tip: outcome.tip,
+      last_turn_at: nowIso(),
+    }
+    await bus.kvPut(
+      BUCKET_SESSION_STATE,
+      factKey(tenant, sid),
+      JSON.stringify(full),
+      0,
+    )
+  })
+}
+
+/** Remove a session's message-fact projection (session deleted). */
+export function deleteMessageFact(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+): Promise<void> {
+  seqCache.delete(sid)
+  return bus.kvDelete(BUCKET_SESSION_STATE, factKey(tenant, sid))
 }
 
 /**
@@ -265,19 +397,24 @@ export async function readMessageFacts(
 // single authority). Re-exported here so existing importers keep working.
 export {
   claimLease,
+  clearActiveRun,
   ensureLockBuckets,
+  HEARTBEAT_RENEW_MS,
   HEARTBEAT_TTL_MS,
   INSTANCE_ID,
   LEASE_BUCKET,
   type LeaseValue,
   OWNER_BUCKET,
+  readActiveRun,
+  readLease,
+  readLeaseOwner,
   readSessionStatus,
   readSessionStatuses,
   reconcileOwnLeases,
   releaseLease,
-  renewLease,
   type SessionStatus,
   startHeartbeat,
+  updateLease,
 } from './session-lock.js'
 
 /**

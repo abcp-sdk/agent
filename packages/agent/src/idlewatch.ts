@@ -1,12 +1,12 @@
 import { Agent as AbcAgent } from '@abc-protocol/sdk'
 import type { Bus } from './bus.js'
-import { BUCKET_SESSION_TURN, natsToken, tenantKVKey } from './bus.js'
+import { natsToken, tenantKVKey } from './bus.js'
 import type { ServerConfig } from './config.js'
 import type { Db } from './db-client.js'
 import { Messages } from './db-messages.js'
 import { knownTenants, Sessions } from './db-sessions.js'
 import { logger } from './logger.js'
-import { readSessionStatuses } from './session-state.js'
+import { readMessageFacts, readSessionStatuses } from './session-state.js'
 
 /**
  * Idle-turn watchdog: re-trigger a session that stopped mid-task after a tool
@@ -172,22 +172,15 @@ export class IdleWatchdog {
     )
   }
 
-  /** True when the session's LAST turn was ended by a user interrupt. A
-   *  missing/unreadable marker is treated as "not interrupted". */
+  /** True when the session's LAST turn was ended by a user interrupt, read
+   *  from the durable message fact (`last_turn_reason`). A missing/unreadable
+   *  value is treated as "not interrupted". */
   private async turnInterrupted(
     tenant: string,
     session: string,
   ): Promise<boolean> {
-    const raw = await this.deps.bus
-      .kvGet(BUCKET_SESSION_TURN, tenantKVKey(tenant, natsToken(session)))
-      .catch(() => null)
-    if (raw === null || raw === '') return false
-    try {
-      const marker = JSON.parse(raw) as { reason?: string }
-      return marker.reason === 'interrupted'
-    } catch {
-      return false
-    }
+    const facts = await readMessageFacts(this.deps.bus, tenant, [session])
+    return facts.get(session)?.last_turn_reason === 'interrupted'
   }
 
   /** Prefer the session's projected `vars.agent.locale`, then the row, then

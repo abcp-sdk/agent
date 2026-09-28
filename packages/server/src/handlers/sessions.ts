@@ -3,8 +3,10 @@ import {
   type AgentDeps,
   clearActiveRun,
   DEFAULT_PRESET,
+  deleteMessageFact,
   deleteSessionIds,
   interruptRun,
+  logger,
   Mailbox,
   Messages,
   mailboxSubject,
@@ -16,6 +18,7 @@ import {
   readMessageFacts,
   readSessionStatus,
   readSessionStatuses,
+  releaseLease,
   Sessions,
 } from '@abcp-agent/agent'
 import type { AgentService } from '@abcp-agent/schema'
@@ -37,6 +40,43 @@ import { refreshMessageFactFromTip } from './helpers.js'
 export function sessionsHandlers(
   deps: AgentDeps,
 ): Partial<ServiceImpl<typeof AgentService>> {
+  /**
+   * Remove every KV projection for a session name (message fact, context id
+   * cache, run lock). Called on delete/rename so no stale projection survives
+   * (the DB row is the source of truth; the KV is derived). Best-effort: a
+   * transient KV error only delays convergence.
+   */
+  const purgeSessionProjections = async (
+    tenant: string,
+    name: string,
+  ): Promise<void> => {
+    await Promise.all([
+      deleteMessageFact(deps.bus, tenant, name).catch(() => {}),
+      deleteSessionIds(deps.bus, tenant, name).catch(() => {}),
+      releaseLease(deps.bus, tenant, name).catch(() => {}),
+    ])
+  }
+
+  /**
+   * Log an ERROR when a session that HAS a message tip is missing its KV fact.
+   * The KV fact is a derived projection of the DB chain; for a session with
+   * messages a miss means the projection is stale/lost (a transient NATS error,
+   * or a write that never landed). An EMPTY session (no tip) legitimately has no
+   * fact, so it is not an error. We never fabricate `message_seq: 0` silently —
+   * that would reset clients' unread watermarks.
+   */
+  const logMissingFact = (
+    tenant: string,
+    name: string,
+    tipId: string,
+  ): void => {
+    if (tipId === '') return
+    logger.error(
+      { tenant, sid: name },
+      'session message-fact projection missing (KV) — preview/seq unavailable',
+    )
+  }
+
   return {
     async health() {
       return { ok: true, name: 'abcp-agent' }
@@ -47,12 +87,17 @@ export function sessionsHandlers(
       const r = await Sessions.list(deps.db, tenant)
       if (r.isErr()) throw new Error(r.error)
       const names = r.value.map(s => s.name)
-      // Batch-read the message facts AND the runtime status (run lease) so the
+      // Batch-read the message facts AND the runtime status (run lock) so the
       // list rows carry busy/idle without a per-row State poll.
       const [facts, statuses] = await Promise.all([
         readMessageFacts(deps.bus, tenant, names),
         readSessionStatuses(deps.bus, tenant, names),
       ])
+      // Surface a MISSING fact as an error (a derived projection that is stale
+      // or lost) instead of silently emitting message_seq=0 / empty preview.
+      for (const s of r.value) {
+        if (!facts.has(s.name)) logMissingFact(tenant, s.name, s.tip_id ?? '')
+      }
       return {
         sessions: r.value.map(s =>
           sessionToMsg(s, facts.get(s.name), statuses.get(s.name) ?? 'idle'),
@@ -99,6 +144,9 @@ export function sessionsHandlers(
       if (r.isErr()) throw new Error(r.error)
       if (r.value === null) throw new Error('session not found')
       const facts = await readMessageFacts(deps.bus, tenant, [req.id])
+      if (!facts.has(req.id)) {
+        logMissingFact(tenant, req.id, r.value.tip_id ?? '')
+      }
       return { session: sessionToMsg(r.value, facts.get(req.id)) }
     },
 
@@ -108,6 +156,9 @@ export function sessionsHandlers(
       interruptRun(tenant, id)
       const r = await Sessions.delete(deps.db, tenant, id)
       if (r.isErr()) throw new Error(r.error)
+      // Drop the derived KV projections too: a deleted session must not leave a
+      // fact (bucket is TTL 0), an id-list cache, or a run lock behind.
+      await purgeSessionProjections(tenant, id)
       publishLifecycle(deps.bus, tenant, 'deleted', { session_name: id })
       return { ok: true }
     },
@@ -204,6 +255,11 @@ export function sessionsHandlers(
         void Sessions.delete(deps.db, tenant, name)
         throw new Error(removed.error)
       }
+      // Move the KV projections from the OLD name to the NEW one: drop the old
+      // fact/ids/lock, then rebuild the new name's fact from the (same) tip so
+      // the list shows a preview immediately instead of after the next message.
+      await purgeSessionProjections(tenant, id)
+      await refreshMessageFactFromTip(deps, tenant, name)
       publishLifecycle(deps.bus, tenant, 'renamed', { from: id, to: name })
       return { session: sessionToMsg({ ...p, name }) }
     },
@@ -254,11 +310,12 @@ export function sessionsHandlers(
       const inChain = await Messages.isInChain(deps.db, tenant, tip, targetId)
       if (inChain.isErr()) throw new Error(inChain.error)
       if (!inChain.value) return { session: sessionToMsg(s) }
-      // Abort any in-flight turn and invalidate its active-run marker BEFORE
-      // moving the tip: a running turn must not keep emitting deltas (or a
-      // late turn-complete) for content we are withdrawing.
+      // Abort any in-flight turn and drop its active-run anchor BEFORE moving
+      // the tip: a running turn must not keep emitting deltas (or a late
+      // turn-complete) for content we are withdrawing, and a reconnecting
+      // client must not replay that run.
       interruptRun(tenant, id)
-      clearActiveRun(deps.bus, tenant, id)
+      await clearActiveRun(deps.bus, tenant, id)
       await Sessions.setTip(deps.db, tenant, id, target.value.prev_id)
       // AWAIT the context-cache invalidation: it must be complete before this
       // RPC returns, otherwise a prompt issued right after (retry/edit →

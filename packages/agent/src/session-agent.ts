@@ -8,22 +8,14 @@ import {
   type Tool,
 } from 'ai'
 import type { Bus } from './bus.js'
-import {
-  BUCKET_SESSION_TURN,
-  mailboxSubject,
-  natsToken,
-  SESSION_LEASE_MS,
-  tenantKVKey,
-} from './bus.js'
+import { mailboxSubject, SESSION_LEASE_MS } from './bus.js'
 import type { ServerConfig } from './config.js'
 import { isContextOverflowFailure } from './context-overflow.js'
 import type { Db } from './db-client.js'
 import { Mailbox } from './db-mailbox.js'
 import { Sessions } from './db-sessions.js'
 import {
-  clearActiveRun,
   events,
-  markActiveRun,
   pushEvent,
   pushEventNow,
   pushMessageAddedNow,
@@ -45,7 +37,8 @@ import {
 } from './llm-retry.js'
 import { logger } from './logger.js'
 import { compactSession } from './session-compact.js'
-import { claimLease, releaseLease, renewLease } from './session-lock.js'
+import { claimLease, releaseLease, updateLease } from './session-lock.js'
+import { setTurnEnd } from './session-state.js'
 import { type SanitizeDeps, sanitizeStreamPart } from './stream-parts.js'
 import {
   appendStep,
@@ -80,39 +73,38 @@ export interface AgentDeps {
 const DRAIN_GRACE_MS = 200
 
 /**
- * Renew a held lease, falling back to a RE-CLAIM when the renew CAS fails.
+ * Renew a held lock, falling back to a RE-CLAIM when the owner-guarded renew
+ * fails.
  *
- * The lease key carries a TTL fixed at bucket creation; a long turn that
- * stalls the event loop past that TTL loses the key, so the next renew returns
- * null. Reusing the stale revision forever would then fail every later renew
- * (the old bug: the session reported `idle` while still running). Instead:
- *   - renew succeeds        → return the new revision (not lost)
- *   - renew fails, re-claim succeeds → the key had merely expired with no
- *     other holder; adopt the fresh revision (not lost)
+ * The lock key carries a TTL fixed at bucket creation; a long turn that stalls
+ * the event loop past that TTL loses the key, so the next renew fails. Instead
+ * of giving up (which reported `idle` while a turn was still running):
+ *   - renew succeeds              → still held (not lost)
+ *   - renew fails, re-claim succeeds → the key had merely expired with no other
+ *     holder; keep running (not lost)
  *   - renew fails, re-claim fails → another replica owns the session (lost)
  *
  * Exported for unit testing (the timer wiring itself is hard to exercise).
  */
 export async function renewOrReclaim(
-  renew: () => Promise<number | null>,
-  reclaim: () => Promise<number | null>,
-): Promise<{ revision: number | null; lost: boolean; reclaimed: boolean }> {
-  let next: number | null
+  renew: () => Promise<boolean>,
+  reclaim: () => Promise<boolean>,
+): Promise<{ held: boolean; lost: boolean; reclaimed: boolean }> {
+  let next: boolean
   try {
     next = await renew()
   } catch {
-    next = null
+    next = false
   }
-  if (next !== null) return { revision: next, lost: false, reclaimed: false }
-  let reclaimed: number | null
+  if (next) return { held: true, lost: false, reclaimed: false }
+  let reclaimed: boolean
   try {
     reclaimed = await reclaim()
   } catch {
-    reclaimed = null
+    reclaimed = false
   }
-  if (reclaimed !== null)
-    return { revision: reclaimed, lost: false, reclaimed: true }
-  return { revision: null, lost: true, reclaimed: false }
+  if (reclaimed) return { held: true, lost: false, reclaimed: true }
+  return { held: false, lost: true, reclaimed: false }
 }
 
 /**
@@ -267,60 +259,56 @@ export async function runSessionTurn(
   sid: string,
 ): Promise<void> {
   for (;;) {
-    let revision: number | null
+    let held: boolean
     try {
-      revision = await claimLease(deps.bus, tenant, sid)
+      held = await claimLease(deps.bus, tenant, sid)
     } catch (e) {
       logger.warn({ tenant, sid, err: String(e) }, 'claim error')
       return
     }
-    if (revision === null) {
+    if (!held) {
       // Another replica is running this session; it will drain our message.
       return
     }
 
-    // Renew the lease on a timer so a long-running turn — the drain loop
-    // awaits handleItem for minutes at a time — cannot be re-claimed by a
-    // competing replica after the TTL lapses. Each successful renew returns
-    // the NEW revision, which must be fed into the next renew; using the
-    // original revision forever would fail every update after the first.
+    // Renew the lock on a timer so a long-running turn — the drain loop awaits
+    // handleItem for minutes at a time — cannot be re-claimed by a competing
+    // replica after the TTL lapses. `updateLease` is an OWNER-GUARDED
+    // read-modify-write that refreshes the TTL and returns false when the lock
+    // is gone or owned by another instance. A single failure must NOT poison
+    // the lock forever, so on failure we RE-CLAIM:
+    //   - re-claim succeeds → the lock had merely expired (e.g. an event-loop
+    //     stall exceeded the TTL); keep running.
+    //   - re-claim fails → another replica genuinely owns the session; abort the
+    //     in-flight turn so we stop writing the chain without a lock.
     //
     // The interval is TTL/4 (not TTL/3): the KV bucket's max_age is fixed at
     // creation (30s) and is NOT changed by SESSION_LEASE_MS, so renewing at
-    // TTL/3 left only a single-renew margin — one event-loop stall and the
-    // key expired. TTL/4 gives two renew attempts before expiry.
-    //
-    // A single failed renew must NOT poison the lease forever (the old code
-    // kept reusing the stale revision, so every later renew failed and the
-    // session reported `idle` while still running). On failure we RE-CLAIM:
-    //   - re-claim succeeds → the lease had merely expired (e.g. an event-loop
-    //     stall exceeded the TTL); adopt the fresh revision and keep running.
-    //   - re-claim fails → another replica genuinely owns the session; abort
-    //     the in-flight turn so we stop writing the chain without a lease.
+    // TTL/3 left only a single-renew margin — one event-loop stall and the key
+    // expired. TTL/4 gives two renew attempts before expiry.
     let leaseLost = false
     const renewTimer = setInterval(() => {
       void renewOrReclaim(
-        () => renewLease(deps.bus, tenant, sid, revision as number),
+        () => updateLease(deps.bus, tenant, sid),
         () => claimLease(deps.bus, tenant, sid),
       ).then(
-        ({ revision: next, lost, reclaimed }) => {
-          if (!lost && next !== null) {
+        ({ held: next, lost, reclaimed }) => {
+          if (!lost && next) {
             if (reclaimed) {
               logger.warn(
                 { tenant, sid },
-                'lease renewed via re-claim (expired, no other holder)',
+                'lock renewed via re-claim (expired, no other holder)',
               )
             }
-            revision = next
             return
           }
           logger.warn(
             { tenant, sid },
-            'lease lost: another replica owns it — aborting turn',
+            'lock lost: another replica owns it — aborting turn',
           )
           leaseLost = true
           // Abort the in-flight turn so it stops emitting/writing without a
-          // lease. The loop observes the abort signal at the next boundary.
+          // lock. The loop observes the abort signal at the next boundary.
           getAbortController(tenant, sid).abort()
         },
         err => {
@@ -329,11 +317,11 @@ export async function runSessionTurn(
       )
     }, SESSION_LEASE_MS / 4)
 
-    // Drain every pending item while holding the lease. Each prompt runs as
-    // its own run (busy → … → turn-complete); there is NO idle between them —
-    // a mailbox continuation is the SAME busy period, exactly as the user
-    // expects ("跑完之后 consume mailbox 应延续 busy，不发 idle"). The lease is
-    // held across the whole loop, so the busy signal never flaps.
+    // Drain every pending item while holding the lock. Each prompt runs as its
+    // own run (busy → … → turn-complete); there is NO idle between them — a
+    // mailbox continuation is the SAME busy period, exactly as the user expects
+    // ("跑完之后 consume mailbox 应延续 busy，不发 idle"). The lock is held
+    // across the whole loop, so the busy signal never flaps.
     try {
       for (;;) {
         if (leaseLost) break
@@ -347,7 +335,7 @@ export async function runSessionTurn(
             continue
           }
           // Non-consuming last look: a message may have landed in the window
-          // since the drain. If so, keep holding the lease and process it — no
+          // since the drain. If so, keep holding the lock and process it — no
           // spurious idle→busy flap. Only a genuinely empty queue ends the
           // busy period.
           const stillPending = await Mailbox.hasPending(
@@ -356,11 +344,11 @@ export async function runSessionTurn(
             sid,
           ).unwrapOr(false)
           if (stillPending) continue
-          // No work remains and we still hold the lease: emit the terminal
-          // idle BEFORE releasing. Holding the lease while emitting makes
-          // "busy for the next run" and "idle for this one" mutually
-          // exclusive; awaiting the publish removes the reorder window (the
-          // client never sees an idle land after a newer run's busy).
+          // No work remains and we still hold the lock: emit the terminal idle
+          // BEFORE releasing. Holding the lock while emitting makes "busy for
+          // the next run" and "idle for this one" mutually exclusive; awaiting
+          // the publish removes the reorder window (the client never sees an
+          // idle land after a newer run's busy).
           await pushEventNow(deps.bus, tenant, sid, 'status', {
             type: 'idle',
           })
@@ -370,28 +358,28 @@ export async function runSessionTurn(
       }
     } finally {
       clearInterval(renewTimer)
-      // Only release a lease we still hold. After a lost lease another replica
-      // owns the key; deleting it would clobber THEIR lease and let a third
+      // Only release a lock we still hold. After a lost lock another replica
+      // owns the key; deleting it would clobber THEIR lock and let a third
       // writer in.
       if (!leaseLost) await releaseLease(deps.bus, tenant, sid)
     }
 
-    // Lease lost mid-drain: another replica owns the session now. It will
+    // Lock lost mid-drain: another replica owns the session now. It will
     // process remaining work and emit the terminal idle; we must not release
-    // their lease or emit a stale idle.
+    // their lock or emit a stale idle.
     if (leaseLost) return
 
-    // The idle was emitted and the lease released. RE-CLAIM once to close the
-    // window where a mailbox wake arrived while we held the lease (its row is
+    // The idle was emitted and the lock released. RE-CLAIM once to close the
+    // window where a mailbox wake arrived while we held the lock (its row is
     // still pending, but the waking invocation could not claim and returned).
-    let reRevision: number | null
+    let reHeld: boolean
     try {
-      reRevision = await claimLease(deps.bus, tenant, sid)
+      reHeld = await claimLease(deps.bus, tenant, sid)
     } catch (e) {
       logger.warn({ tenant, sid, err: String(e) }, 're-claim error')
       return
     }
-    if (reRevision === null) {
+    if (!reHeld) {
       // Another invocation owns the session now; IT will process any prompt and
       // emit its own terminal idle. We must not emit idle again here.
       return
@@ -532,7 +520,13 @@ export async function runTurnOnce(
   // live (and is cleared the moment the turn ends, incl. on error/abort).
   const runId = randomUUID()
   const runStartedAtMs = Date.now()
-  markActiveRun(deps.bus, tenant, sid, runId, runStartedAtMs)
+  // Stamp this run onto the session's LOCK record (owner-guarded): the run id
+  // and start time are the replay anchor for a reconnecting client. Fire-and-
+  // forget: the lock TTL/owner heartbeat bounds a missed update.
+  void updateLease(deps.bus, tenant, sid, {
+    runId,
+    startedAtMs: runStartedAtMs,
+  })
   pushEvent(deps.bus, tenant, sid, 'status', { type: 'busy' }, runId)
 
   // JSON sanitizer for verbatim stream-part pass-through: large media is
@@ -1073,17 +1067,17 @@ export async function runTurnOnce(
           : appendStep(messages, text, toolCalls, toolResults)
     }
   } finally {
-    // Guaranteed terminal: clear the active-run marker and ALWAYS emit
-    // turn-complete (even on error/abort/early return). This closes the
-    // "stale status busy" hole that previously let replay anchor on a
+    // Guaranteed terminal: ALWAYS emit turn-complete (even on error/abort/early
+    // return), and record the turn's outcome on the message fact. This closes
+    // the "stale status busy" hole that previously let replay anchor on a
     // long-finished turn.
     if (unsub !== null) unsub()
     clearRun(tenant, sid)
-    clearActiveRun(deps.bus, tenant, sid)
-    // Persist the turn-END marker (reason/finish/tip) BEFORE the terminal
-    // status:idle that `runSessionTurn` emits after this returns. The gateway's
-    // idlewatch reads it to tell a user-stopped session from one the model left
-    // hanging after a tool call. AWAITED so the marker is durable before idle.
+    // The active run lives on the session LOCK record now; the lock is released
+    // by `runSessionTurn` after this returns (it holds the whole busy period).
+    // Record the turn-END outcome (reason/finish/tip) on the message FACT so
+    // idlewatch can tell a user-stopped session from one the model left hanging
+    // after a tool call. AWAITED so it is durable before the terminal idle.
     await markTurnEnd(deps, tenant, sid, interrupted, lastFinishReason)
     // AWAIT this terminal: the client uses `turn-complete` to close the run,
     // and a following mailbox turn publishes its `status:busy` + deltas on the
@@ -1099,12 +1093,11 @@ export async function runTurnOnce(
 }
 
 /**
- * Persist the turn-END marker to the `abc-session-turn` KV bucket:
- * `{ reason, finish, tip }`, keyed `tenantKVKey(tenant, natsToken(sid))` (the
- * SAME derivation the gateway's idlewatch uses via `protocol.TenantKVKey` +
- * `protocol.SessionToken`). `reason` is `interrupted` when the user aborted the
- * turn (or a delete did), else `stop`. Best-effort: a KV failure is logged, not
- * fatal — the idlewatch treats a MISSING marker as "not interrupted".
+ * Persist the turn-END outcome (`{ reason, finish, tip }`) onto the session's
+ * message FACT in `abc-session-meta` (replacing the former `abc-session-turn`
+ * bucket). `reason` is `interrupted` when the user aborted the turn (or a
+ * delete did), else `stop`. Best-effort: a KV failure is logged, not fatal —
+ * idlewatch treats a MISSING outcome as "not interrupted".
  */
 async function markTurnEnd(
   deps: AgentDeps,
@@ -1115,20 +1108,13 @@ async function markTurnEnd(
 ): Promise<void> {
   const tipRes = await Sessions.tip(deps.db, tenant, sid)
   const tip = tipRes.isErr() ? '' : (tipRes.value ?? '')
-  const value = JSON.stringify({
+  await setTurnEnd(deps.bus, tenant, sid, {
     reason: interrupted ? 'interrupted' : 'stop',
     finish: finishReason,
     tip,
-    at: new Date().toISOString(),
+  }).catch(err => {
+    logger.warn({ tenant, sid, err: String(err) }, 'turn-end fact write failed')
   })
-  await deps.bus
-    .kvPut(BUCKET_SESSION_TURN, tenantKVKey(tenant, natsToken(sid)), value, 0)
-    .catch(err => {
-      logger.warn(
-        { tenant, sid, err: String(err) },
-        'turn-end marker put failed',
-      )
-    })
 }
 
 function sleep(ms: number): Promise<void> {

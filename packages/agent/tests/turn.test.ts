@@ -114,28 +114,28 @@ describe('handleItem (compact branch)', () => {
 })
 
 describe('renewOrReclaim', () => {
-  it('returns the new revision when renew succeeds', async () => {
+  it('stays held when renew succeeds', async () => {
     const r = await renewOrReclaim(
-      () => Promise.resolve(7),
-      () => Promise.resolve(99),
+      () => Promise.resolve(true),
+      () => Promise.resolve(false),
     )
-    expect(r).toEqual({ revision: 7, lost: false, reclaimed: false })
+    expect(r).toEqual({ held: true, lost: false, reclaimed: false })
   })
 
   it('re-claims when renew fails and the key had merely expired', async () => {
     const r = await renewOrReclaim(
-      () => Promise.resolve(null),
-      () => Promise.resolve(42),
+      () => Promise.resolve(false),
+      () => Promise.resolve(true),
     )
-    expect(r).toEqual({ revision: 42, lost: false, reclaimed: true })
+    expect(r).toEqual({ held: true, lost: false, reclaimed: true })
   })
 
   it('reports lost when renew AND re-claim both fail', async () => {
     const r = await renewOrReclaim(
-      () => Promise.resolve(null),
-      () => Promise.resolve(null),
+      () => Promise.resolve(false),
+      () => Promise.resolve(false),
     )
-    expect(r).toEqual({ revision: null, lost: true, reclaimed: false })
+    expect(r).toEqual({ held: false, lost: true, reclaimed: false })
   })
 
   it('treats a thrown renew/re-claim as a failure, never throws', async () => {

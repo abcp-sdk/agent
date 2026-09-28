@@ -59,15 +59,10 @@ export const STREAM_MAILBOX = 'ABC_MAILBOX'
 // sha256(sid)[:22] — sharing a bucket would let a fact overwrite the run
 // lease (claimSession kvs-create fails => the session is never processed).
 export const BUCKET_SESSION_STATE = 'abc-session-meta'
-// Active-turn marker: session -> run_id of the currently-running turn. Used by
-// replay to hand only the LIVE turn back (never finished/revoked ones).
-export const BUCKET_SESSION_RUN = 'abc-session-run'
-// Turn-END marker: session -> { reason, finish, tip } of the LAST finished
-// turn. `reason` is 'interrupted' when the user (or a delete) aborted it, else
-// 'stop'. Written AWAITED before the terminal `status:idle` so a reader (the
-// gateway idlewatch) can tell a user-stopped session from one the model left
-// hanging after a tool call. Key: tenantKVKey(tenant, natsToken(sid)).
-export const BUCKET_SESSION_TURN = 'abc-session-turn'
+// The active-turn marker and the turn-END marker are no longer separate
+// buckets: the run id/start live on the run LOCK record (`abc-session-state`,
+// see session-lock.ts) and the turn outcome lives on the message FACT
+// (`abc-session-meta`, field `last_turn_reason`).
 export const BUCKET_TOOL = 'ABC_TOOL'
 export const BUCKET_CONFIG = 'abcp-agent-config'
 export const BUCKET_PRESETS = 'abc-presets'

@@ -35,11 +35,13 @@ export * from './session-agent.js'
 export * from './session-lock.js'
 export {
   calibrateMessageFacts,
+  deleteMessageFact,
   factFromPersist,
   isSyntheticSource,
   projectMessageFact,
   readMessageFacts,
   type SessionMessageFact,
+  setTurnEnd,
   writeMessageFact,
 } from './session-state.js'
 export {

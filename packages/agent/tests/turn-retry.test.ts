@@ -430,16 +430,19 @@ describe('runTurnOnce provider retry', () => {
 
     await runTurnOnce(deps as never, 't', sid)
 
-    const marker = kvPuts.find(p => p.bucket === 'abc-session-turn')
-    expect(marker).toBeDefined()
-    const parsed = JSON.parse(marker!.value) as {
-      reason: string
-      finish: string
-      tip: string
+    // The turn outcome now lives on the message FACT (abc-session-meta); the
+    // LAST write carries it (earlier writes are preview projections).
+    const facts = kvPuts.filter(p => p.bucket === 'abc-session-meta')
+    const fact = facts[facts.length - 1]
+    expect(fact).toBeDefined()
+    const parsed = JSON.parse(fact!.value) as {
+      last_turn_reason: string
+      last_turn_finish: string
+      last_turn_tip: string
     }
-    expect(parsed.reason).toBe('stop')
-    expect(parsed.finish).toBe('stop')
-    expect(typeof parsed.tip).toBe('string')
+    expect(parsed.last_turn_reason).toBe('stop')
+    expect(parsed.last_turn_finish).toBe('stop')
+    expect(typeof parsed.last_turn_tip).toBe('string')
   })
 
   it('writes the turn-end marker with reason=interrupted when aborted', async () => {
@@ -454,10 +457,12 @@ describe('runTurnOnce provider retry', () => {
 
     await runTurnOnce(deps as never, 't', sid)
 
-    const marker = kvPuts.find(p => p.bucket === 'abc-session-turn')
-    expect(marker).toBeDefined()
-    expect((JSON.parse(marker!.value) as { reason: string }).reason).toBe(
-      'interrupted',
-    )
+    const facts = kvPuts.filter(p => p.bucket === 'abc-session-meta')
+    const fact = facts[facts.length - 1]
+    expect(fact).toBeDefined()
+    expect(
+      (JSON.parse(fact!.value) as { last_turn_reason: string })
+        .last_turn_reason,
+    ).toBe('interrupted')
   })
 })

@@ -4,31 +4,37 @@ import { natsToken, SESSION_LEASE_MS, tenantKVKey } from './bus.js'
 import { logger } from './logger.js'
 
 /**
- * Session run LOCK — the single authority for a session's busy/idle state.
+ * Session run LOCK — the single authority for a session's busy/idle state AND
+ * its active-run (replay) anchor.
  *
- * A session's runtime status is the presence of its run lease in
- * `abc-session-state`. This module makes that lease robust enough to be a
- * RELIABLE status source, closing the three ways the raw TTL key drifted:
+ * The lock is ONE record in `abc-session-state`, keyed
+ * `t.<tenant>.<sessionToken>`:
  *
- *   1. Owner stamping + a per-instance HEARTBEAT. The lease value carries the
- *      owning instance id; the owner writes a heartbeat key in
- *      `abc-session-owner` with a short TTL. A session is `busy` only when its
- *      lease exists AND the owner's heartbeat is alive — so a crashed replica
- *      reads as idle IMMEDIATELY on the next status read, not after the lease
- *      TTL.
- *   2. Continuous hold. The turn loop claims ONCE per busy period and releases
- *      ONCE (see runSessionTurn), so the lease bucket no longer flaps
- *      delete→create between chained runs (which made WatchSessions emit
- *      spurious idle→busy transitions).
- *   3. Boot reconciliation. On startup, before serving, an instance clears any
- *      leases stamped with ITS OWN id (a fresh process cannot have live turns)
- *      and its own heartbeat — instant self-heal after a crash/SIGKILL.
+ *   { owner, runId?, startedAtMs? }
  *
- * A read failure yields `unknown` (never a false `idle`), so a NATS blip does
- * not make working sessions look idle.
+ *   - `owner` is the instance id holding the session (see {@link INSTANCE_ID}).
+ *   - `runId`/`startedAtMs` identify the CURRENT run (updated at each run
+ *     start), so a reconnecting client can replay exactly the live turn.
+ *
+ * This replaces the former THREE keys (lease + `abc-session-run` +
+ * `abc-session-turn`). The durable "last turn outcome" (reason/finish/tip)
+ * lives on the message FACT in `abc-session-meta` instead (this bucket's TTL is
+ * 30s, too short for idlewatch's needs) — see `session-state.setTurnEnd`.
+ *
+ * Reliability properties:
+ *   - Owner stamping + a per-instance HEARTBEAT (`abc-session-owner`, short
+ *     TTL). A session is `busy` only while the record exists AND the owner's
+ *     heartbeat is alive — a crashed replica reads idle IMMEDIATELY.
+ *   - Continuous hold: the turn loop claims ONCE per busy period and releases
+ *     ONCE, so the key never flaps delete→create between chained runs.
+ *   - Owner-guarded read-modify-write for renew/run-start: a stalled former
+ *     holder that wakes after its lease expired cannot clobber the new holder
+ *     (it reads a different owner and stands down).
+ *   - Boot reconciliation clears this instance's own crash remnants.
+ *   - A read failure yields `unknown` (never a false `idle`).
  */
 
-/** The lease KV bucket (mirrors the SDK's LEASE_BUCKET). */
+/** The run-lock KV bucket (mirrors the SDK's LEASE_BUCKET). */
 export const LEASE_BUCKET = 'abc-session-state'
 /** Per-instance heartbeat bucket: one key per live agent instance. */
 export const OWNER_BUCKET = 'abc-session-owner'
@@ -40,12 +46,13 @@ export const HEARTBEAT_RENEW_MS = 10_000
 /** A session's runtime status. `unknown` = the status could not be read. */
 export type SessionStatus = 'busy' | 'idle' | 'unknown'
 
-/** The value stored under a session's lease key. */
+/** The value stored under a session's lock key. */
 export interface LeaseValue {
   /** Instance id of the holder (see {@link INSTANCE_ID}). */
   owner: string
-  /** The turn's run id (diagnostics). */
+  /** The CURRENT run's id (diagnostics + replay scoping). */
   runId?: string
+  /** Wall-clock start (ms) of the CURRENT run (replay window anchor). */
   startedAtMs?: number
 }
 
@@ -63,7 +70,7 @@ function ownerKey(instanceId: string): string {
   return instanceId
 }
 
-/** Parse a lease value; tolerate the legacy bare `"running"` string. */
+/** Parse a lock value; tolerate the legacy bare `"running"` string. */
 function parseLease(raw: string): LeaseValue | null {
   if (raw === '') return null
   if (raw === 'running') return { owner: '' }
@@ -83,10 +90,10 @@ function parseLease(raw: string): LeaseValue | null {
 }
 
 /**
- * Ensure the lease + owner buckets exist with the correct TTL, BEFORE the
+ * Ensure the lock + owner buckets exist with the correct TTL, BEFORE the
  * server listens (hence before any watcher). A NATS KV bucket's TTL is fixed
  * at creation and `bus.kvWatch` would otherwise create it persistent (ttl=0),
- * leaving leases that never expire. Best-effort.
+ * leaving locks that never expire. Best-effort.
  */
 export async function ensureLockBuckets(bus: Bus): Promise<void> {
   await Promise.all([
@@ -100,61 +107,93 @@ export async function ensureLockBuckets(bus: Bus): Promise<void> {
 }
 
 /**
- * Atomically claim a session's run lease, stamped with this instance's id.
- * Returns the KV revision (for renew), or null when another holder owns it.
+ * Atomically claim a session's lock, stamped with this instance's id. Returns
+ * true when we now hold it (a fresh key), false when another holder owns it
+ * (or the key is a not-yet-expired crash remnant — cleared by TTL/reconcile).
  */
 export async function claimLease(
   bus: Bus,
   tenant: string,
   sid: string,
-  meta?: { runId?: string; startedAtMs?: number },
-): Promise<number | null> {
-  const value: LeaseValue = {
-    owner: INSTANCE_ID,
-    ...(meta?.runId !== undefined ? { runId: meta.runId } : {}),
-    ...(meta?.startedAtMs !== undefined
-      ? { startedAtMs: meta.startedAtMs }
-      : {}),
-  }
+): Promise<boolean> {
   try {
-    return await bus.kvCreate(
+    const rev = await bus.kvCreate(
       LEASE_BUCKET,
       leaseKey(tenant, sid),
-      JSON.stringify(value),
+      JSON.stringify({ owner: INSTANCE_ID } satisfies LeaseValue),
       SESSION_LEASE_MS,
     )
+    return rev !== null
   } catch {
-    return null
+    return false
   }
 }
 
-/** Renew a held lease via CAS; returns the new revision or null when lost. */
-export async function renewLease(
+/**
+ * Owner-guarded read-modify-write: refresh the lock's TTL and merge `fields`
+ * (e.g. the current run id/start). Returns true on success, false when the
+ * lock is gone or owned by ANOTHER instance (a stalled former holder cannot
+ * clobber the new owner). Serialized per session so a renew and a run-start
+ * update never interleave.
+ */
+const updateLocks = new Map<string, Promise<boolean>>()
+export function updateLease(
   bus: Bus,
   tenant: string,
   sid: string,
-  revision: number,
-): Promise<number | null> {
-  const value: LeaseValue = { owner: INSTANCE_ID }
-  try {
-    return await bus.kvCas(
-      LEASE_BUCKET,
-      leaseKey(tenant, sid),
-      JSON.stringify(value),
-      revision,
-    )
-  } catch {
-    return null
-  }
+  fields: { runId?: string; startedAtMs?: number; clearRun?: boolean } = {},
+): Promise<boolean> {
+  const key = `${tenant}\n${sid}`
+  const prev = updateLocks.get(key) ?? Promise.resolve(true)
+  const next = prev
+    .catch(() => true)
+    .then(async () => {
+      const raw = await bus
+        .kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
+        .catch(() => null)
+      const cur = raw === null || raw === undefined ? null : parseLease(raw)
+      if (cur === null || cur.owner !== INSTANCE_ID) return false
+      // `clearRun` drops the run anchor but keeps the lock (owner + TTL).
+      const value: LeaseValue = { owner: INSTANCE_ID }
+      if (fields.clearRun !== true) {
+        if (fields.runId !== undefined) value.runId = fields.runId
+        if (fields.startedAtMs !== undefined) {
+          value.startedAtMs = fields.startedAtMs
+        }
+      }
+      await bus.kvPut(
+        LEASE_BUCKET,
+        leaseKey(tenant, sid),
+        JSON.stringify(value),
+        SESSION_LEASE_MS,
+      )
+      return true
+    })
+  updateLocks.set(key, next)
+  return next
 }
 
-/** Release a session's run lease (back to idle). */
+/** Release a session's lock (back to idle). Only call while still holding it. */
 export function releaseLease(
   bus: Bus,
   tenant: string,
   sid: string,
 ): Promise<void> {
   return bus.kvDelete(LEASE_BUCKET, leaseKey(tenant, sid))
+}
+
+/**
+ * Clear the session's ACTIVE-run anchor while KEEPING the lock (owner-guarded):
+ * used by undo/withdraw so a reconnecting client no longer replays the run
+ * whose content is being withdrawn. The lock stays held (the aborted turn's
+ * `finally` releases it), so another replica cannot claim mid-abort.
+ */
+export function clearActiveRun(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+): Promise<boolean> {
+  return updateLease(bus, tenant, sid, { clearRun: true })
 }
 
 /** True when an instance's heartbeat key is currently present. */
@@ -164,23 +203,53 @@ export async function ownerAlive(bus: Bus, owner: string): Promise<boolean> {
   return raw !== null && raw !== undefined
 }
 
-/** The owner instance id stamped on a session's lease, or null when there is
- *  no lease (or it is a legacy owner-less lease → ''). */
+/** Read a session's lock record, or null when absent/unreadable. */
+export async function readLease(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+): Promise<LeaseValue | null> {
+  const raw = await bus
+    .kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
+    .catch(() => null)
+  return raw === null || raw === undefined ? null : parseLease(raw)
+}
+
+/** The owner instance id stamped on a session's lock, or null when there is
+ *  no lock (or it is a legacy owner-less record → ''). */
 export async function readLeaseOwner(
   bus: Bus,
   tenant: string,
   sid: string,
 ): Promise<string | null> {
-  const raw = await bus
-    .kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
-    .catch(() => null)
-  if (raw === null || raw === undefined) return null
-  const lease = parseLease(raw)
+  const lease = await readLease(bus, tenant, sid)
   return lease === null ? null : lease.owner
 }
 
 /**
- * Read one session's status. `busy` when the lease exists AND its owner's
+ * The session's ACTIVE run, or null when idle. Owner-aware: a lock whose
+ * owner's heartbeat is dead is NOT a live run (so replay never anchors on a
+ * crash remnant). Returns the run id + start time for the replay window.
+ */
+export async function readActiveRun(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+): Promise<{ runId: string; startedAtMs: number } | null> {
+  const lease = await readLease(bus, tenant, sid)
+  if (lease === null || lease.owner === '' || lease.runId === undefined) {
+    return null
+  }
+  const alive = await ownerAlive(bus, lease.owner).catch(() => false)
+  if (!alive) return null
+  return {
+    runId: lease.runId,
+    startedAtMs: lease.startedAtMs ?? Date.now(),
+  }
+}
+
+/**
+ * Read one session's status. `busy` when the lock exists AND its owner's
  * heartbeat is alive; `idle` when absent or the owner is gone; `unknown` on a
  * read error (never a false idle).
  */
@@ -189,16 +258,16 @@ export async function readSessionStatus(
   tenant: string,
   sid: string,
 ): Promise<SessionStatus> {
-  let raw: string | null
+  let lease: LeaseValue | null
   try {
-    raw = await bus.kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
+    const raw = await bus.kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
+    if (raw === null || raw === undefined) return 'idle'
+    lease = parseLease(raw)
   } catch {
     return 'unknown'
   }
-  if (raw === null || raw === undefined) return 'idle'
-  const lease = parseLease(raw)
   if (lease === null) return 'idle'
-  // Legacy lease with no owner: treat presence as busy (TTL still bounds it).
+  // Legacy owner-less record: presence = busy (TTL still bounds it).
   if (lease.owner === '') return 'busy'
   try {
     return (await ownerAlive(bus, lease.owner)) ? 'busy' : 'idle'
@@ -215,7 +284,7 @@ export async function readSessionStatuses(
 ): Promise<Map<string, SessionStatus>> {
   const out = new Map<string, SessionStatus>()
   if (sids.length === 0) return out
-  // 1) Read every lease in parallel.
+  // 1) Read every lock in parallel.
   const leases = await Promise.all(
     sids.map(async sid => {
       try {
@@ -240,7 +309,7 @@ export async function readSessionStatuses(
       alive.set(owner, await ownerAlive(bus, owner).catch(() => true))
     }),
   )
-  // 3) Map each lease to a status.
+  // 3) Map each lock to a status.
   for (const { sid, raw } of leases) {
     if (raw === undefined) {
       out.set(sid, 'unknown')
@@ -256,7 +325,6 @@ export async function readSessionStatuses(
       continue
     }
     if (lease.owner === '') {
-      // Legacy lease with no owner stamp: presence = busy (TTL still bounds it).
       out.set(sid, 'busy')
       continue
     }
@@ -292,13 +360,10 @@ export function startHeartbeat(bus: Bus): () => void {
 }
 
 /**
- * Boot reconciliation: delete every lease this instance owns (a fresh process
- * has no live turns) and this instance's stale heartbeat. Uses a KV watch over
- * the lease bucket to find them, then deletes those whose owner == INSTANCE_ID.
- * Bounded by a short deadline so a NATS stall never blocks boot.
- *
- * A watcher is used because the Bus has no key-listing API; the initial
- * snapshot replays existing keys, then we stop.
+ * Boot reconciliation: delete every lock this instance owns (a fresh process
+ * has no live turns). Uses a KV watch over the lock bucket to find them, then
+ * deletes those whose owner == INSTANCE_ID. Bounded by a short deadline so a
+ * NATS stall never blocks boot.
  */
 export async function reconcileOwnLeases(
   bus: Bus,
@@ -318,19 +383,17 @@ export async function reconcileOwnLeases(
               await bus.kvDelete(LEASE_BUCKET, ev.key).catch(() => {})
               logger.warn(
                 { tenant, key: ev.key },
-                'reconciled stale lease owned by this instance',
+                'reconciled stale lock owned by this instance',
               )
             }
           }
         })()
-        // The watch snapshot replays synchronously-ish; give it a bounded
-        // window, then stop. We do NOT await the (never-ending) stream.
         await Promise.race([done, sleep(timeoutMs)])
         await stop().catch(() => {})
       } catch (err) {
         logger.warn(
           { tenant, err: String(err) },
-          'lease reconciliation failed (non-fatal)',
+          'lock reconciliation failed (non-fatal)',
         )
       }
     }),

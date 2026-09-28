@@ -1,11 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Bus } from './bus.js'
-import {
-  BUCKET_SESSION_RUN,
-  natsToken,
-  sseSubject,
-  tenantKVKey,
-} from './bus.js'
+import { sseSubject } from './bus.js'
 import { logger } from './logger.js'
 
 export interface AgentEventDeps {
@@ -43,62 +38,13 @@ async function publishBestEffort(
 }
 
 /**
- * Record the session's ACTIVE turn (run-id + wall-clock start). Replay uses
- * the start time to window exactly one turn (independent of how many events
- * other sessions produced); it is cleared when the turn ends.
+ * The session's ACTIVE run is now carried by the run LOCK record
+ * (`session-lock.ts`, `abc-session-state`), not a separate bucket: the lock
+ * already keys the session by `t.<tenant>.<token>` and holds the owner, so
+ * folding `runId`/`startedAtMs` into it removes the former `abc-session-run`
+ * key (and its crash-remnant/TTL problem). `readActiveRun`/`markActiveRun`
+ * live in `session-lock.ts` and are re-exported through `session-state.ts`.
  */
-export interface ActiveRun {
-  runId: string
-  startedAtMs: number
-}
-
-/** Lease/active-run KV key: `t.<tenant>.<sessionToken>`. */
-function runKey(tenant: string, sid: string): string {
-  return tenantKVKey(tenant, natsToken(sid))
-}
-
-export function markActiveRun(
-  bus: Bus,
-  tenant: string,
-  sid: string,
-  runId: string,
-  startedAtMs: number,
-): void {
-  const value = JSON.stringify({ runId, startedAtMs } satisfies ActiveRun)
-  void bus
-    .kvPut(BUCKET_SESSION_RUN, runKey(tenant, sid), value, 0)
-    .catch(err => {
-      logger.warn({ tenant, sid, err: String(err) }, 'markActiveRun failed')
-    })
-}
-
-/** Clear the session's active-turn marker (turn ended / aborted). */
-export function clearActiveRun(bus: Bus, tenant: string, sid: string): void {
-  void bus.kvDelete(BUCKET_SESSION_RUN, runKey(tenant, sid)).catch(err => {
-    logger.warn({ tenant, sid, err: String(err) }, 'clearActiveRun failed')
-  })
-}
-
-/** Read the session's active turn, or null when idle. */
-export async function readActiveRun(
-  bus: Bus,
-  tenant: string,
-  sid: string,
-): Promise<ActiveRun | null> {
-  try {
-    const raw = await bus.kvGet(BUCKET_SESSION_RUN, runKey(tenant, sid))
-    if (raw === null || raw === '') return null
-    const v = JSON.parse(raw) as Partial<ActiveRun>
-    if (typeof v.runId !== 'string' || v.runId === '') return null
-    return {
-      runId: v.runId,
-      startedAtMs:
-        typeof v.startedAtMs === 'number' ? v.startedAtMs : Date.now(),
-    }
-  } catch {
-    return null
-  }
-}
 
 /**
  * Publish one SSE event for a session onto the durable stream.
