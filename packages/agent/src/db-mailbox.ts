@@ -175,6 +175,26 @@ export const Mailbox = {
     )
   },
 
+  /** True when the tenant+session has at least one PENDING mailbox row.
+   *  Non-consuming (unlike drainOne), used by the turn loop to decide whether
+   *  to KEEP holding the run lease for a chained continuation instead of
+   *  releasing + re-claiming (which flapped the busy/idle status). */
+  hasPending(
+    db: Db,
+    tenant: string,
+    sessionName: string,
+  ): ResultAsync<boolean, string> {
+    const isPg = dbBackend(db) === 'pg'
+    const sql = isPg
+      ? `SELECT 1 AS one FROM mailbox WHERE tenant = $1 AND session_name = $2 AND status = 'pending' LIMIT 1`
+      : `SELECT 1 AS one FROM mailbox WHERE tenant = ? AND session_name = ? AND status = 'pending' LIMIT 1`
+    return q(
+      () =>
+        rawAll(db, sql, [tenant, sessionName]).then(rows => rows.length > 0),
+      'has pending mailbox',
+    )
+  },
+
   /**
    * Atomically pop the next pending item (ordered) for one tenant+session.
    * The UPDATE-with-subquery keeps concurrent replicas from consuming the

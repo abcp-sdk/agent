@@ -32,17 +32,14 @@ export * from './model-ref-backfill.js'
 export * from './models-dev.js'
 export * from './object-store-s3.js'
 export * from './session-agent.js'
+export * from './session-lock.js'
 export {
   calibrateMessageFacts,
-  ensureLeaseBucket,
   factFromPersist,
   isSyntheticSource,
-  LEASE_BUCKET,
   projectMessageFact,
   readMessageFacts,
-  readSessionStatuses,
   type SessionMessageFact,
-  type SessionStatus,
   writeMessageFact,
 } from './session-state.js'
 export {

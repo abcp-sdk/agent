@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { Bus } from '../src/bus.js'
-import { natsToken } from '../src/bus.js'
+import { natsToken, SESSION_LEASE_MS } from '../src/bus.js'
 import {
-  ensureLeaseBucket,
+  ensureLockBuckets,
   factFromPersist,
+  HEARTBEAT_TTL_MS,
   isSyntheticSource,
   LEASE_BUCKET,
+  OWNER_BUCKET,
   projectMessageFact,
   readMessageFacts,
   readSessionStatuses,
 } from '../src/session-state.js'
-import { SESSION_LEASE_MS } from '../src/bus.js'
 
 const T = 't1'
 
@@ -99,24 +100,43 @@ describe('projectMessageFact', () => {
 })
 
 describe('readSessionStatuses', () => {
-  it('maps the presence of a run lease to busy, absence to idle', async () => {
+  it('busy only when the lease exists AND its owner heartbeat is alive', async () => {
     const { bus, kv } = fakeBus()
-    // Seed a lease key for 'busy-sess' using the same token hash the lease uses.
-    kv.set(`t.${T}.${natsToken('busy-sess')}`, 'running')
+    // Live owner + a lease it holds → busy.
+    kv.set('owner-live', '{"at":1}')
+    kv.set(
+      `t.${T}.${natsToken('busy-sess')}`,
+      JSON.stringify({ owner: 'owner-live' }),
+    )
+    // Lease whose owner has NO heartbeat (crashed) → idle, not busy.
+    kv.set(
+      `t.${T}.${natsToken('dead-owner-sess')}`,
+      JSON.stringify({ owner: 'owner-gone' }),
+    )
+    // No lease at all → idle.
     const statuses = await readSessionStatuses(bus, T, [
       'busy-sess',
+      'dead-owner-sess',
       'idle-sess',
     ])
     expect(statuses.get('busy-sess')).toBe('busy')
+    expect(statuses.get('dead-owner-sess')).toBe('idle')
     expect(statuses.get('idle-sess')).toBe('idle')
   })
 
-  it('is best-effort: a KV error reads as idle, never throws', async () => {
+  it('a legacy owner-less lease (value "running") reads busy', async () => {
+    const { bus, kv } = fakeBus()
+    kv.set(`t.${T}.${natsToken('legacy-sess')}`, 'running')
+    const statuses = await readSessionStatuses(bus, T, ['legacy-sess'])
+    expect(statuses.get('legacy-sess')).toBe('busy')
+  })
+
+  it('a KV read error reads UNKNOWN, never a false idle', async () => {
     const bus = {
       kvGet: () => Promise.reject(new Error('nats down')),
     } as unknown as Bus
     const statuses = await readSessionStatuses(bus, T, ['s'])
-    expect(statuses.get('s')).toBe('idle')
+    expect(statuses.get('s')).toBe('unknown')
   })
 })
 
@@ -174,8 +194,8 @@ describe('synthetic-source preview suppression', () => {
   })
 })
 
-describe('ensureLeaseBucket', () => {
-  it('creates the lease bucket with the run-lease TTL', async () => {
+describe('ensureLockBuckets', () => {
+  it('creates the lease + owner buckets with their TTLs', async () => {
     const calls: Array<{ bucket: string; ttl: number }> = []
     const bus = {
       kvCreate: (bucket: string, _k: string, _v: string, ttl: number) => {
@@ -183,14 +203,21 @@ describe('ensureLeaseBucket', () => {
         return Promise.resolve(1)
       },
     } as unknown as Bus
-    await ensureLeaseBucket(bus)
-    expect(calls).toEqual([{ bucket: LEASE_BUCKET, ttl: SESSION_LEASE_MS }])
+    await ensureLockBuckets(bus)
+    expect(calls).toContainEqual({
+      bucket: LEASE_BUCKET,
+      ttl: SESSION_LEASE_MS,
+    })
+    expect(calls).toContainEqual({
+      bucket: OWNER_BUCKET,
+      ttl: HEARTBEAT_TTL_MS,
+    })
   })
 
   it('is best-effort: a kvCreate error never throws', async () => {
     const bus = {
       kvCreate: () => Promise.reject(new Error('nats down')),
     } as unknown as Bus
-    await expect(ensureLeaseBucket(bus)).resolves.toBeUndefined()
+    await expect(ensureLockBuckets(bus)).resolves.toBeUndefined()
   })
 })

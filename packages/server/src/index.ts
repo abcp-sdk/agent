@@ -12,7 +12,7 @@ import {
   connectBus,
   connectDb,
   type Db,
-  ensureLeaseBucket,
+  ensureLockBuckets,
   IdleWatchdog,
   knownTenants,
   LlmRegistry,
@@ -26,11 +26,13 @@ import {
   Providers,
   rawAll,
   rawRun,
+  reconcileOwnLeases,
   refreshModelsDev,
   runSessionTurn,
   S3ObjectStore,
   type ServerConfig,
   serveFileRpc,
+  startHeartbeat,
   storeFile,
   Tenants,
   tenantKVKey,
@@ -120,12 +122,24 @@ async function main(): Promise<void> {
   }
   const bus: Bus = busRes.value
 
-  // Pin the run-lease bucket's TTL BEFORE anything can create it with the
-  // wrong one. `WatchSessions` (and any `bus.kvWatch`) creates a missing
-  // bucket persistent (ttl=0); if that wins the race, lease keys never expire
-  // and a mid-turn crash leaves a stale `running` lease that reports the
-  // session busy forever. Awaited so it precedes the watchers below.
-  await ensureLeaseBucket(bus)
+  // Pin the run-lease + owner-heartbeat buckets' TTLs BEFORE anything can
+  // create them with the wrong one. `WatchSessions` (and any `bus.kvWatch`)
+  // creates a missing bucket persistent (ttl=0); if that wins the race, lease
+  // keys never expire and a mid-turn crash leaves a stale `running` lease that
+  // reports the session busy forever. Awaited so it precedes the watchers.
+  await ensureLockBuckets(bus)
+
+  // Boot reconciliation: a fresh process owns no live turns, so any lease
+  // stamped with THIS instance id (or a leftover heartbeat) is a crash
+  // remnant. Clear them BEFORE serving so a crashed-mid-turn session reads
+  // idle immediately instead of after the lease TTL. Awaited for the same
+  // reason (must precede the watchers/snapshot).
+  await reconcileOwnLeases(bus, tenants)
+
+  // Instance heartbeat: the run lock treats a session as busy only while its
+  // owner's heartbeat is alive, so a crashed replica's sessions read idle
+  // without waiting for the lease TTL.
+  const stopHeartbeat = startHeartbeat(bus)
 
   // File metadata backend follows the blob backend: `nats` keeps it in the
   // abc-files-meta KV; `s3` puts it in the `agent_files` DB table so file
@@ -577,6 +591,7 @@ async function main(): Promise<void> {
     logger.info('shutting down')
     stopWake()
     idlewatch.stop()
+    stopHeartbeat()
     void stopBundled()
     void closeServer().then(() => {
       bus.close()

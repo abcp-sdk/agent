@@ -1,11 +1,6 @@
 import { fireAndForget } from './async.js'
 import type { Bus } from './bus.js'
-import {
-  BUCKET_SESSION_STATE,
-  natsToken,
-  SESSION_LEASE_MS,
-  tenantKVKey,
-} from './bus.js'
+import { BUCKET_SESSION_STATE, natsToken, tenantKVKey } from './bus.js'
 import type { Db } from './db-client.js'
 import { dbBackend, rawAll } from './db-client.js'
 import { logger } from './logger.js'
@@ -266,59 +261,24 @@ export async function readMessageFacts(
   return out
 }
 
-/**
- * Runtime status of a session, derived from its cross-replica run LEASE
- * (`abc-session-state` bucket, same key hash as the lease helper). "busy"
- * while a turn holds the lease, "idle" otherwise. This is the SAME signal the
- * `State` RPC returns; it is surfaced on list rows so a list view needs no
- * per-row State poll. A session mid-retry (429/5xx backoff) is "busy".
- */
-export type SessionStatus = 'busy' | 'idle'
-
-/** The lease KV bucket (mirrors the SDK's LEASE_BUCKET). */
-export const LEASE_BUCKET = 'abc-session-state'
-
-/**
- * Ensure the RUN-LEASE bucket exists with the correct per-key TTL.
- *
- * A NATS KV bucket's TTL is fixed at CREATION: whoever creates it first
- * dictates it. `bus.kvWatch()` creates a missing bucket with `ttl=0`
- * (persistent), so a `WatchSessions` subscriber that touches the lease bucket
- * before the first turn poisons it — lease keys then NEVER expire, and a crash
- * mid-turn leaves a stale `running` lease that reports the session `busy`
- * forever (the UI sticks on "running"; Interrupt cannot clear it because it
- * only aborts the in-memory run, it does not delete the key).
- *
- * Creating the bucket here, at boot and BEFORE the server starts listening
- * (hence before any watcher), pins the correct TTL. `claimSession` also
- * creates it with the same TTL, so this only closes the watcher-first race.
- * Failure is non-fatal (a transient NATS error retries on the next boot).
- */
-export async function ensureLeaseBucket(bus: Bus): Promise<void> {
-  try {
-    await bus.kvCreate(LEASE_BUCKET, 'bucket-init', '1', SESSION_LEASE_MS)
-  } catch {
-    // Already exists (or transient error) — claimSession/openKv handle the rest.
-  }
-}
-
-/** Batch-read the runtime status for many sessions (one KV read each, parallel). */
-export async function readSessionStatuses(
-  bus: Bus,
-  tenant: string,
-  sids: readonly string[],
-): Promise<Map<string, SessionStatus>> {
-  const out = new Map<string, SessionStatus>()
-  await Promise.all(
-    sids.map(async sid => {
-      const raw = await bus
-        .kvGet(LEASE_BUCKET, tenantKVKey(tenant, natsToken(sid)))
-        .catch(() => null)
-      out.set(sid, raw !== null && raw !== undefined ? 'busy' : 'idle')
-    }),
-  )
-  return out
-}
+// Session runtime status + the run lease now live in `session-lock.ts` (the
+// single authority). Re-exported here so existing importers keep working.
+export {
+  claimLease,
+  ensureLockBuckets,
+  HEARTBEAT_TTL_MS,
+  INSTANCE_ID,
+  LEASE_BUCKET,
+  type LeaseValue,
+  OWNER_BUCKET,
+  readSessionStatus,
+  readSessionStatuses,
+  reconcileOwnLeases,
+  releaseLease,
+  renewLease,
+  type SessionStatus,
+  startHeartbeat,
+} from './session-lock.js'
 
 /**
  * One-time startup calibration: refresh the KV projection from PG so facts

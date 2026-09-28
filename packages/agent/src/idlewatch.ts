@@ -111,8 +111,12 @@ export class IdleWatchdog {
           sessions.map(s => s.name),
         )
         for (const s of sessions) {
+          // `unknown` (a transient KV read error) is treated as "not idle" so
+          // we never nudge a session whose status we could not confirm.
+          const st = statuses.get(s.name) ?? 'unknown'
+          if (st !== 'idle') continue
           try {
-            await this.maybeNudge(tenant, s, statuses.get(s.name) ?? 'idle')
+            await this.maybeNudge(tenant, s, 'idle')
           } catch (err) {
             logger.warn(
               { tenant, sid: s.name, err: String(err) },

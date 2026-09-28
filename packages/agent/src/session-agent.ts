@@ -1,10 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import {
-  Agent as AbcAgent,
-  claimSession,
-  releaseSession,
-  renewSession,
-} from '@abc-protocol/sdk'
+import { Agent as AbcAgent } from '@abc-protocol/sdk'
 import {
   InvalidToolInputError,
   jsonSchema,
@@ -50,6 +45,7 @@ import {
 } from './llm-retry.js'
 import { logger } from './logger.js'
 import { compactSession } from './session-compact.js'
+import { claimLease, releaseLease, renewLease } from './session-lock.js'
 import { type SanitizeDeps, sanitizeStreamPart } from './stream-parts.js'
 import {
   appendStep,
@@ -258,6 +254,12 @@ export async function handleMailboxMessage(
  * final drain still finds work, closing the race where a message arrives just
  * as the lease is released. The durable wake signal remains as a cold-start
  * backstop; exactly one replica wins any given claim.
+ *
+ * The lease is held CONTINUOUSLY across a whole busy period (all chained runs)
+ * and released exactly ONCE, at the end. The old code released + re-claimed
+ * between chained runs, which flapped the lease key delete→create and made
+ * WatchSessions emit spurious idle→busy transitions; a single claim/release
+ * keeps the busy/idle signal stable.
  */
 export async function runSessionTurn(
   deps: AgentDeps,
@@ -265,10 +267,9 @@ export async function runSessionTurn(
   sid: string,
 ): Promise<void> {
   for (;;) {
-    const _agent = deps.agent ?? new AbcAgent(deps.bus)
     let revision: number | null
     try {
-      revision = await claimSession(deps.bus, tenant, sid)
+      revision = await claimLease(deps.bus, tenant, sid)
     } catch (e) {
       logger.warn({ tenant, sid, err: String(e) }, 'claim error')
       return
@@ -299,8 +300,8 @@ export async function runSessionTurn(
     let leaseLost = false
     const renewTimer = setInterval(() => {
       void renewOrReclaim(
-        () => renewSession(deps.bus, tenant, sid, revision as number),
-        () => claimSession(deps.bus, tenant, sid),
+        () => renewLease(deps.bus, tenant, sid, revision as number),
+        () => claimLease(deps.bus, tenant, sid),
       ).then(
         ({ revision: next, lost, reclaimed }) => {
           if (!lost && next !== null) {
@@ -331,7 +332,8 @@ export async function runSessionTurn(
     // Drain every pending item while holding the lease. Each prompt runs as
     // its own run (busy → … → turn-complete); there is NO idle between them —
     // a mailbox continuation is the SAME busy period, exactly as the user
-    // expects ("跑完之后 consume mailbox 应延续 busy，不发 idle").
+    // expects ("跑完之后 consume mailbox 应延续 busy，不发 idle"). The lease is
+    // held across the whole loop, so the busy signal never flaps.
     try {
       for (;;) {
         if (leaseLost) break
@@ -340,9 +342,29 @@ export async function runSessionTurn(
           // Re-drain after a short grace to close the enqueue/drain race.
           await sleep(DRAIN_GRACE_MS)
           const again = await drainOne(deps, tenant, sid)
-          if (again === null) break
-          await handleItem(deps, tenant, sid, again)
-          continue
+          if (again !== null) {
+            await handleItem(deps, tenant, sid, again)
+            continue
+          }
+          // Non-consuming last look: a message may have landed in the window
+          // since the drain. If so, keep holding the lease and process it — no
+          // spurious idle→busy flap. Only a genuinely empty queue ends the
+          // busy period.
+          const stillPending = await Mailbox.hasPending(
+            deps.db,
+            tenant,
+            sid,
+          ).unwrapOr(false)
+          if (stillPending) continue
+          // No work remains and we still hold the lease: emit the terminal
+          // idle BEFORE releasing. Holding the lease while emitting makes
+          // "busy for the next run" and "idle for this one" mutually
+          // exclusive; awaiting the publish removes the reorder window (the
+          // client never sees an idle land after a newer run's busy).
+          await pushEventNow(deps.bus, tenant, sid, 'status', {
+            type: 'idle',
+          })
+          break
         }
         await handleItem(deps, tenant, sid, item)
       }
@@ -351,7 +373,7 @@ export async function runSessionTurn(
       // Only release a lease we still hold. After a lost lease another replica
       // owns the key; deleting it would clobber THEIR lease and let a third
       // writer in.
-      if (!leaseLost) await releaseSession(deps.bus, tenant, sid)
+      if (!leaseLost) await releaseLease(deps.bus, tenant, sid)
     }
 
     // Lease lost mid-drain: another replica owns the session now. It will
@@ -359,38 +381,30 @@ export async function runSessionTurn(
     // their lease or emit a stale idle.
     if (leaseLost) return
 
-    // The drain is empty. Release, then RE-CLAIM: the release opens a window
-    // where a mailbox wake for a late prompt could not claim (we held the
-    // lease) and returned, so its row may still be pending. Owning the lease
-    // again lets us decide the lifecycle atomically.
+    // The idle was emitted and the lease released. RE-CLAIM once to close the
+    // window where a mailbox wake arrived while we held the lease (its row is
+    // still pending, but the waking invocation could not claim and returned).
     let reRevision: number | null
     try {
-      reRevision = await claimSession(deps.bus, tenant, sid)
+      reRevision = await claimLease(deps.bus, tenant, sid)
     } catch (e) {
       logger.warn({ tenant, sid, err: String(e) }, 're-claim error')
       return
     }
     if (reRevision === null) {
       // Another invocation owns the session now; IT will process any prompt and
-      // emit the terminal idle when it finishes. We must not emit idle here.
+      // emit its own terminal idle. We must not emit idle again here.
       return
     }
     const pending = await drainOne(deps, tenant, sid)
-    if (pending !== null) {
-      // A late prompt arrived: run it under THIS lease. No idle is emitted
-      // between the runs, so the continuation stays one busy period.
-      await handleItem(deps, tenant, sid, pending)
-      await releaseSession(deps.bus, tenant, sid)
-      continue
+    if (pending === null) {
+      // Truly idle: release and finish.
+      await releaseLease(deps.bus, tenant, sid)
+      return
     }
-    // No work remains and we own the lease: emit the terminal idle WHILE STILL
-    // HOLDING it, and AWAIT the publish. Holding the lease makes "busy for the
-    // next run" and "idle for this one" mutually exclusive; awaiting removes
-    // the reorder window. The client therefore never sees an idle land after a
-    // newer run's busy (which used to tear down the live continuation).
-    await pushEventNow(deps.bus, tenant, sid, 'status', { type: 'idle' })
-    await releaseSession(deps.bus, tenant, sid)
-    return
+    // A late prompt arrived after our idle: release and loop, so it runs as a
+    // FRESH busy period (a genuine idle→busy transition, not a flap).
+    await releaseLease(deps.bus, tenant, sid)
   }
 }
 

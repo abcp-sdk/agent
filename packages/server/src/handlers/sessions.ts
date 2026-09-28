@@ -1,4 +1,4 @@
-import { Agent as AbcAgent, isSessionRunning } from '@abc-protocol/sdk'
+import { Agent as AbcAgent } from '@abc-protocol/sdk'
 import {
   type AgentDeps,
   clearActiveRun,
@@ -14,6 +14,7 @@ import {
   publishSessionChanged,
   pushChainChanged,
   readMessageFacts,
+  readSessionStatus,
   readSessionStatuses,
   Sessions,
 } from '@abcp-agent/agent'
@@ -278,8 +279,10 @@ export function sessionsHandlers(
     async state(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
       const id = req.id
-      const running = await isSessionRunning(deps.bus, tenant, id)
-      return { state: { status: running ? 'busy' : 'idle' } }
+      // Owner-aware: a lease whose owner's heartbeat is gone reads idle, so a
+      // crashed replica's session is not reported busy until the lease TTL.
+      const status = await readSessionStatus(deps.bus, tenant, id)
+      return { state: { status } }
     },
 
     async mailbox(req, ctx: HandlerContext) {

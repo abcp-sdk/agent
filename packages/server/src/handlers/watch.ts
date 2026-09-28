@@ -5,8 +5,11 @@ import {
   LEASE_BUCKET,
   Messages,
   natsToken,
+  OWNER_BUCKET,
   readActiveRun,
+  readLeaseOwner,
   readMessageFacts,
+  readSessionStatus,
   readSessionStatuses,
   Sessions,
 } from '@abcp-agent/agent'
@@ -121,7 +124,7 @@ export function watchHandlers(
       // the initial snapshot and updated by the lease watcher; only a CHANGE is
       // re-emitted (the lease is renewed every ~10s, so emitting on every KV
       // event would flood the stream).
-      const statusOf = new Map<string, 'busy' | 'idle'>()
+      const statusOf = new Map<string, 'busy' | 'idle' | 'unknown'>()
       // Reverse map for the lease key hash: `natsToken(name)` -> name, so a
       // lease event (keyed by the hash) can be resolved to a session. Built
       // from the snapshot list; a miss falls back to a DB scan (rare: only a
@@ -237,11 +240,25 @@ export function watchHandlers(
         }
       })()
 
-      // 4) runtime status (run lease). The lease bucket holds one key per
-      //    ACTIVE session, keyed `t.<tenant>.<token>`; its create/renew/delete
-      //    is the busy/idle signal. We emit a row ONLY on a status TRANSITION
-      //    (the lease renews every ~10s — emitting per event would flood).
+      // 4) runtime status (run lock). A session is `busy` while its lease in
+      //    `abc-session-state` exists AND the lease owner's heartbeat (in
+      //    `abc-session-owner`) is alive. We emit a row ONLY on a status
+      //    TRANSITION (the lease renews every ~10s — emitting per event would
+      //    flood). Two sources: lease events (create/delete) and owner-heartbeat
+      //    expiry (a crashed replica's sessions flip to idle without waiting for
+      //    the lease TTL).
       const leasePrefix = `t.${tenant}.`
+      // session -> owner, so an owner-heartbeat loss can find its sessions.
+      const ownerToSessions = new Map<string, Set<string>>()
+      const rememberOwner = async (name: string) => {
+        const owner = await readLeaseOwner(deps.bus, tenant, name)
+        for (const set of ownerToSessions.values()) set.delete(name)
+        if (owner !== null && owner !== '') {
+          const set = ownerToSessions.get(owner) ?? new Set<string>()
+          set.add(name)
+          ownerToSessions.set(owner, set)
+        }
+      }
       const leaseWatch = await deps.bus
         .kvWatch(LEASE_BUCKET, `${leasePrefix}>`)
         .catch(() => null)
@@ -253,9 +270,32 @@ export function watchHandlers(
             : ev.key
           const name = await nameOfToken(token)
           if (name === null) continue
-          const next: 'busy' | 'idle' = ev.deleted ? 'idle' : 'busy'
-          if (statusOf.get(name) === next) continue // no transition
+          // Recompute from lease + heartbeat (never trust ev.deleted alone:
+          // a lease whose owner died reads idle). Track the owner for the
+          // owner-bucket watcher.
+          const status = await readSessionStatus(deps.bus, tenant, name)
+          if (status === 'unknown') continue
+          if (statusOf.get(name) === status) continue // no transition
           await pushUpsert(name)
+          await rememberOwner(name)
+        }
+      })()
+      // Owner-heartbeat watcher: when an owner's heartbeat key is deleted (its
+      // TTL lapsed → the replica is gone), every session it owned flips idle.
+      const ownerWatch = await deps.bus
+        .kvWatch(OWNER_BUCKET, '>')
+        .catch(() => null)
+      const ownerTask = (async () => {
+        if (ownerWatch === null) return
+        for await (const ev of ownerWatch.stream) {
+          if (!ev.deleted) continue
+          const sessions = ownerToSessions.get(ev.key)
+          if (sessions === undefined) continue
+          for (const name of sessions) {
+            const status = await readSessionStatus(deps.bus, tenant, name)
+            if (status === 'unknown' || statusOf.get(name) === status) continue
+            await pushUpsert(name)
+          }
         }
       })()
 
@@ -271,7 +311,9 @@ export function watchHandlers(
         ])
         for (const s of all.value) {
           tokenToName.set(natsToken(s.name), s.name)
-          statusOf.set(s.name, statuses.get(s.name) ?? 'idle')
+          const st = statuses.get(s.name) ?? 'idle'
+          statusOf.set(s.name, st)
+          if (st === 'busy') await rememberOwner(s.name)
         }
         yield create(WatchSessionsResponseSchema, {
           snapshot: true,
@@ -295,9 +337,11 @@ export function watchHandlers(
         await lcSub?.close().catch(() => {})
         await chSub?.close().catch(() => {})
         await leaseWatch?.stop().catch(() => {})
+        await ownerWatch?.stop().catch(() => {})
         void lcTask.catch(() => {})
         void chTask.catch(() => {})
         void leaseTask.catch(() => {})
+        void ownerTask.catch(() => {})
       }
     },
   }

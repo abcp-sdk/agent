@@ -55,9 +55,11 @@ export function sessionToMsg(
     last_message_preview: string
     message_seq: number
   },
-  /** Runtime status from the run lease; omitted means "idle" (a single-session
-   *  reply, e.g. rename, where the caller did not read the lease). */
-  status: 'busy' | 'idle' = 'idle',
+  /** Runtime status from the run lock; omitted means "idle" (a single-session
+   *  reply, e.g. rename, where the caller did not read the lock). `unknown`
+   *  means the status could not be read (a transient KV error) — the client
+   *  renders no badge for it rather than a misleading idle. */
+  status: 'busy' | 'idle' | 'unknown' = 'idle',
 ) {
   return {
     name: s.name,
