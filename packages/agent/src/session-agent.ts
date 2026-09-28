@@ -84,6 +84,42 @@ export interface AgentDeps {
 const DRAIN_GRACE_MS = 200
 
 /**
+ * Renew a held lease, falling back to a RE-CLAIM when the renew CAS fails.
+ *
+ * The lease key carries a TTL fixed at bucket creation; a long turn that
+ * stalls the event loop past that TTL loses the key, so the next renew returns
+ * null. Reusing the stale revision forever would then fail every later renew
+ * (the old bug: the session reported `idle` while still running). Instead:
+ *   - renew succeeds        → return the new revision (not lost)
+ *   - renew fails, re-claim succeeds → the key had merely expired with no
+ *     other holder; adopt the fresh revision (not lost)
+ *   - renew fails, re-claim fails → another replica owns the session (lost)
+ *
+ * Exported for unit testing (the timer wiring itself is hard to exercise).
+ */
+export async function renewOrReclaim(
+  renew: () => Promise<number | null>,
+  reclaim: () => Promise<number | null>,
+): Promise<{ revision: number | null; lost: boolean; reclaimed: boolean }> {
+  let next: number | null
+  try {
+    next = await renew()
+  } catch {
+    next = null
+  }
+  if (next !== null) return { revision: next, lost: false, reclaimed: false }
+  let reclaimed: number | null
+  try {
+    reclaimed = await reclaim()
+  } catch {
+    reclaimed = null
+  }
+  if (reclaimed !== null)
+    return { revision: reclaimed, lost: false, reclaimed: true }
+  return { revision: null, lost: true, reclaimed: false }
+}
+
+/**
  * Injected as the final assistant turn when the step budget is exhausted, so
  * the model produces a TEXT wrap-up instead of the loop silently ending
  * mid-task (the previous behaviour: `while (step < maxTurns)` just fell out
@@ -242,28 +278,55 @@ export async function runSessionTurn(
       return
     }
 
-    // Renew the lease on a timer (TTL/3) so a long-running turn — the drain
-    // loop awaits handleItem for minutes at a time — cannot be re-claimed by
-    // a competing replica after the 30s TTL lapses. Each successful renew
-    // returns the NEW revision, which must be fed into the next renew; using
-    // the original revision forever would fail every update after the first.
+    // Renew the lease on a timer so a long-running turn — the drain loop
+    // awaits handleItem for minutes at a time — cannot be re-claimed by a
+    // competing replica after the TTL lapses. Each successful renew returns
+    // the NEW revision, which must be fed into the next renew; using the
+    // original revision forever would fail every update after the first.
+    //
+    // The interval is TTL/4 (not TTL/3): the KV bucket's max_age is fixed at
+    // creation (30s) and is NOT changed by SESSION_LEASE_MS, so renewing at
+    // TTL/3 left only a single-renew margin — one event-loop stall and the
+    // key expired. TTL/4 gives two renew attempts before expiry.
+    //
+    // A single failed renew must NOT poison the lease forever (the old code
+    // kept reusing the stale revision, so every later renew failed and the
+    // session reported `idle` while still running). On failure we RE-CLAIM:
+    //   - re-claim succeeds → the lease had merely expired (e.g. an event-loop
+    //     stall exceeded the TTL); adopt the fresh revision and keep running.
+    //   - re-claim fails → another replica genuinely owns the session; abort
+    //     the in-flight turn so we stop writing the chain without a lease.
+    let leaseLost = false
     const renewTimer = setInterval(() => {
-      void renewSession(deps.bus, tenant, sid, revision as number).then(
-        next => {
-          if (next === null) {
-            logger.warn(
-              { tenant, sid },
-              'lease lost: another replica may be running it',
-            )
+      void renewOrReclaim(
+        () => renewSession(deps.bus, tenant, sid, revision as number),
+        () => claimSession(deps.bus, tenant, sid),
+      ).then(
+        ({ revision: next, lost, reclaimed }) => {
+          if (!lost && next !== null) {
+            if (reclaimed) {
+              logger.warn(
+                { tenant, sid },
+                'lease renewed via re-claim (expired, no other holder)',
+              )
+            }
+            revision = next
             return
           }
-          revision = next
+          logger.warn(
+            { tenant, sid },
+            'lease lost: another replica owns it — aborting turn',
+          )
+          leaseLost = true
+          // Abort the in-flight turn so it stops emitting/writing without a
+          // lease. The loop observes the abort signal at the next boundary.
+          getAbortController(tenant, sid).abort()
         },
         err => {
           logger.warn({ tenant, sid, err: String(err) }, 'renew session failed')
         },
       )
-    }, SESSION_LEASE_MS / 3)
+    }, SESSION_LEASE_MS / 4)
 
     // Drain every pending item while holding the lease. Each prompt runs as
     // its own run (busy → … → turn-complete); there is NO idle between them —
@@ -271,6 +334,7 @@ export async function runSessionTurn(
     // expects ("跑完之后 consume mailbox 应延续 busy，不发 idle").
     try {
       for (;;) {
+        if (leaseLost) break
         const item = await drainOne(deps, tenant, sid)
         if (item === null) {
           // Re-drain after a short grace to close the enqueue/drain race.
@@ -284,8 +348,16 @@ export async function runSessionTurn(
       }
     } finally {
       clearInterval(renewTimer)
-      await releaseSession(deps.bus, tenant, sid)
+      // Only release a lease we still hold. After a lost lease another replica
+      // owns the key; deleting it would clobber THEIR lease and let a third
+      // writer in.
+      if (!leaseLost) await releaseSession(deps.bus, tenant, sid)
     }
+
+    // Lease lost mid-drain: another replica owns the session now. It will
+    // process remaining work and emit the terminal idle; we must not release
+    // their lease or emit a stale idle.
+    if (leaseLost) return
 
     // The drain is empty. Release, then RE-CLAIM: the release opens a window
     // where a mailbox wake for a late prompt could not claim (we held the

@@ -116,6 +116,17 @@ export function projectMessageFact(
   tenant: string,
   sid: string,
   fact: Omit<SessionMessageFact, 'tenant' | 'session_name' | 'message_seq'>,
+  opts?: {
+    /**
+     * Keep the EXISTING preview/time/role, bumping only `message_seq`. Used for
+     * SYNTHETIC triggers (`source` = `system:*`, e.g. the gateway idlewatch
+     * nudge): they are not user-visible messages, so they must not become the
+     * chat-list preview. Without this, a synthetic nudge that fails to produce
+     * an assistant step leaves its own text (or a stale user line) as the
+     * visible preview instead of the last real assistant reply.
+     */
+    preservePreview?: boolean
+  },
 ): void {
   fireAndForget(
     (async () => {
@@ -124,11 +135,32 @@ export function projectMessageFact(
         await ensureBucket(bus)
       }
       const seq = await bumpSeq(bus, tenant, sid)
+      let fields = fact
+      if (opts?.preservePreview === true) {
+        const raw = await bus
+          .kvGet(BUCKET_SESSION_STATE, factKey(tenant, sid))
+          .catch(() => null)
+        const existing = raw === null ? null : parseFact(raw)
+        // Keep the prior real preview; with NO prior fact, blank it entirely so
+        // a synthetic nudge can never surface as a session's preview.
+        fields =
+          existing !== null
+            ? {
+                last_message_at: existing.last_message_at,
+                last_message_preview: existing.last_message_preview,
+                last_message_role: existing.last_message_role,
+              }
+            : {
+                last_message_at: '',
+                last_message_preview: '',
+                last_message_role: '',
+              }
+      }
       const full: SessionMessageFact = {
         tenant,
         session_name: sid,
         message_seq: seq,
-        ...fact,
+        ...fields,
       }
       await bus.kvPut(
         BUCKET_SESSION_STATE,
@@ -144,6 +176,14 @@ export function projectMessageFact(
     }),
     'projectMessageFact',
   )
+}
+
+/** True when a message source is a SYNTHETIC (non-user) trigger: `system:*`.
+ *  Such a message must never become the chat-list preview (see
+ *  `projectMessageFact`'s `preservePreview`). A `session:*` hand-off IS real
+ *  task content and stays preview-visible. */
+export function isSyntheticSource(source: string): boolean {
+  return source.startsWith('system:')
 }
 
 /** Build the fact from what the persist site already has in hand. */

@@ -12,6 +12,7 @@ import {
   connectBus,
   connectDb,
   type Db,
+  IdleWatchdog,
   knownTenants,
   LlmRegistry,
   loadConfig,
@@ -434,6 +435,13 @@ async function main(): Promise<void> {
   )
   catalogTimer.unref()
 
+  // Idle-turn watchdog: re-trigger a session that stopped mid-task after a tool
+  // call. Opt-in via `IDLEWATCH_ENABLED` (default off). Ported from the
+  // workspace-gateway so the behaviour lives with the agent; the gateway copy
+  // can then be disabled.
+  const idlewatch = new IdleWatchdog({ db, bus, config })
+  idlewatch.start()
+
   // ---- serving surface: Connect RPC (hono + createFetchHandler) ----
   // Build the Connect router (grpc + grpc-web + connect protocols), then wrap
   // EACH per-RPC universal handler into a Web Request=>Response fetch handler
@@ -560,6 +568,7 @@ async function main(): Promise<void> {
   const shutdown = () => {
     logger.info('shutting down')
     stopWake()
+    idlewatch.stop()
     void stopBundled()
     void closeServer().then(() => {
       bus.close()

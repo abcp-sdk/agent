@@ -63,6 +63,13 @@ agent:
   corsOrigin: "*"
   # Tools the host hard-disables for every session.
   disabledTools: ""
+  # Idle-turn watchdog: re-trigger a session whose tip is an assistant step
+  # ending on a `tool_result` (the model ran a tool then stopped) by publishing
+  # a `system:idlewatch` mailbox trigger. Interval is a Go-style duration
+  # (e.g. "2m", "120s"). Enabled by default.
+  idlewatch:
+    enabled: true
+    interval: "2m"
   # Bearer-token auth. `required`, with a static admin token + a bootstrapped
   # first tenant (token -> tenant).
   auth:

@@ -11,7 +11,11 @@ import { ContentPayloadSchema, parse, type ToolResult } from './json.js'
 import { logger } from './logger.js'
 import type { AgentDeps } from './session-agent.js'
 import { compactSession, spliceContext } from './session-compact.js'
-import { factFromPersist, projectMessageFact } from './session-state.js'
+import {
+  factFromPersist,
+  isSyntheticSource,
+  projectMessageFact,
+} from './session-state.js'
 import { appendSessionId, getSessionIds, putSessionIds } from './store.js'
 
 /**
@@ -305,6 +309,10 @@ export async function persistUserPrompt(
     tenant,
     sid,
     factFromPersist(nowStr(), 'user', preview),
+    // A SYNTHETIC trigger (`system:*`, e.g. the gateway idlewatch nudge) is not
+    // a user-visible message: it must not overwrite the chat-list preview.
+    // `session:*` hand-offs ARE real task content and stay visible.
+    { preservePreview: isSyntheticSource(source) },
   )
   // Real-time signal: this message is now IN the chain, with its authoritative
   // id and anchor. Run-less so it passes watchSession's live-run filter.

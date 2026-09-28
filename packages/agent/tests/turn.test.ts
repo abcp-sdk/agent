@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Bus } from '../src/bus.js'
 import { Mailbox } from '../src/db-mailbox.js'
 import type { AgentDeps } from '../src/session-agent.js'
-import { handleItem, runSessionTurn } from '../src/session-agent.js'
+import {
+  handleItem,
+  renewOrReclaim,
+  runSessionTurn,
+} from '../src/session-agent.js'
 import * as sessionCompact from '../src/session-compact.js'
 
 const T = 't1'
@@ -106,5 +110,39 @@ describe('handleItem (compact branch)', () => {
       payload: JSON.stringify({ reason: 'manual' }),
     })
     expect(compact).toHaveBeenCalledWith(deps, T, 'a:b:main', 'manual')
+  })
+})
+
+describe('renewOrReclaim', () => {
+  it('returns the new revision when renew succeeds', async () => {
+    const r = await renewOrReclaim(
+      () => Promise.resolve(7),
+      () => Promise.resolve(99),
+    )
+    expect(r).toEqual({ revision: 7, lost: false, reclaimed: false })
+  })
+
+  it('re-claims when renew fails and the key had merely expired', async () => {
+    const r = await renewOrReclaim(
+      () => Promise.resolve(null),
+      () => Promise.resolve(42),
+    )
+    expect(r).toEqual({ revision: 42, lost: false, reclaimed: true })
+  })
+
+  it('reports lost when renew AND re-claim both fail', async () => {
+    const r = await renewOrReclaim(
+      () => Promise.resolve(null),
+      () => Promise.resolve(null),
+    )
+    expect(r).toEqual({ revision: null, lost: true, reclaimed: false })
+  })
+
+  it('treats a thrown renew/re-claim as a failure, never throws', async () => {
+    const r = await renewOrReclaim(
+      () => Promise.reject(new Error('nats down')),
+      () => Promise.reject(new Error('nats down')),
+    )
+    expect(r.lost).toBe(true)
   })
 })

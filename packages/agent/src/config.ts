@@ -92,6 +92,16 @@ export interface ServerConfig {
    * Seeding never overwrites an existing tenant's providers.
    */
   providerSeed: Array<ProviderSeedEntry>
+  /**
+   * Idle-turn watchdog: re-trigger a session whose tip is an assistant step
+   * ending on a `tool_result` (the model ran a tool then stopped) by publishing
+   * a `system:idlewatch` mailbox trigger. Set via env `IDLEWATCH_ENABLED`
+   * (default false — opt-in). Ported from the workspace-gateway so the
+   * behaviour lives with the agent; the gateway copy can then be disabled.
+   */
+  idlewatchEnabled: boolean
+  /** Sweep period for the idle-turn watchdog, ms (`IDLEWATCH_INTERVAL`, default 120000). */
+  idlewatchIntervalMs: number
 }
 
 /** One provider to seed into a tenant (see {@link ServerConfig.providerSeed}). */
@@ -250,7 +260,36 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     },
     extConfigSeed: parseExtConfigSeed(or('AGENT_EXT_CONFIG_SEED', '')),
     providerSeed: parseProviderSeed(or('AGENT_PROVIDER_SEED', '')),
+    idlewatchEnabled: or('IDLEWATCH_ENABLED', 'false').toLowerCase() === 'true',
+    idlewatchIntervalMs: parseDurationMs(
+      or('IDLEWATCH_INTERVAL', '120s'),
+      120_000,
+    ),
   }
+}
+
+/**
+ * Parse a duration into milliseconds. Accepts a bare integer (already ms) or a
+ * Go-style string with a unit suffix (`ms`, `s`, `m`, `h`), e.g. `"120s"`,
+ * `"2m"`. A bad value falls back to `def` with a warning.
+ */
+export function parseDurationMs(raw: string, def: number): number {
+  const s = raw.trim()
+  if (s === '') return def
+  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(s)
+  if (m === null) {
+    logger.warn({ raw }, 'invalid duration; using default')
+    return def
+  }
+  const n = Number.parseFloat(m[1] ?? '')
+  if (!Number.isFinite(n) || n <= 0) {
+    logger.warn({ raw }, 'invalid duration; using default')
+    return def
+  }
+  const unit = m[2] ?? 'ms'
+  const factor =
+    unit === 'h' ? 3_600_000 : unit === 'm' ? 60_000 : unit === 's' ? 1_000 : 1
+  return Math.round(n * factor)
 }
 
 /**

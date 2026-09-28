@@ -19,6 +19,7 @@ export * from './file-rpc.js'
 export * from './files.js'
 export * from './history.js'
 export * from './i18n.js'
+export * from './idlewatch.js'
 export * from './interrupt.js'
 export * from './json.js'
 export * from './kv-backfill.js'
@@ -34,6 +35,7 @@ export * from './session-agent.js'
 export {
   calibrateMessageFacts,
   factFromPersist,
+  isSyntheticSource,
   LEASE_BUCKET,
   projectMessageFact,
   readMessageFacts,

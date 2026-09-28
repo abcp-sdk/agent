@@ -89,3 +89,44 @@ describe('loadConfig retry budgets', () => {
     expect(cfg.llmMaxRetries).toBe(5)
   })
 })
+
+describe('loadConfig idlewatch', () => {
+  it('defaults to disabled with a 120s interval', () => {
+    const cfg = loadConfig({} as NodeJS.ProcessEnv)
+    expect(cfg.idlewatchEnabled).toBe(false)
+    expect(cfg.idlewatchIntervalMs).toBe(120_000)
+  })
+
+  it('enables via IDLEWATCH_ENABLED=true (case-insensitive)', () => {
+    expect(
+      loadConfig({ IDLEWATCH_ENABLED: 'TRUE' } as NodeJS.ProcessEnv)
+        .idlewatchEnabled,
+    ).toBe(true)
+    expect(
+      loadConfig({ IDLEWATCH_ENABLED: 'false' } as NodeJS.ProcessEnv)
+        .idlewatchEnabled,
+    ).toBe(false)
+  })
+
+  it('parses a Go-style interval (2m, 90s, 500ms)', () => {
+    expect(
+      loadConfig({ IDLEWATCH_INTERVAL: '2m' } as NodeJS.ProcessEnv)
+        .idlewatchIntervalMs,
+    ).toBe(120_000)
+    expect(
+      loadConfig({ IDLEWATCH_INTERVAL: '90s' } as NodeJS.ProcessEnv)
+        .idlewatchIntervalMs,
+    ).toBe(90_000)
+    expect(
+      loadConfig({ IDLEWATCH_INTERVAL: '500ms' } as NodeJS.ProcessEnv)
+        .idlewatchIntervalMs,
+    ).toBe(500)
+  })
+
+  it('falls back on an invalid interval', () => {
+    expect(
+      loadConfig({ IDLEWATCH_INTERVAL: 'nope' } as NodeJS.ProcessEnv)
+        .idlewatchIntervalMs,
+    ).toBe(120_000)
+  })
+})

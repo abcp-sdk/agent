@@ -3,6 +3,7 @@ import type { Bus } from '../src/bus.js'
 import { natsToken } from '../src/bus.js'
 import {
   factFromPersist,
+  isSyntheticSource,
   projectMessageFact,
   readMessageFacts,
   readSessionStatuses,
@@ -113,5 +114,59 @@ describe('readSessionStatuses', () => {
     } as unknown as Bus
     const statuses = await readSessionStatuses(bus, T, ['s'])
     expect(statuses.get('s')).toBe('idle')
+  })
+})
+
+describe('synthetic-source preview suppression', () => {
+  it('isSyntheticSource flags system:* but not user/session:*', () => {
+    expect(isSyntheticSource('system:idlewatch')).toBe(true)
+    expect(isSyntheticSource('system:repo-mr')).toBe(true)
+    expect(isSyntheticSource('user')).toBe(false)
+    expect(isSyntheticSource('session:parent')).toBe(false)
+    expect(isSyntheticSource('')).toBe(false)
+  })
+
+  it('preservePreview keeps the prior preview while bumping seq', async () => {
+    const { bus } = fakeBus()
+    const sid = 'sess-preserve'
+    projectMessageFact(
+      bus,
+      T,
+      sid,
+      factFromPersist('2026-01-01T00:00:00Z', 'assistant', 'real reply'),
+    )
+    await settle()
+    projectMessageFact(
+      bus,
+      T,
+      sid,
+      factFromPersist('2026-01-01T00:00:05Z', 'user', 'synthetic nudge'),
+      { preservePreview: true },
+    )
+    await settle()
+
+    const f = (await readMessageFacts(bus, T, [sid])).get(sid)
+    // Preview/time/role stay from the REAL message...
+    expect(f?.last_message_preview).toBe('real reply')
+    expect(f?.last_message_role).toBe('assistant')
+    expect(f?.last_message_at).toBe('2026-01-01T00:00:00Z')
+    // ...but the monotonic counter still advances (a message WAS appended).
+    expect(f?.message_seq).toBe(2)
+  })
+
+  it('preservePreview with no prior fact yields empty preview', async () => {
+    const { bus } = fakeBus()
+    const sid = 'sess-preserve-empty'
+    projectMessageFact(
+      bus,
+      T,
+      sid,
+      factFromPersist('2026-01-01T00:00:00Z', 'user', 'nudge'),
+      { preservePreview: true },
+    )
+    await settle()
+    const f = (await readMessageFacts(bus, T, [sid])).get(sid)
+    expect(f?.last_message_preview).toBe('')
+    expect(f?.message_seq).toBe(1)
   })
 })
