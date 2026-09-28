@@ -60,7 +60,7 @@ agent:
 webui:
   image:
     repository: git.agent.svc.cluster.local/abcp/agent-webui
-    tag: "20260926073337"
+    tag: "20260928140031"
     pullPolicy: IfNotPresent
   port: 8080
   service:
