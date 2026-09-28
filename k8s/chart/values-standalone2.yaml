@@ -1,13 +1,14 @@
-# Values for the SECOND standalone agent stack ("standalone2").
+# Values for the standalone agent stack.
 #
-# Coexists with the original `abcp-agent` release in the SAME `agent`
-# namespace, using an `s2-` name prefix. Its metadata DB is Postgres (no
-# sqlite, no /data volume); infra endpoints point at the `s2-`-prefixed
-# `infra-s2` release (PVC-backed).
+# Deployed in the `agent` namespace as release `abcp-agent-s2`. Its metadata DB
+# is Postgres (no sqlite, no /data volume). Agent-stack objects use the CANONICAL
+# names (`standalone-agent`, `worker`, `worker-extension`, ...). Its OWN infra
+# (`infra-s2`: nats/postgres/s3/selenium) keeps the `s2-` prefix because the bare
+# names belong to the SHARED `infra` release (used by the workspace stack).
 #
 #   helm install abcp-agent-s2 k8s/chart -n agent -f k8s/chart/values-standalone2.yaml
 namespaceOverride: agent
-namePrefix: "s2-"
+namePrefix: ""
 
 infra:
   nats:
@@ -35,7 +36,7 @@ agent:
     pullPolicy: IfNotPresent
   port: 8080
   service:
-    name: s2-standalone-agent
+    name: standalone-agent
     type: ClusterIP
   corsOrigin: "*"
   disabledTools: ""
@@ -63,7 +64,7 @@ webui:
     pullPolicy: IfNotPresent
   port: 8080
   service:
-    name: s2-agent
+    name: agent
     type: ClusterIP
   resources:
     requests: { cpu: 20m, memory: 32Mi }
@@ -102,7 +103,7 @@ worker:
     tag: "20260924170523"
     pullPolicy: IfNotPresent
   service:
-    name: s2-worker
+    name: worker
     type: ClusterIP
   port: 48080
   workspace: ""
@@ -136,11 +137,11 @@ workerExtension:
     tag: "20260928130000"
     pullPolicy: IfNotPresent
   seedTenant: "*"
-  # Sandboxes the worker tools may run against. `s2-worker` is this stack's own
+  # Sandboxes the worker tools may run against. `worker` is this stack's own
   # code sandbox (the default, first entry); the three `temp` GUI workers are
   # agent-workers too, so the same exec/file tools can drive them.
   sandboxes: >-
-    [{"name":"default","url":"http://s2-worker.agent.svc.cluster.local:80","token":"devworker-token"},
+    [{"name":"default","url":"http://worker.agent.svc.cluster.local:80","token":"devworker-token"},
      {"name":"linux","url":"http://desktop-worker.temp.svc.cluster.local:80","token":"devdesktop-token"},
      {"name":"macos","url":"http://macos-worker.temp.svc.cluster.local:80","token":"devmac-token"},
      {"name":"windows","url":"http://windows-worker.temp.svc.cluster.local:80","token":"devwin-token"}]
