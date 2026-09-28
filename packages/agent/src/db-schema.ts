@@ -41,6 +41,10 @@ export const sessions = sqliteTable(
     // unread as `message_seq - <local read watermark>`). Not decremented on
     // undo (a withdraw is not a new message); a fork starts at 0.
     messageSeq: integer('message_seq').notNull().default(0),
+    // Shared read watermark: the highest `message_seq` the reader has
+    // acknowledged. SHARED across a tenant's devices (marking read on one
+    // clears the badge everywhere). `unread_count = max(0, message_seq - read_seq)`.
+    readSeq: integer('read_seq').notNull().default(0),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
     lastUsedAt: text('last_used_at'),

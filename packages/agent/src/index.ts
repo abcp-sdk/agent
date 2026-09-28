@@ -38,6 +38,7 @@ export {
   calibrateMessageFacts,
   deleteMessageFact,
   factFromPersist,
+  initReadSeq,
   isSyntheticSource,
   projectMessageFact,
   readMessageFacts,

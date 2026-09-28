@@ -91,6 +91,31 @@ describe('Sessions.appendMessageTip', () => {
   })
 })
 
+describe('Sessions.markRead', () => {
+  it('advances the shared watermark (monotonic), clamped to message_seq', async () => {
+    const d = await db()
+    await Sessions.create(d, 't', { name: 's' })
+    for (let i = 0; i < 5; i++)
+      await Sessions.appendMessageTip(d, 't', 's', `m${i}`)
+    // Advance to 3.
+    expect((await Sessions.markRead(d, 't', 's', 3))._unsafeUnwrap()).toBe(3)
+    // An older value never lowers it.
+    expect((await Sessions.markRead(d, 't', 's', 1))._unsafeUnwrap()).toBe(3)
+    // A future value is clamped to the current message_seq (5).
+    expect((await Sessions.markRead(d, 't', 's', 99))._unsafeUnwrap()).toBe(5)
+    const row = (await Sessions.get(d, 't', 's'))._unsafeUnwrap()
+    expect(row?.read_seq).toBe(5)
+  })
+
+  it('a new session starts fully read (read_seq = 0, message_seq = 0)', async () => {
+    const d = await db()
+    await Sessions.create(d, 't', { name: 's' })
+    const row = (await Sessions.get(d, 't', 's'))._unsafeUnwrap()
+    expect(row?.message_seq).toBe(0)
+    expect(row?.read_seq).toBe(0)
+  })
+})
+
 describe('backfillMessageSeqFromKv', () => {
   it('seeds sessions.message_seq from the legacy KV fact counter', async () => {
     const d = await db()

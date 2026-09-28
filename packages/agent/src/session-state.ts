@@ -498,6 +498,45 @@ export async function backfillMessageSeqFromKv(
 }
 
 /**
+ * One-time initialization of the shared read watermark. When the server-side
+ * `read_seq` is introduced, every pre-existing session has `read_seq = 0` while
+ * `message_seq` is large — which would flag ALL history as unread. Seed
+ * `read_seq = message_seq` ONCE (marker-guarded) so existing history is treated
+ * as read; messages appended afterwards become unread until `MarkRead`.
+ */
+export async function initReadSeq(
+  db: Db,
+  bus: Bus,
+  tenants: readonly string[],
+): Promise<void> {
+  const markerBucket = 'abcp-agent-config'
+  const markerKey = '__read_seq_init__'
+  if ((await bus.kvGet(markerBucket, markerKey).catch(() => null)) !== null) {
+    return
+  }
+  let failed = false
+  for (const tenant of tenants) {
+    try {
+      await rawRun(
+        db,
+        `UPDATE sessions SET read_seq = message_seq WHERE tenant = ? AND read_seq < message_seq`,
+        [tenant],
+      )
+    } catch (err) {
+      failed = true
+      logger.warn(
+        { tenant, err: String(err) },
+        'read_seq init failed (will retry next boot)',
+      )
+    }
+  }
+  if (!failed) {
+    await bus.kvPut(markerBucket, markerKey, '1', 0).catch(() => {})
+  }
+  logger.info({ failed }, 'read_seq init done')
+}
+
+/**
  * Fetch the per-session latest message fact for calibration. The query is
  * expressed per backend because the JSON/JSONB extraction differs:
  *   - pg:   `left(p.data::jsonb->>'text', ?)` + `JOIN LATERAL`

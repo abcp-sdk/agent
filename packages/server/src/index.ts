@@ -15,6 +15,7 @@ import {
   type Db,
   ensureLockBuckets,
   IdleWatchdog,
+  initReadSeq,
   knownTenants,
   LlmRegistry,
   loadConfig,
@@ -153,6 +154,11 @@ async function main(): Promise<void> {
   // from 0 and reset clients' persisted read watermarks. Idempotent
   // (marker-guarded, never regresses an advanced value).
   await backfillMessageSeqFromKv(db, bus, tenants)
+
+  // One-time read-watermark init: seed `read_seq = message_seq` so pre-existing
+  // history is not flagged as unread the moment server-side unread lands.
+  // AWAITED before serving; idempotent (marker-guarded).
+  await initReadSeq(db, bus, tenants)
 
   // One-time message-fact calibration: refresh the abc-session-state KV
   // projection from PG so chat-list previews are correct even for sessions

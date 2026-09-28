@@ -163,7 +163,12 @@ type RowOf<
  *  so a proto change can never silently drift from the DB row type. */
 export type SessionRow = RowOf<
   typeof SessionDesc,
-  { tip_id: string | null; last_used_at: string | null },
+  {
+    tip_id: string | null
+    last_used_at: string | null
+    /** Shared read watermark (DB-only; not a proto field). */
+    read_seq: number
+  },
   | 'tip_id'
   | 'last_used_at'
   | 'org'

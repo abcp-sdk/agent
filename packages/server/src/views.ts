@@ -25,6 +25,8 @@ export interface SessionRowView {
   last_message_preview?: string | null | undefined
   /** Authoritative per-session message counter (DB column). */
   message_seq?: number | null | undefined
+  /** Shared read watermark (DB column): highest acknowledged `message_seq`. */
+  read_seq?: number | null | undefined
   group?: string | null | undefined
 }
 
@@ -62,13 +64,13 @@ export function sessionToMsg(
    *  renders no badge for it rather than a misleading idle. */
   status: 'busy' | 'idle' | 'unknown' = 'idle',
 ) {
-  // The authoritative message counter lives on the DB row. `unread_count` is
-  // reported as this TOTAL: the agent deliberately stores no read state (the
-  // read watermark is CLIENT-local), so the server cannot compute a true unread
-  // count — a client subtracts its own watermark from `message_seq`. Reporting
-  // the total keeps the field consistent with the single source instead of the
-  // former hardcoded 0.
+  // The authoritative message counter and the shared read watermark both live
+  // on the DB row. `unread_count` is their difference (clamped at 0): the read
+  // watermark is SHARED across a tenant's devices (marking read on one clears
+  // the badge everywhere), so the server owns it and clients simply render it.
   const seq = s.message_seq ?? 0
+  const read = s.read_seq ?? 0
+  const unread = Math.max(0, seq - read)
   return {
     name: s.name,
     model: s.model ?? '',
@@ -90,7 +92,7 @@ export function sessionToMsg(
     org: s.org ?? '',
     repo: s.repo ?? '',
     branch: s.branch ?? '',
-    unreadCount: seq,
+    unreadCount: unread,
     lastMessageAt: fact?.last_message_at ?? '',
     lastMessagePreview: fact?.last_message_preview ?? '',
     messageSeq: seq,

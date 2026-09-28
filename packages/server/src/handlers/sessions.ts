@@ -345,6 +345,28 @@ export function sessionsHandlers(
       return { state: { status } }
     },
 
+    async markRead(req, ctx: HandlerContext) {
+      const tenant = tenantOf(ctx)
+      const { id, seq } = req
+      const session = await Sessions.get(deps.db, tenant, id)
+      if (session.isErr()) throw new Error(session.error)
+      if (session.value === null) throw new Error('session not found')
+      // Advance the shared watermark to `seq`, or to the current tip when the
+      // caller omits it (0). Monotonic + clamped to `message_seq` in the DB.
+      const target = seq > 0 ? seq : (session.value.message_seq ?? 0)
+      const r = await Sessions.markRead(deps.db, tenant, id, target)
+      if (r.isErr()) throw new Error(r.error)
+      // Nudge the session-list watchers so OTHER devices refresh the cleared
+      // badge (the read watermark is shared).
+      publishSessionChanged(deps.bus, tenant, id)
+      const updated = await Sessions.get(deps.db, tenant, id)
+      if (updated.isErr()) throw new Error(updated.error)
+      const facts = await readMessageFacts(deps.bus, tenant, [id])
+      return {
+        session: sessionToMsg(updated.value ?? session.value, facts.get(id)),
+      }
+    },
+
     async mailbox(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
       const { id, limit, before } = req

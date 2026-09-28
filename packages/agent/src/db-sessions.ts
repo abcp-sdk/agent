@@ -25,6 +25,7 @@ const toRow = (r: Row): SessionRow => ({
   last_input_tokens: Number(r.lastInputTokens),
   last_output_tokens: Number(r.lastOutputTokens),
   message_seq: Number(r.messageSeq),
+  read_seq: Number(r.readSeq),
   created_at: r.createdAt,
   updated_at: r.updatedAt,
   last_used_at: r.lastUsedAt,
@@ -96,6 +97,9 @@ export const Sessions = {
       /** Initial message counter. Defaults to 0; a fork carries the parent's
        *  value only when explicitly asked (a fresh fork starts at 0). */
       messageSeq?: number | undefined
+      /** Initial read watermark. Defaults to 0; a fork starts read (its history
+       *  is inherited, not "new"). */
+      readSeq?: number | undefined
     },
   ): ResultAsync<string, string> {
     return q(
@@ -112,11 +116,45 @@ export const Sessions = {
           locale: input.locale ?? '',
           group: input.group ?? '',
           messageSeq: input.messageSeq ?? 0,
+          readSeq: input.readSeq ?? 0,
           createdAt: nowStr(),
           updatedAt: nowStr(),
         }),
       'create session',
     ).map(() => input.name)
+  },
+
+  /**
+   * Advance the session's SHARED read watermark to at least `seq` (monotonic:
+   * an older value never lowers it). Returns the NEW `read_seq`. `seq` is
+   * clamped to the current `message_seq` so a bogus future value cannot mark
+   * unread messages as read.
+   */
+  markRead(
+    db: Db,
+    tenant: string,
+    name: string,
+    seq: number,
+  ): ResultAsync<number, string> {
+    const pgSQL = `UPDATE sessions
+       SET read_seq = LEAST(GREATEST(read_seq, $3), message_seq), updated_at = $4
+       WHERE tenant = $1 AND name = $2 RETURNING read_seq`
+    const sqliteSQL = `UPDATE sessions
+       SET read_seq = MIN(MAX(read_seq, ?), message_seq), updated_at = ?
+       WHERE tenant = ? AND name = ? RETURNING read_seq`
+    const isPg = dbBackend(db) === 'pg'
+    return q(
+      () =>
+        rawAll(
+          db,
+          isPg ? pgSQL : sqliteSQL,
+          isPg ? [tenant, name, seq, nowStr()] : [seq, nowStr(), tenant, name],
+        ).then(rows => {
+          const v = rows[0]?.read_seq
+          return v === undefined ? 0 : Number(v)
+        }),
+      'mark session read',
+    )
   },
 
   /**
