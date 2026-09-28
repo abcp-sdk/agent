@@ -1,7 +1,7 @@
 {{- if .Values.workerExtension.enabled }}
-# Worker extension server: runs commands and reads/writes files in ONE fixed
-# easyworker sandbox, addressed by the seeded `worker-url` / `worker-token`.
-# Speaks only the abc protocol over NATS.
+# Worker extension server: run commands / read-write files (worker-*) AND drive
+# a native GUI through the accessibility tree (computer-*) in the SAME
+# config-registered easyworker sandboxes. Speaks only the abc protocol over NATS.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -112,34 +112,19 @@ worker:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "1", memory: 1Gi }
 
-# Computer-use: drive the GUI sandboxes (Linux openbox / macOS / Windows) that
-# are registered here. They live in the `temp` namespace (long-lived, PVC-backed
-# for the Linux desktop). No sandbox-creation tool: these are config-registered.
-computerUse:
-  enabled: true
-  image:
-    repository: git.agent.svc.cluster.local/abcp/computer-use-extension
-    tag: "20260928160000"
-    pullPolicy: IfNotPresent
-  seedTenant: "*"
-  sandboxes: >-
-    [{"name":"linux","url":"http://desktop-worker.temp.svc.cluster.local:80","token":"devdesktop-token"},
-     {"name":"macos","url":"http://macos-worker.temp.svc.cluster.local:80","token":"devmac-token"},
-     {"name":"windows","url":"http://windows-worker.temp.svc.cluster.local:80","token":"devwin-token"}]
-  resources:
-    requests: { cpu: 50m, memory: 64Mi }
-    limits: { cpu: 500m, memory: 256Mi }
-
+# Worker extension: run commands / read-write files (worker-*) AND drive a
+# native GUI through the accessibility tree (computer-*) in the SAME
+# config-registered sandboxes. `default` is this stack's own code sandbox; the
+# three `temp` GUI workers (Linux openbox / macOS / Windows) are agent-workers
+# too, so both tool families address them. The computer-* tools need the
+# accessibility CLI, which only the GUI workers ship (see list-sandboxes).
 workerExtension:
   enabled: true
   image:
     repository: git.agent.svc.cluster.local/abcp/worker-extension
-    tag: "20260928130000"
+    tag: "20260928180000"
     pullPolicy: IfNotPresent
   seedTenant: "*"
-  # Sandboxes the worker tools may run against. `worker` is this stack's own
-  # code sandbox (the default, first entry); the three `temp` GUI workers are
-  # agent-workers too, so the same exec/file tools can drive them.
   sandboxes: >-
     [{"name":"default","url":"http://worker.agent.svc.cluster.local:80","token":"devworker-token"},
      {"name":"linux","url":"http://desktop-worker.temp.svc.cluster.local:80","token":"devdesktop-token"},
