@@ -119,7 +119,7 @@ computerUse:
   enabled: true
   image:
     repository: git.agent.svc.cluster.local/abcp/computer-use-extension
-    tag: "20260928130000"
+    tag: "20260928150000"
     pullPolicy: IfNotPresent
   seedTenant: "*"
   sandboxes: >-
