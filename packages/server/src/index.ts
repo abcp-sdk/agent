@@ -21,6 +21,7 @@ import {
   makeBlobStore,
   natsToken,
   Presets,
+  Providers,
   rawAll,
   rawRun,
   refreshModelsDev,
@@ -141,6 +142,11 @@ async function main(): Promise<void> {
   // (a user set) always wins, so this is safe to run on every boot. A seed
   // entry with tenant "*" applies to EVERY known tenant.
   seedExtConfig(bus, config, tenants)
+
+  // Seed deployment-pinned PROVIDERS for tenants that have none yet. This is
+  // how a fresh standalone deployment gets a working model registry without a
+  // UI round-trip. Never overwrites a tenant that already has providers.
+  void seedProviders(db, config, tenants)
 
   // Mailbox retention: consumed rows are audit-only, prune past a fixed window.
   const retentionDays = 7
@@ -629,6 +635,57 @@ function seedExtConfig(
           )
         }
       })()
+    }
+  }
+}
+
+/**
+ * Seed the configured providers into every tenant that has NONE yet. This is
+ * the standalone analogue of the workspace gateway's provisioning: a fresh
+ * deployment gets its model registry (the platform gateway providers) without
+ * a UI round-trip. Idempotent and non-destructive: a tenant with any provider
+ * already registered is left untouched, so a UI edit always wins.
+ */
+async function seedProviders(
+  db: Db,
+  config: ServerConfig,
+  tenants: readonly string[],
+): Promise<void> {
+  if (config.providerSeed.length === 0) return
+  for (const tenant of tenants) {
+    const existing = await Providers.listTenants(db, tenant)
+    if (existing.isErr()) {
+      logger.warn({ tenant, err: existing.error }, 'provider seed: list failed')
+      continue
+    }
+    if (existing.value.length > 0) continue
+    for (const p of config.providerSeed) {
+      if (p.tenant !== '*' && p.tenant !== tenant) continue
+      const r = await Providers.upsert(db, tenant, {
+        providerId: p.providerId,
+        capability: p.capability,
+        apiType: p.apiType,
+        baseUrl: p.baseUrl,
+        apiKey: p.apiKey,
+        headers: null,
+        models: p.models.map(m => ({
+          id: m.id,
+          name: m.name,
+          context_limit: m.contextLimit,
+          model_type: p.capability,
+        })),
+      })
+      if (r.isErr()) {
+        logger.warn(
+          { tenant, providerId: p.providerId, err: r.error },
+          'provider seed: upsert failed',
+        )
+      } else {
+        logger.info(
+          { tenant, providerId: p.providerId },
+          'seeded provider default',
+        )
+      }
     }
   }
 }

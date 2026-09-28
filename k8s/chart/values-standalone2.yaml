@@ -32,7 +32,7 @@ infra:
 agent:
   image:
     repository: git.agent.svc.cluster.local/abcp/agent
-    tag: "20260927103748"
+    tag: "20260928140000"
     pullPolicy: IfNotPresent
   port: 8080
   service:
@@ -148,6 +148,73 @@ workerExtension:
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { cpu: 500m, memory: 256Mi }
+
+# ---- model registry (seeded create-if-absent per tenant) ----
+# The standalone agent ships with NO providers; sessions need a
+# `provider_id/model_id`, so seed the platform gateway providers. A tenant that
+# already has providers is left untouched (a UI edit always wins).
+providers:
+  - tenant: "*"
+    providerId: gateway-text
+    capability: text
+    apiType: vercel-compatible-gateway
+    baseUrl: https://api-gray.xueersi.com/ai-multimodal-gateway/v4/ai
+    apiKey: sk-code-dAeG7zpfYuusoIA0Z9LYumE6oDb7BNArqxTkk4th37lYtzRokkkvoY5Y
+    models:
+      - { id: tal-coding/deepseek-v4.1-flash, name: DeepSeek V4.1 Flash, contextLimit: 1000000 }
+      - { id: tal-coding/glm-5.3, name: GLM 5.3, contextLimit: 1000000 }
+      - { id: tal-coding/glm-5.3-flash, name: GLM 5.3 Flash, contextLimit: 1000000 }
+  - tenant: "*"
+    providerId: gateway-image
+    capability: image
+    apiType: vercel-compatible-gateway
+    baseUrl: https://api-gray.xueersi.com/ai-multimodal-gateway/v4/ai
+    apiKey: sk-code-dAeG7zpfYuusoIA0Z9LYumE6oDb7BNArqxTkk4th37lYtzRokkkvoY5Y
+    models:
+      - { id: tal-coding-gptimage/gpt-image-2, name: GPT Image 2, contextLimit: 0 }
+      - { id: tal-coding-gptimage/gpt-image-2.5-flare, name: GPT Image 2.5 Flare, contextLimit: 0 }
+      - { id: tal-coding-gptimage/gpt-image-2.5-sunburst, name: GPT Image 2.5 Sunburst, contextLimit: 0 }
+  - tenant: "*"
+    providerId: gateway-speech
+    capability: speech
+    apiType: vercel-compatible-gateway
+    baseUrl: https://api-gray.xueersi.com/ai-multimodal-gateway/v4/ai
+    apiKey: sk-code-dAeG7zpfYuusoIA0Z9LYumE6oDb7BNArqxTkk4th37lYtzRokkkvoY5Y
+    models:
+      - { id: mlops-tts-customvoice/qwen3-tts-customvoice, name: Qwen3 TTS CustomVoice, contextLimit: 0 }
+      - { id: mlops-tts-base/qwen3-tts-base, name: Qwen3 TTS Base, contextLimit: 0 }
+  - tenant: "*"
+    providerId: gateway-transcription
+    capability: transcription
+    apiType: vercel-compatible-gateway
+    baseUrl: https://api-gray.xueersi.com/ai-multimodal-gateway/v4/ai
+    apiKey: sk-code-dAeG7zpfYuusoIA0Z9LYumE6oDb7BNArqxTkk4th37lYtzRokkkvoY5Y
+    models:
+      - { id: mlops-asr/qwen3-asr, name: Qwen3 ASR, contextLimit: 0 }
+  - tenant: "*"
+    providerId: gateway-embedding
+    capability: embedding
+    apiType: vercel-compatible-gateway
+    baseUrl: https://api-gray.xueersi.com/ai-multimodal-gateway/v4/ai
+    apiKey: sk-code-dAeG7zpfYuusoIA0Z9LYumE6oDb7BNArqxTkk4th37lYtzRokkkvoY5Y
+    models:
+      - { id: mlops-embed/gte-multilingual-base, name: GTE Multilingual, contextLimit: 0 }
+  - tenant: "*"
+    providerId: gateway-rerank
+    capability: rerank
+    apiType: vercel-compatible-gateway
+    baseUrl: https://api-gray.xueersi.com/ai-multimodal-gateway/v4/ai
+    apiKey: sk-code-dAeG7zpfYuusoIA0Z9LYumE6oDb7BNArqxTkk4th37lYtzRokkkvoY5Y
+    models:
+      - { id: mlops-rerank/gte-multilingual-reranker-base, name: GTE Reranker, contextLimit: 0 }
+  - tenant: "*"
+    providerId: gateway-realtime
+    capability: realtime
+    apiType: vercel-compatible-gateway
+    baseUrl: https://api-gray.xueersi.com/ai-multimodal-gateway/v4/ai
+    apiKey: sk-code-dAeG7zpfYuusoIA0Z9LYumE6oDb7BNArqxTkk4th37lYtzRokkkvoY5Y
+    models:
+      - { id: mlops-voxtral/voxtral-realtime, name: Voxtral Realtime, contextLimit: 0 }
 
 # pg mode: no /data volume at all.
 persistence:

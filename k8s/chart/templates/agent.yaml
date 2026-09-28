@@ -101,6 +101,14 @@ spec:
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.transcription" "value" .Values.bundled.model.transcription)
                 | toJson | quote }}
             {{- end }}
+            {{- if .Values.providers }}
+            # Seed the model registry into any tenant that has NO providers yet
+            # (create-if-absent; a tenant with providers is left untouched, so a
+            # UI edit always wins). This gives a fresh standalone deployment a
+            # working model registry without a UI round-trip.
+            - name: AGENT_PROVIDER_SEED
+              value: {{ .Values.providers | toJson | quote }}
+            {{- end }}
             {{- include "abcp-agent.objectStoreEnv" . | nindent 12 }}
             {{- include "abcp-agent.egressProxyEnv" . | nindent 12 }}
           ports:

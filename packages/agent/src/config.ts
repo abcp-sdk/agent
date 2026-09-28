@@ -82,6 +82,27 @@ export interface ServerConfig {
     name: string
     value: string
   }>
+  /**
+   * One-time, idempotent seed of PROVIDERS (the `providers` table), applied at
+   * boot ONLY when a tenant has NO providers yet. This gives a fresh
+   * standalone deployment a working model registry without a UI round-trip.
+   * Set via env `AGENT_PROVIDER_SEED` as a JSON array of
+   * `{ "tenant": "*"|"<id>", "providerId", "capability", "apiType",
+   *    "baseUrl", "apiKey", "models": [{ "id", "name", "contextLimit" }] }`.
+   * Seeding never overwrites an existing tenant's providers.
+   */
+  providerSeed: Array<ProviderSeedEntry>
+}
+
+/** One provider to seed into a tenant (see {@link ServerConfig.providerSeed}). */
+export interface ProviderSeedEntry {
+  tenant: string
+  providerId: string
+  capability: string
+  apiType: string
+  baseUrl: string
+  apiKey: string
+  models: Array<{ id: string; name: string; contextLimit: number }>
 }
 
 export interface S3Settings {
@@ -228,7 +249,77 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       prefix: or('S3_PREFIX', 'abcp'),
     },
     extConfigSeed: parseExtConfigSeed(or('AGENT_EXT_CONFIG_SEED', '')),
+    providerSeed: parseProviderSeed(or('AGENT_PROVIDER_SEED', '')),
   }
+}
+
+/**
+ * Parse `AGENT_PROVIDER_SEED` (a JSON array of provider entries) into
+ * validated entries. A malformed value is DROPPED with a warning rather than
+ * crashing boot.
+ */
+export function parseProviderSeed(raw: string): ProviderSeedEntry[] {
+  if (raw.trim() === '') return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    logger.warn(
+      { err: String(e) },
+      'AGENT_PROVIDER_SEED: invalid JSON; ignored',
+    )
+    return []
+  }
+  if (!Array.isArray(parsed)) {
+    logger.warn('AGENT_PROVIDER_SEED: expected a JSON array; ignored')
+    return []
+  }
+  const out: ProviderSeedEntry[] = []
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const e = entry as Record<string, unknown>
+    const tenant = String(e['tenant'] ?? '').trim()
+    const providerId = String(e['providerId'] ?? '').trim()
+    const capability = String(e['capability'] ?? '').trim()
+    const apiType = String(e['apiType'] ?? '').trim()
+    const baseUrl = String(e['baseUrl'] ?? '').trim()
+    const apiKey = String(e['apiKey'] ?? '').trim()
+    if (
+      tenant === '' ||
+      providerId === '' ||
+      capability === '' ||
+      apiType === '' ||
+      baseUrl === ''
+    ) {
+      logger.warn(
+        { entry },
+        'AGENT_PROVIDER_SEED: entry missing fields; dropped',
+      )
+      continue
+    }
+    const models: ProviderSeedEntry['models'] = []
+    for (const m of Array.isArray(e['models']) ? e['models'] : []) {
+      if (typeof m !== 'object' || m === null) continue
+      const mo = m as Record<string, unknown>
+      const id = String(mo['id'] ?? '').trim()
+      if (id === '') continue
+      models.push({
+        id,
+        name: String(mo['name'] ?? id),
+        contextLimit: Number(mo['contextLimit'] ?? 0) || 0,
+      })
+    }
+    out.push({
+      tenant,
+      providerId,
+      capability,
+      apiType,
+      baseUrl,
+      apiKey,
+      models,
+    })
+  }
+  return out
 }
 
 /**
