@@ -35,6 +35,17 @@ default
 {{- printf "http://%s.%s.svc.cluster.local:80" .Values.worker.service.name (include "abcp-agent.namespace" .) -}}
 {{- end -}}
 
+{{/* The worker extension's `sandboxes` JSON list. Explicit
+     `workerExtension.sandboxes` wins; otherwise derive ONE entry from the
+     bundled `worker` (name "default"). */}}
+{{- define "abcp-agent.workerSandboxes" -}}
+{{- if .Values.workerExtension.sandboxes -}}
+{{- .Values.workerExtension.sandboxes -}}
+{{- else -}}
+{{- list (dict "name" "default" "url" (include "abcp-agent.workerUrl" .) "token" .Values.worker.token) | toJson -}}
+{{- end -}}
+{{- end -}}
+
 {{/* S3 object-store env (durable file bytes leave NATS). */}}
 {{- define "abcp-agent.objectStoreEnv" -}}
 - name: AGENT_BLOB_BACKEND

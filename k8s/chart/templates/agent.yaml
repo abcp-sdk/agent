@@ -92,8 +92,7 @@ spec:
               value: {{ list
                 (dict "tenant" .Values.playwright.seedTenant "extId" "playwright" "name" "selenium-url" "value" .Values.infra.seleniumUrl)
                 (dict "tenant" .Values.computerUse.seedTenant "extId" "computer-use" "name" "sandboxes" "value" (.Values.computerUse.sandboxes | default ""))
-                (dict "tenant" .Values.workerExtension.seedTenant "extId" "worker" "name" "worker-url" "value" (include "abcp-agent.workerUrl" .))
-                (dict "tenant" .Values.workerExtension.seedTenant "extId" "worker" "name" "worker-token" "value" .Values.worker.token)
+                (dict "tenant" .Values.workerExtension.seedTenant "extId" "worker" "name" "sandboxes" "value" (include "abcp-agent.workerSandboxes" .))
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.text" "value" .Values.bundled.model.text)
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.image" "value" .Values.bundled.model.image)
                 (dict "tenant" .Values.bundled.seedTenant "extId" "bundled" "name" "model.image_edit" "value" .Values.bundled.model.imageEdit)

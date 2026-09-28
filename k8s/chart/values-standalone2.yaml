@@ -118,7 +118,7 @@ computerUse:
   enabled: true
   image:
     repository: git.agent.svc.cluster.local/abcp/computer-use-extension
-    tag: "20260928120000"
+    tag: "20260928130000"
     pullPolicy: IfNotPresent
   seedTenant: "*"
   sandboxes: >-
@@ -133,9 +133,17 @@ workerExtension:
   enabled: true
   image:
     repository: git.agent.svc.cluster.local/abcp/worker-extension
-    tag: "20260927135500"
+    tag: "20260928130000"
     pullPolicy: IfNotPresent
   seedTenant: "*"
+  # Sandboxes the worker tools may run against. `s2-worker` is this stack's own
+  # code sandbox (the default, first entry); the three `temp` GUI workers are
+  # agent-workers too, so the same exec/file tools can drive them.
+  sandboxes: >-
+    [{"name":"default","url":"http://s2-worker.agent.svc.cluster.local:80","token":"devworker-token"},
+     {"name":"linux","url":"http://desktop-worker.temp.svc.cluster.local:80","token":"devdesktop-token"},
+     {"name":"macos","url":"http://macos-worker.temp.svc.cluster.local:80","token":"devmac-token"},
+     {"name":"windows","url":"http://windows-worker.temp.svc.cluster.local:80","token":"devwin-token"}]
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits: { cpu: 500m, memory: 256Mi }
