@@ -1,6 +1,11 @@
 import { fireAndForget } from './async.js'
 import type { Bus } from './bus.js'
-import { BUCKET_SESSION_STATE, natsToken, tenantKVKey } from './bus.js'
+import {
+  BUCKET_SESSION_STATE,
+  natsToken,
+  SESSION_LEASE_MS,
+  tenantKVKey,
+} from './bus.js'
 import type { Db } from './db-client.js'
 import { dbBackend, rawAll } from './db-client.js'
 import { logger } from './logger.js'
@@ -272,6 +277,30 @@ export type SessionStatus = 'busy' | 'idle'
 
 /** The lease KV bucket (mirrors the SDK's LEASE_BUCKET). */
 export const LEASE_BUCKET = 'abc-session-state'
+
+/**
+ * Ensure the RUN-LEASE bucket exists with the correct per-key TTL.
+ *
+ * A NATS KV bucket's TTL is fixed at CREATION: whoever creates it first
+ * dictates it. `bus.kvWatch()` creates a missing bucket with `ttl=0`
+ * (persistent), so a `WatchSessions` subscriber that touches the lease bucket
+ * before the first turn poisons it — lease keys then NEVER expire, and a crash
+ * mid-turn leaves a stale `running` lease that reports the session `busy`
+ * forever (the UI sticks on "running"; Interrupt cannot clear it because it
+ * only aborts the in-memory run, it does not delete the key).
+ *
+ * Creating the bucket here, at boot and BEFORE the server starts listening
+ * (hence before any watcher), pins the correct TTL. `claimSession` also
+ * creates it with the same TTL, so this only closes the watcher-first race.
+ * Failure is non-fatal (a transient NATS error retries on the next boot).
+ */
+export async function ensureLeaseBucket(bus: Bus): Promise<void> {
+  try {
+    await bus.kvCreate(LEASE_BUCKET, 'bucket-init', '1', SESSION_LEASE_MS)
+  } catch {
+    // Already exists (or transient error) — claimSession/openKv handle the rest.
+  }
+}
 
 /** Batch-read the runtime status for many sessions (one KV read each, parallel). */
 export async function readSessionStatuses(

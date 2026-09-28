@@ -12,6 +12,7 @@ import {
   connectBus,
   connectDb,
   type Db,
+  ensureLeaseBucket,
   IdleWatchdog,
   knownTenants,
   LlmRegistry,
@@ -118,6 +119,13 @@ async function main(): Promise<void> {
     process.exit(1)
   }
   const bus: Bus = busRes.value
+
+  // Pin the run-lease bucket's TTL BEFORE anything can create it with the
+  // wrong one. `WatchSessions` (and any `bus.kvWatch`) creates a missing
+  // bucket persistent (ttl=0); if that wins the race, lease keys never expire
+  // and a mid-turn crash leaves a stale `running` lease that reports the
+  // session busy forever. Awaited so it precedes the watchers below.
+  await ensureLeaseBucket(bus)
 
   // File metadata backend follows the blob backend: `nats` keeps it in the
   // abc-files-meta KV; `s3` puts it in the `agent_files` DB table so file

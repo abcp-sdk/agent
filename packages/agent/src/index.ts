@@ -34,6 +34,7 @@ export * from './object-store-s3.js'
 export * from './session-agent.js'
 export {
   calibrateMessageFacts,
+  ensureLeaseBucket,
   factFromPersist,
   isSyntheticSource,
   LEASE_BUCKET,

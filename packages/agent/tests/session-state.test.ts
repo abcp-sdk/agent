@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest'
 import type { Bus } from '../src/bus.js'
 import { natsToken } from '../src/bus.js'
 import {
+  ensureLeaseBucket,
   factFromPersist,
   isSyntheticSource,
+  LEASE_BUCKET,
   projectMessageFact,
   readMessageFacts,
   readSessionStatuses,
 } from '../src/session-state.js'
+import { SESSION_LEASE_MS } from '../src/bus.js'
 
 const T = 't1'
 
@@ -168,5 +171,26 @@ describe('synthetic-source preview suppression', () => {
     const f = (await readMessageFacts(bus, T, [sid])).get(sid)
     expect(f?.last_message_preview).toBe('')
     expect(f?.message_seq).toBe(1)
+  })
+})
+
+describe('ensureLeaseBucket', () => {
+  it('creates the lease bucket with the run-lease TTL', async () => {
+    const calls: Array<{ bucket: string; ttl: number }> = []
+    const bus = {
+      kvCreate: (bucket: string, _k: string, _v: string, ttl: number) => {
+        calls.push({ bucket, ttl })
+        return Promise.resolve(1)
+      },
+    } as unknown as Bus
+    await ensureLeaseBucket(bus)
+    expect(calls).toEqual([{ bucket: LEASE_BUCKET, ttl: SESSION_LEASE_MS }])
+  })
+
+  it('is best-effort: a kvCreate error never throws', async () => {
+    const bus = {
+      kvCreate: () => Promise.reject(new Error('nats down')),
+    } as unknown as Bus
+    await expect(ensureLeaseBucket(bus)).resolves.toBeUndefined()
   })
 })
