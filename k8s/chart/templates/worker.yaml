@@ -5,24 +5,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: worker
+  name: {{ include "abcp-agent.prefix" . }}worker
   namespace: {{ include "abcp-agent.namespace" . }}
   labels:
     {{- include "abcp-agent.labels" . | nindent 4 }}
-    app: worker
+    app: {{ include "abcp-agent.prefix" . }}worker
 spec:
   replicas: 1
   selector:
-    matchLabels: { app: worker }
+    matchLabels: { app: {{ include "abcp-agent.prefix" . }}worker }
   template:
     metadata:
       labels:
         {{- include "abcp-agent.labels" . | nindent 8 }}
-        app: worker
+        app: {{ include "abcp-agent.prefix" . }}worker
     spec:
       securityContext: {}
       containers:
-        - name: worker
+        - name: {{ include "abcp-agent.prefix" . }}worker
           image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}
           imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
           env:
@@ -70,7 +70,7 @@ metadata:
     {{- include "abcp-agent.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.worker.service.type }}
-  selector: { app: worker }
+  selector: { app: {{ include "abcp-agent.prefix" . }}worker }
   ports:
     # `http` keeps the plain :80 address (used by the seeded worker-url);
     # `worker` exposes the raw container port too.

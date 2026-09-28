@@ -1,13 +1,29 @@
 {{- $svc := .Values.nats -}}
 {{- $g := .Values.global -}}
+{{- $p := include "agent.prefix" . -}}
 {{- if $svc.enabled }}
+{{- if eq $g.persistence "pvc" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $p }}nats-data
+  namespace: {{ .Values.namespace }}
+  labels: { app: {{ $p }}nats }
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: {{ include "agent.storageClass" . }}
+  resources:
+    requests:
+      storage: {{ $svc.pvcSize | default "2Gi" }}
+---
+{{- end }}
 # One NATS account per application, so each has its OWN JetStream domain and
 # cannot see another's streams/KV/objects. The standalone agent connects as
 # account `agent` (user/pass); other apps get their own account later.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: nats-config
+  name: {{ $p }}nats-config
   namespace: {{ .Values.namespace }}
 data:
   nats.conf: |
@@ -29,19 +45,27 @@ data:
         jetstream: enabled
         users: [ { user: "{{ $svc.class.user }}", password: "{{ $svc.class.password }}" } ]
       }
+      {{- if $svc.extra }}
+      {{- range $svc.extra }}
+      {{ .name }} {
+        jetstream: enabled
+        users: [ { user: "{{ .user }}", password: "{{ .password }}" } ]
+      }
+      {{- end }}
+      {{- end }}
     }
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nats
+  name: {{ $p }}nats
   namespace: {{ .Values.namespace }}
-  labels: { app: nats }
+  labels: { app: {{ $p }}nats }
 spec:
   replicas: 1
-  selector: { matchLabels: { app: nats } }
+  selector: { matchLabels: { app: {{ $p }}nats } }
   template:
-    metadata: { labels: { app: nats } }
+    metadata: { labels: { app: {{ $p }}nats } }
     spec:
       containers:
       - name: nats
@@ -58,20 +82,25 @@ spec:
         - { name: config, mountPath: /etc/nats, readOnly: true }
       volumes:
       - name: data
+        {{- if eq $g.persistence "pvc" }}
+        persistentVolumeClaim:
+          claimName: {{ $p }}nats-data
+        {{- else }}
         hostPath:
           path: {{ $svc.dataPath }}
           type: DirectoryOrCreate
+        {{- end }}
       - name: config
-        configMap: { name: nats-config }
+        configMap: { name: {{ $p }}nats-config }
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: nats
+  name: {{ $p }}nats
   namespace: {{ .Values.namespace }}
-  labels: { app: nats }
+  labels: { app: {{ $p }}nats }
 spec:
-  selector: { app: nats }
+  selector: { app: {{ $p }}nats }
   ports:
   - { name: client, port: {{ $svc.ports.client }}, targetPort: {{ $svc.ports.client }} }
   - { name: monitor, port: {{ $svc.ports.monitor }}, targetPort: {{ $svc.ports.monitor }} }

@@ -1,11 +1,26 @@
 {{- $svc := .Values.garage -}}
 {{- $g := .Values.global -}}
+{{- $p := include "agent.prefix" . -}}
 {{- if $svc.enabled }}
+{{- if eq $g.persistence "pvc" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $p }}garage-data
+  namespace: {{ .Values.namespace }}
+  labels: { app: {{ $p }}garage }
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: {{ include "agent.storageClass" . }}
+  resources:
+    requests:
+      storage: {{ $svc.pvcSize | default "2Gi" }}
 ---
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: garage-config
+  name: {{ $p }}garage-config
   namespace: {{ .Values.namespace }}
 data:
   garage.toml: |
@@ -35,14 +50,14 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: garage
+  name: {{ $p }}garage
   namespace: {{ .Values.namespace }}
-  labels: { app: garage }
+  labels: { app: {{ $p }}garage }
 spec:
   replicas: 1
-  selector: { matchLabels: { app: garage } }
+  selector: { matchLabels: { app: {{ $p }}garage } }
   template:
-    metadata: { labels: { app: garage } }
+    metadata: { labels: { app: {{ $p }}garage } }
     spec:
       containers:
       - name: garage
@@ -66,31 +81,36 @@ spec:
         - { name: data, mountPath: /var/lib/garage }
       volumes:
       - name: config
-        configMap: { name: garage-config }
+        configMap: { name: {{ $p }}garage-config }
       - name: data
+        {{- if eq $g.persistence "pvc" }}
+        persistentVolumeClaim:
+          claimName: {{ $p }}garage-data
+        {{- else }}
         hostPath:
           path: {{ $svc.dataPath }}
           type: DirectoryOrCreate
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: s3
+  name: {{ $p }}s3
   namespace: {{ .Values.namespace }}
-  labels: { app: garage }
+  labels: { app: {{ $p }}garage }
 spec:
-  selector: { app: garage }
+  selector: { app: {{ $p }}garage }
   ports:
   - { name: http, port: 80, targetPort: {{ $svc.ports.s3 }} }
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: web
+  name: {{ $p }}web
   namespace: {{ .Values.namespace }}
-  labels: { app: garage }
+  labels: { app: {{ $p }}garage }
 spec:
-  selector: { app: garage }
+  selector: { app: {{ $p }}garage }
   ports:
   - { name: http, port: 80, targetPort: {{ $svc.ports.web }} }
 {{- end }}

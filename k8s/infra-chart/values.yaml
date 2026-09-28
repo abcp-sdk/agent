@@ -3,6 +3,15 @@ namespace: agent
 global:
   domain: 10.199.64.20.nip.io
   imagePullPolicy: IfNotPresent
+  # Object-name prefix so a SECOND infra release can coexist in the SAME
+  # namespace with distinct names (e.g. `s2-`). Empty = the original names.
+  namePrefix: ""
+  # StorageClass for every PVC (self-hosted local-path -> host /home/develop/PVC).
+  storageClass: workspace-local
+  # Persistence mode: `hostPath` (legacy, /home/develop/Agent/Volumes) or `pvc`
+  # (per-component PVC on global.storageClass). A fresh/second environment
+  # should use `pvc`; the original `infra` release keeps `hostPath`.
+  persistence: hostPath
   proxy:
     http: http://mihomo.develop.svc.cluster.local:7890
     https: http://mihomo.develop.svc.cluster.local:7890

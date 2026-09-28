@@ -5,25 +5,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: playwright-extension
+  name: {{ include "abcp-agent.prefix" . }}playwright-extension
   namespace: {{ include "abcp-agent.namespace" . }}
   labels:
     {{- include "abcp-agent.labels" . | nindent 4 }}
-    app: playwright-extension
+    app: {{ include "abcp-agent.prefix" . }}playwright-extension
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: playwright-extension
+      app: {{ include "abcp-agent.prefix" . }}playwright-extension
   template:
     metadata:
       labels:
         {{- include "abcp-agent.labels" . | nindent 8 }}
-        app: playwright-extension
+        app: {{ include "abcp-agent.prefix" . }}playwright-extension
     spec:
       securityContext: {}
       containers:
-        - name: playwright-extension
+        - name: {{ include "abcp-agent.prefix" . }}playwright-extension
           image: {{ .Values.playwright.image.repository }}:{{ .Values.playwright.image.tag }}
           imagePullPolicy: {{ .Values.playwright.image.pullPolicy }}
           env:
@@ -55,14 +55,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: playwright-extension
+  name: {{ include "abcp-agent.prefix" . }}playwright-extension
   namespace: {{ include "abcp-agent.namespace" . }}
   labels:
     {{- include "abcp-agent.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
-    app: playwright-extension
+    app: {{ include "abcp-agent.prefix" . }}playwright-extension
   ports:
     - name: http
       port: 80

@@ -1,3 +1,21 @@
+{{- $p := include "abcp-agent.prefix" . -}}
+{{- if and .Values.persistence.enabled (eq .Values.persistence.mode "pvc") }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $p }}agent-data
+  namespace: {{ include "abcp-agent.namespace" . }}
+  labels:
+    {{- include "abcp-agent.labels" . | nindent 4 }}
+    app: {{ .Values.agent.service.name }}
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: {{ .Values.persistence.storageClass | default "workspace-local" }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | default "2Gi" }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,10 +45,25 @@ spec:
           env:
             - name: NATS_URL
               value: {{ include "abcp-agent.natsUrl" . | quote }}
+            {{- if eq .Values.agent.db.backend "pg" }}
+            - name: DB_BACKEND
+              value: pg
+            - name: POSTGRES_HOST
+              value: {{ .Values.agent.db.postgres.host | quote }}
+            - name: POSTGRES_PORT
+              value: {{ .Values.agent.db.postgres.port | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.agent.db.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.agent.db.postgres.password | quote }}
+            - name: POSTGRES_DB_AGENT
+              value: {{ .Values.agent.db.postgres.database | quote }}
+            {{- else }}
             - name: DB_BACKEND
               value: sqlite
             - name: DATABASE_URL
               value: sqlite:///data/agent.db
+            {{- end }}
             - name: PORT
               value: {{ .Values.agent.port | quote }}
             # h2c: in-cluster clients (extensions, gateways, the Caddy
@@ -74,16 +107,21 @@ spec:
             - { containerPort: {{ .Values.agent.port }}, protocol: TCP }
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
-          {{- if .Values.persistence.enabled }}
+          {{- if and .Values.persistence.enabled (ne .Values.agent.db.backend "pg") }}
           volumeMounts:
             - { mountPath: /data, name: data, subPath: {{ .Values.persistence.subPath }} }
           {{- end }}
-      {{- if .Values.persistence.enabled }}
+      {{- if and .Values.persistence.enabled (ne .Values.agent.db.backend "pg") }}
       volumes:
         - name: data
+          {{- if eq .Values.persistence.mode "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ $p }}agent-data
+          {{- else }}
           hostPath:
             path: {{ .Values.persistence.hostPath }}
             type: {{ .Values.persistence.type }}
+          {{- end }}
       {{- end }}
 ---
 apiVersion: v1

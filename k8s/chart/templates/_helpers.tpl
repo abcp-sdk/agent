@@ -3,6 +3,13 @@
 {{- .Values.namespaceOverride | default .Release.Namespace -}}
 {{- end -}}
 
+{{/* Object-name + app-label prefix so a SECOND agent stack can coexist in the
+     SAME namespace with distinct names (e.g. `s2-standalone-agent`). Empty =
+     the original names. */}}
+{{- define "abcp-agent.prefix" -}}
+{{- .Values.namePrefix | default "" -}}
+{{- end -}}
+
 {{- define "abcp-agent.labels" -}}
 app.kubernetes.io/name: abcp-agent
 app.kubernetes.io/instance: {{ .Release.Name }}

@@ -1,3 +1,14 @@
+{{/* Object-name prefix so a second infra release coexists in the same
+     namespace with distinct names (`s2-nats`, ...). Empty = original names. */}}
+{{- define "agent.prefix" -}}
+{{- .Values.global.namePrefix | default "" -}}
+{{- end -}}
+
+{{/* StorageClass for every PVC. */}}
+{{- define "agent.storageClass" -}}
+{{- .Values.global.storageClass | default "workspace-local" -}}
+{{- end -}}
+
 {{/*
   proxyEnv - inject HTTP/HTTPS proxy environment variables
 */}}

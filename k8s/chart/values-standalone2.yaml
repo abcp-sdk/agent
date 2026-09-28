@@ -1,0 +1,134 @@
+# Values for the SECOND standalone agent stack ("standalone2").
+#
+# Coexists with the original `abcp-agent` release in the SAME `agent`
+# namespace, using an `s2-` name prefix. Its metadata DB is Postgres (no
+# sqlite, no /data volume); infra endpoints point at the `s2-`-prefixed
+# `infra-s2` release (PVC-backed).
+#
+#   helm install abcp-agent-s2 k8s/chart -n agent -f k8s/chart/values-standalone2.yaml
+namespaceOverride: agent
+namePrefix: "s2-"
+
+infra:
+  nats:
+    host: "s2-nats.agent.svc.cluster.local"
+    port: 4222
+    user: "agent"
+    password: "devpassword"
+  s3:
+    bucket: "standalone2"
+    region: "garage"
+    endpoint: "http://s2-s3.agent.svc.cluster.local"
+    accessKey: "GKcd15b16f2e21342a7e47bd4c"
+    secretKey: "019fd7be6d475ebbd7ef1adc6208795c679ec93907dc57e8c60431371f69fe22"
+    pathStyle: true
+    prefix: "standalone2"
+  seleniumUrl: "http://s2-selenium.agent.svc.cluster.local:4444"
+  proxy:
+    http: "http://mihomo.develop.svc.cluster.local:7890"
+    https: "http://mihomo.develop.svc.cluster.local:7890"
+
+agent:
+  image:
+    repository: git.agent.svc.cluster.local/abcp/agent
+    tag: "20260927103748"
+    pullPolicy: IfNotPresent
+  port: 8080
+  service:
+    name: s2-standalone-agent
+    type: ClusterIP
+  corsOrigin: "*"
+  disabledTools: ""
+  auth:
+    adminToken: "dev-admin-token"
+    bootstrapTenant: "default"
+    bootstrapToken: "devtenanttoken"
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  # Postgres metadata backend — no sqlite, no /data volume.
+  db:
+    backend: pg
+    postgres:
+      host: "s2-postgres.agent.svc.cluster.local"
+      port: 5432
+      user: "root"
+      password: "devpassword"
+      database: "abcp_agent"
+
+webui:
+  image:
+    repository: git.agent.svc.cluster.local/abcp/agent-webui
+    tag: "20260926073337"
+    pullPolicy: IfNotPresent
+  port: 8080
+  service:
+    name: s2-agent
+    type: ClusterIP
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+playwright:
+  enabled: true
+  image:
+    repository: git.agent.svc.cluster.local/abcp/playwright-extension
+    tag: "20260922031821"
+    pullPolicy: IfNotPresent
+  seedTenant: "*"
+  viewport: "1280x720"
+  idleTimeoutMs: 600000
+  maxContexts: 8
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+bundled:
+  seedTenant: "*"
+  model:
+    text: "gateway-text/tal-coding/deepseek-v4.1-flash"
+    image: "gateway-image/tal-coding-gptimage/gpt-image-2.5-flare"
+    imageEdit: "gateway-image/tal-coding-gptimage/gpt-image-2.5-flare"
+    speech: "gateway-speech/mlops-tts-customvoice/qwen3-tts-customvoice"
+    speechClone: "gateway-speech/mlops-tts-base/qwen3-tts-base"
+    transcription: "gateway-transcription/mlops-asr/qwen3-asr"
+
+# Fixed easyworker sandbox (its own, prefixed). Stays sqlite + emptyDir: it is
+# an ephemeral sandbox, not a long-lived service.
+worker:
+  enabled: true
+  image:
+    repository: git.agent.svc.cluster.local/abcp/agent-worker
+    tag: "20260924170523"
+    pullPolicy: IfNotPresent
+  service:
+    name: s2-worker
+    type: ClusterIP
+  port: 48080
+  workspace: ""
+  token: "devworker-token"
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+workerExtension:
+  enabled: true
+  image:
+    repository: git.agent.svc.cluster.local/abcp/worker-extension
+    tag: "20260927135500"
+    pullPolicy: IfNotPresent
+  seedTenant: "*"
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+# pg mode: no /data volume at all.
+persistence:
+  enabled: false
+  mode: pvc
+  storageClass: workspace-local
+  size: 2Gi
+
+serviceAccount:
+  create: false
+  name: "abcp-agent"

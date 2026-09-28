@@ -1,17 +1,33 @@
 {{- $svc := .Values.postgres -}}
 {{- $g := .Values.global -}}
+{{- $p := include "agent.prefix" . -}}
 {{- if $svc.enabled }}
+{{- if eq $g.persistence "pvc" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $p }}postgres-data
+  namespace: {{ .Values.namespace }}
+  labels: { app: {{ $p }}postgres }
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: {{ include "agent.storageClass" . }}
+  resources:
+    requests:
+      storage: {{ $svc.pvcSize | default "2Gi" }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: postgres
+  name: {{ $p }}postgres
   namespace: {{ .Values.namespace }}
-  labels: { app: postgres }
+  labels: { app: {{ $p }}postgres }
 spec:
   replicas: 1
-  selector: { matchLabels: { app: postgres } }
+  selector: { matchLabels: { app: {{ $p }}postgres } }
   template:
-    metadata: { labels: { app: postgres } }
+    metadata: { labels: { app: {{ $p }}postgres } }
     spec:
       securityContext:
         fsGroup: 999
@@ -24,6 +40,11 @@ spec:
           value: {{ $svc.username | quote }}
         - name: POSTGRES_PASSWORD
           value: {{ $svc.password | quote }}
+        {{- if $svc.database }}
+        # Create this database at first init (in addition to the user's default).
+        - name: POSTGRES_DB
+          value: {{ $svc.database | quote }}
+        {{- end }}
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
         {{- include "agent.proxyEnv" . | nindent 8 }}
@@ -33,18 +54,23 @@ spec:
         - { name: data, mountPath: /var/lib/postgresql/data }
       volumes:
       - name: data
+        {{- if eq $g.persistence "pvc" }}
+        persistentVolumeClaim:
+          claimName: {{ $p }}postgres-data
+        {{- else }}
         hostPath:
           path: {{ $svc.dataPath }}
           type: DirectoryOrCreate
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres
+  name: {{ $p }}postgres
   namespace: {{ .Values.namespace }}
-  labels: { app: postgres }
+  labels: { app: {{ $p }}postgres }
 spec:
-  selector: { app: postgres }
+  selector: { app: {{ $p }}postgres }
   ports:
   - { name: pgsql, port: {{ $svc.port }}, targetPort: {{ $svc.port }} }
 {{- end }}

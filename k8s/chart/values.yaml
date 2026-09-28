@@ -15,6 +15,12 @@
 
 namespaceOverride: ""
 
+# Object-name prefix so a SECOND agent stack can coexist in the SAME namespace
+# (the `agent` namespace) with distinct object names, e.g. `s2-`. Empty = the
+# original names (`standalone-agent`, `worker`, ...). The Service names below
+# must ALSO be prefixed in the values file.
+namePrefix: ""
+
 # ---- shared infra endpoints (the `infra` release, same namespace) ----
 # All references are in-cluster Service DNS; the infra chart owns the pods.
 infra:
@@ -66,6 +72,17 @@ agent:
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "1", memory: 1Gi }
+  # Metadata backend. `sqlite` (default) keeps the DB under /data (needs the
+  # persistence volume). `pg` uses an external Postgres (no /data needed) and
+  # ignores persistence.
+  db:
+    backend: sqlite
+    postgres:
+      host: "postgres.agent.svc.cluster.local"
+      port: 5432
+      user: "root"
+      password: "devpassword"
+      database: "abcp_agent"
 
 # ---- webui + Caddy aggregator (h1) ----
 webui:
@@ -151,10 +168,16 @@ workerExtension:
     limits: { cpu: 500m, memory: 256Mi }
 
 # ---- persistence ----
-# The agent keeps its sqlite DB on a hostPath (sessions/messages survive
-# restarts). Set persistence.enabled=false to run fully ephemeral.
+# The agent keeps its sqlite DB under /data (sessions/messages survive
+# restarts). With db.backend=pg the agent needs NO /data volume (the DB lives
+# in Postgres), so this is only mounted in sqlite mode. `mode` selects the
+# volume kind: `hostPath` (legacy single-node dev) or `pvc` (per-stack PVC on
+# storageClass). Set enabled=false for a fully ephemeral sqlite agent.
 persistence:
   enabled: true
+  mode: hostPath          # hostPath | pvc
+  storageClass: workspace-local
+  size: 2Gi
   # hostPath root for /data (single-node dev cluster). DirectoryOrCreate.
   hostPath: /home/develop/.easylab
   subPath: agent-data
