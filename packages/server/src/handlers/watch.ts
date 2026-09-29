@@ -69,6 +69,29 @@ export function watchHandlers(
       const liveRuns = new Set<string>()
       if (activeRun !== null) liveRuns.add(activeRun.runId)
       const dedup = new EidDedup()
+
+      // Seed the client with the AUTHORITATIVE current status before replay.
+      // The per-session stream otherwise carries only TRANSIENT `status`
+      // events, so a client that subscribes while a turn is already running
+      // (or that locally reset its busy flag during a retry/revert) could stay
+      // grey until the next transition — diverging from the session LIST,
+      // which reads the run lease every frame. This snapshot is synthesized
+      // here (NOT replayed from the bus), so the live-run filter never drops
+      // it; `snapshot: true` tells the client it is a state seed, not a run
+      // boundary (no streaming-state reset), and an empty `eid` keeps it out
+      // of the dedup set. `unknown` (a lease read error) is passed through so
+      // the client renders the same "no/ambiguous badge" as the list.
+      const seedStatus = await readSessionStatus(deps.bus, tenant, id)
+      yield create(WatchSessionResponseSchema, {
+        event: 'status',
+        params: toJsonObject({
+          type: seedStatus,
+          snapshot: true,
+          ...(activeRun !== null ? { run_id: activeRun.runId } : {}),
+        }),
+        eid: '',
+      })
+
       for await (const raw of agent.streamEvents(
         tenant,
         id,
