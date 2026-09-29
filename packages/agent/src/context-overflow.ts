@@ -28,6 +28,12 @@ const patterns = [
   /model_context_window_exceeded/i,
   /too many tokens/i,
   /token limit exceeded/i,
+  // Self-hosted gateway (api-gray.xueersi.com) wording: "Input exceeds the
+  // context limit (N tokens). Please shorten the input." The generic table
+  // above (ported from opencode) does not cover it, so it slipped through as a
+  // hard turn failure instead of triggering overflow compaction.
+  /input exceeds the context limit/i,
+  /exceed(?:s|ed)? the model context limit/i,
 ]
 
 const exclusions = [

@@ -16,6 +16,22 @@ describe('isContextOverflow', () => {
     expect(isContextOverflow('model_context_window_exceeded')).toBe(true)
   })
 
+  it('matches the self-hosted gateway wording', () => {
+    expect(
+      isContextOverflow(
+        'Input exceeds the context limit (1048568 tokens). Please shorten the input. Request id: 0217906650563477dd244b6caaa2409295dae72fd71f67976366e',
+      ),
+    ).toBe(true)
+    expect(
+      isContextOverflow(
+        'GatewayInvalidRequestError: Input exceeds the context limit (1048568 tokens). Please shorten the input.',
+      ),
+    ).toBe(true)
+    expect(
+      isContextOverflow('Input tokens exceed the model context limit.'),
+    ).toBe(true)
+  })
+
   it('excludes throttling/rate-limit errors', () => {
     expect(isContextOverflow('throttling error: try later')).toBe(false)
     expect(isContextOverflow('rate limit exceeded')).toBe(false)
