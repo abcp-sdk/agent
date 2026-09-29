@@ -122,7 +122,7 @@ workerExtension:
   enabled: true
   image:
     repository: git.agent.svc.cluster.local/abcp/worker-extension
-    tag: "20260929120000"
+    tag: "20260929143000"
     pullPolicy: IfNotPresent
   seedTenant: "*"
   sandboxes: >-
