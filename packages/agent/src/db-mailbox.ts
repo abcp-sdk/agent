@@ -185,73 +185,106 @@ export const Mailbox = {
     sessionName: string,
   ): ResultAsync<boolean, string> {
     const isPg = dbBackend(db) === 'pg'
+    const now = nowStr()
+    // Must mirror `drainAll`'s deliverability gate, otherwise a future-dated
+    // row would read "pending" while `drainAll` returns empty — an infinite
+    // hold-the-lease loop.
     const sql = isPg
-      ? `SELECT 1 AS one FROM mailbox WHERE tenant = $1 AND session_name = $2 AND status = 'pending' LIMIT 1`
-      : `SELECT 1 AS one FROM mailbox WHERE tenant = ? AND session_name = ? AND status = 'pending' LIMIT 1`
+      ? `SELECT 1 AS one FROM mailbox WHERE tenant = $1 AND session_name = $2 AND status = 'pending' AND (effective_at IS NULL OR effective_at <= $3) LIMIT 1`
+      : `SELECT 1 AS one FROM mailbox WHERE tenant = ? AND session_name = ? AND status = 'pending' AND (effective_at IS NULL OR effective_at <= ?) LIMIT 1`
     return q(
       () =>
-        rawAll(db, sql, [tenant, sessionName]).then(rows => rows.length > 0),
+        rawAll(db, sql, [tenant, sessionName, now]).then(
+          rows => rows.length > 0,
+        ),
       'has pending mailbox',
     )
   },
 
   /**
    * Atomically pop the next pending item (ordered) for one tenant+session.
-   * The UPDATE-with-subquery keeps concurrent replicas from consuming the
-   * same row. On Postgres the subquery takes `FOR UPDATE SKIP LOCKED` so
-   * replicas never fight; SQLite is single-writer (WAL), so the UPDATE itself
-   * serializes the pop — SKIP LOCKED is a no-op there and is omitted.
+   * Kept for single-item callers/tests; delegates to `drainAll`.
    */
   drainOne(
     db: Db,
     tenant: string,
     sessionName: string,
   ): ResultAsync<DrainedMailbox | null, string> {
+    return this.drainAll(db, tenant, sessionName).map(rows => rows[0] ?? null)
+  },
+
+  /**
+   * Atomically pop EVERY deliverable pending item (ordered) for one
+   * tenant+session in a single statement. Ordered by the same key as
+   * `drainOne` so a batch preserves arrival order.
+   *
+   * The per-session run lease guarantees exactly one writer drains a session's
+   * mailbox at a time, so a whole-batch UPDATE needs no `SKIP LOCKED` (and
+   * SQLite is single-writer anyway). `effective_at` gates delivery: a row whose
+   * effective time is in the future stays pending (NULL = deliver now). A
+   * scheduled wake-up is NOT yet implemented, so writing a future
+   * `effective_at` without a timer would strand the row until the next event —
+   * the column is currently unused.
+   */
+  drainAll(
+    db: Db,
+    tenant: string,
+    sessionName: string,
+  ): ResultAsync<DrainedMailbox[], string> {
     const now = nowStr()
     const pgSQL = `UPDATE mailbox SET status = 'consumed', consumed_at = $3
-       WHERE id = (
-         SELECT id FROM mailbox
-         WHERE tenant = $1 AND session_name = $2 AND status = 'pending'
-         ORDER BY COALESCE(effective_at, created_at) ASC, COALESCE(seq, 0) ASC, created_at ASC
-         LIMIT 1
-         FOR UPDATE SKIP LOCKED
-       )
+       WHERE tenant = $1 AND session_name = $2 AND status = 'pending'
+         AND (effective_at IS NULL OR effective_at <= $3)
        RETURNING id, tenant, session_name, msg_type, source, payload, effective_at, status, created_at, consumed_at, seq`
     const sqliteSQL = `UPDATE mailbox SET status = 'consumed', consumed_at = ?
-       WHERE id = (
-         SELECT id FROM mailbox
-         WHERE tenant = ? AND session_name = ? AND status = 'pending'
-         ORDER BY COALESCE(effective_at, created_at) ASC, COALESCE(seq, 0) ASC, created_at ASC
-         LIMIT 1
-       )
+       WHERE tenant = ? AND session_name = ? AND status = 'pending'
+         AND (effective_at IS NULL OR effective_at <= ?)
        RETURNING id, tenant, session_name, msg_type, source, payload, effective_at, status, created_at, consumed_at, seq`
     const isPg = dbBackend(db) === 'pg'
     return q(
       () =>
         (isPg
           ? rawAll(db, pgSQL, [tenant, sessionName, now])
-          : rawAll(db, sqliteSQL, [now, tenant, sessionName])
+          : rawAll(db, sqliteSQL, [now, tenant, sessionName, now])
         ).then(res => {
-          const r = res[0]
-          if (r === undefined) return null
-          const parsed = DrainedMailboxRowSchema.safeParse(r)
-          if (!parsed.success) return null
-          const d = parsed.data
-          return {
-            id: d.id,
-            tenant: d.tenant ?? tenant,
-            session_name: d.session_name,
-            msg_type: d.msg_type,
-            source: d.source ?? '',
-            payload: d.payload,
-            effective_at: d.effective_at ?? null,
-            status: d.status,
-            created_at: d.created_at,
-            consumed_at: d.consumed_at ?? null,
-            seq: d.seq ?? null,
-          } satisfies DrainedMailbox
+          const rows = res.flatMap(r => {
+            const parsed = DrainedMailboxRowSchema.safeParse(r)
+            if (!parsed.success) return []
+            const d = parsed.data
+            return [
+              {
+                id: d.id,
+                tenant: d.tenant ?? tenant,
+                session_name: d.session_name,
+                msg_type: d.msg_type,
+                source: d.source ?? '',
+                payload: d.payload,
+                effective_at: d.effective_at ?? null,
+                status: d.status,
+                created_at: d.created_at,
+                consumed_at: d.consumed_at ?? null,
+                seq: d.seq ?? null,
+              } satisfies DrainedMailbox,
+            ]
+          })
+          // UPDATE ... RETURNING does not guarantee row order; sort by the same
+          // key the WHERE selected on so the batch is deterministic.
+          rows.sort((a, b) => {
+            const ak = a.effective_at ?? a.created_at
+            const bk = b.effective_at ?? b.created_at
+            if (ak !== bk) return ak < bk ? -1 : 1
+            const as = a.seq ?? 0
+            const bs = b.seq ?? 0
+            if (as !== bs) return as - bs
+            return a.created_at < b.created_at
+              ? -1
+              : a.created_at > b.created_at
+                ? 1
+                : 0
+          })
+          return rows
         }),
-      'drain mailbox one',
+      'drain mailbox all',
     )
   },
 

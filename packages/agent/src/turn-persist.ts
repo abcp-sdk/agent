@@ -48,10 +48,14 @@ export interface ToolResultRec {
   result: ToolResult
 }
 
-/** Drain one pending mailbox item for the session (null = empty). */
-export async function drainOne(deps: AgentDeps, tenant: string, sid: string) {
-  const r = await Mailbox.drainOne(deps.db, tenant, sid)
-  return r.isErr() ? null : r.value
+/** Drain EVERY deliverable pending mailbox item (ordered) for the session. */
+export async function drainAll(
+  deps: AgentDeps,
+  tenant: string,
+  sid: string,
+): Promise<Array<{ msg_type: string; payload: string; source?: string }>> {
+  const r = await Mailbox.drainAll(deps.db, tenant, sid)
+  return r.isErr() ? [] : r.value
 }
 
 /** Persist one step under its PRE-MINTED id: chained assistant message +
@@ -183,36 +187,44 @@ export async function persistEvent(
 }
 
 /**
- * Between steps: drain the mailbox and inject everything that arrived.
+ * Process a batch of drained mailbox items IN ARRIVAL ORDER, folding each into
+ * the chain and returning the trigger texts that should continue a turn.
  *
- * - `trigger` → persisted as a `role=user` message (chained) and returned
- *   so the loop continues and the model responds to it.
- * - other event types → folded as `role=event` (as `persistEvent`).
- * - `interrupt` → handled out-of-band by the wake watcher; if one surfaces
- *   here we abort defensively.
+ * - `trigger` → persisted as a `role=user` message (chained); its text is
+ *   returned so a caller running a turn responds to it. Idempotent by id: a
+ *   redelivered envelope is a no-op (no duplicate row).
+ * - `event` → folded as `role=event` (as `persistEvent`).
+ * - `compact` → a manual compaction. A batch coalesces MULTIPLE compacts into
+ *   ONE fold (the second fold of the same prefix would be a no-op anyway).
+ * - `interrupt` → handled out-of-band by the wake watcher; if one surfaces in
+ *   the batch we abort defensively (interrupts are not persisted, so this is a
+ *   backstop).
  *
- * Returns the list of injected user prompts (may be empty).
+ * Returns the injected trigger texts (may be empty).
  */
-export async function drainAndInject(
+export async function processBatch(
   deps: AgentDeps,
   tenant: string,
   sid: string,
+  items: ReadonlyArray<{ msg_type: string; payload: string; source?: string }>,
   ctrl: AbortController,
 ): Promise<string[]> {
   const injected: string[] = []
-  for (;;) {
-    const item = await drainOne(deps, tenant, sid)
-    if (item === null) break
+  let compacted = false
+  for (const item of items) {
     if (item.msg_type === 'interrupt') {
       ctrl.abort()
       continue
     }
     if (item.msg_type === 'compact') {
       // A manual compaction queued while a turn was running: fold the prefix
-      // NOW, at a step boundary (we hold the lease). The next loop iteration
-      // re-reads the tip, so the step after this boundary anchors on the new
-      // checkpoint.
-      await compactSession(deps, tenant, sid, 'manual')
+      // NOW, at a step boundary (we hold the lease). Coalesce several queued
+      // compacts into one fold — the second fold of the same prefix is a
+      // no-op.
+      if (!compacted) {
+        await compactSession(deps, tenant, sid, 'manual')
+        compacted = true
+      }
       continue
     }
     if (item.msg_type === 'trigger') {
@@ -224,9 +236,6 @@ export async function drainAndInject(
       const attachments = payload.isOk()
         ? (payload.value.attachments ?? [])
         : []
-      // Idempotent by id: a redelivered envelope is a no-op (no duplicate
-      // row). A brand-new message is stored AND injected so the running turn
-      // can pivot to it.
       await persistUserPrompt(
         deps,
         tenant,
@@ -234,17 +243,33 @@ export async function drainAndInject(
         text,
         messageId,
         attachments,
-        item.source,
+        item.source ?? '',
       )
-      // Only a text prompt continues the running turn; an attachment-only
-      // message is now in the chain (its file parts render via history) and is
-      // picked up by the next turn rather than injected as empty content.
+      // Only a text prompt continues the turn; an attachment-only message is
+      // now in the chain (its file parts render via history) and is picked up
+      // by the next turn rather than injected as empty content.
       if (text !== '') injected.push(text)
       continue
     }
     await persistEvent(deps, tenant, sid, item.payload)
   }
   return injected
+}
+
+/**
+ * Between steps: drain the WHOLE mailbox and inject everything that arrived.
+ *
+ * Returns the list of injected user prompts (may be empty).
+ */
+export async function drainAndInject(
+  deps: AgentDeps,
+  tenant: string,
+  sid: string,
+  ctrl: AbortController,
+): Promise<string[]> {
+  const items = await drainAll(deps, tenant, sid)
+  if (items.length === 0) return []
+  return processBatch(deps, tenant, sid, items, ctrl)
 }
 
 /** Resolved attachment ref carried in the trigger payload. */

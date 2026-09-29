@@ -22,13 +22,8 @@ import {
   pushRetryNow,
 } from './events.js'
 import type { BlobStore } from './files.js'
-import { clearRun, getAbortController, interruptRun } from './interrupt.js'
-import {
-  ContentPayloadSchema,
-  parse,
-  type ToolResult,
-  WakePayloadSchema,
-} from './json.js'
+import { clearRun, getAbortController } from './interrupt.js'
+import { parse, type ToolResult, WakePayloadSchema } from './json.js'
 import type { LlmRegistry } from './llm.js'
 import {
   isRetryableThrown,
@@ -42,13 +37,12 @@ import { setTurnEnd } from './session-state.js'
 import { type SanitizeDeps, sanitizeStreamPart } from './stream-parts.js'
 import {
   appendStep,
+  drainAll,
   drainAndInject,
-  drainOne,
   type FilePartRec,
   loadHistory,
-  persistEvent,
   persistStep,
-  persistUserPrompt,
+  processBatch,
   type ToolCallRec,
   type ToolResultRec,
 } from './turn-persist.js'
@@ -317,44 +311,43 @@ export async function runSessionTurn(
       )
     }, SESSION_LEASE_MS / 4)
 
-    // Drain every pending item while holding the lock. Each prompt runs as its
-    // own run (busy → … → turn-complete); there is NO idle between them — a
-    // mailbox continuation is the SAME busy period, exactly as the user expects
-    // ("跑完之后 consume mailbox 应延续 busy，不发 idle"). The lock is held
-    // across the whole loop, so the busy signal never flaps.
+    // Drain EVERY pending item while holding the lock, then process the whole
+    // batch together: all triggers/events are folded into the chain IN ARRIVAL
+    // ORDER, and the batch runs as ONE turn (busy → … → turn-complete). There
+    // is NO idle between the batched messages — a mailbox continuation is the
+    // SAME busy period ("跑完之后 consume mailbox 应延续 busy，不发 idle"). The
+    // lock is held across the whole loop, so the busy signal never flaps.
     try {
       for (;;) {
         if (leaseLost) break
-        const item = await drainOne(deps, tenant, sid)
-        if (item === null) {
+        let items = await drainAll(deps, tenant, sid)
+        if (items.length === 0) {
           // Re-drain after a short grace to close the enqueue/drain race.
           await sleep(DRAIN_GRACE_MS)
-          const again = await drainOne(deps, tenant, sid)
-          if (again !== null) {
-            await handleItem(deps, tenant, sid, again)
-            continue
+          items = await drainAll(deps, tenant, sid)
+          if (items.length === 0) {
+            // Non-consuming last look: a message may have landed in the window
+            // since the drain. If so, keep holding the lock and process it — no
+            // spurious idle→busy flap. Only a genuinely empty queue ends the
+            // busy period.
+            const stillPending = await Mailbox.hasPending(
+              deps.db,
+              tenant,
+              sid,
+            ).unwrapOr(false)
+            if (stillPending) continue
+            // No work remains and we still hold the lock: emit the terminal idle
+            // BEFORE releasing. Holding the lock while emitting makes "busy for
+            // the next run" and "idle for this one" mutually exclusive; awaiting
+            // the publish removes the reorder window (the client never sees an
+            // idle land after a newer run's busy).
+            await pushEventNow(deps.bus, tenant, sid, 'status', {
+              type: 'idle',
+            })
+            break
           }
-          // Non-consuming last look: a message may have landed in the window
-          // since the drain. If so, keep holding the lock and process it — no
-          // spurious idle→busy flap. Only a genuinely empty queue ends the
-          // busy period.
-          const stillPending = await Mailbox.hasPending(
-            deps.db,
-            tenant,
-            sid,
-          ).unwrapOr(false)
-          if (stillPending) continue
-          // No work remains and we still hold the lock: emit the terminal idle
-          // BEFORE releasing. Holding the lock while emitting makes "busy for
-          // the next run" and "idle for this one" mutually exclusive; awaiting
-          // the publish removes the reorder window (the client never sees an
-          // idle land after a newer run's busy).
-          await pushEventNow(deps.bus, tenant, sid, 'status', {
-            type: 'idle',
-          })
-          break
         }
-        await handleItem(deps, tenant, sid, item)
+        await handleBatch(deps, tenant, sid, items)
       }
     } finally {
       clearInterval(renewTimer)
@@ -384,8 +377,8 @@ export async function runSessionTurn(
       // emit its own terminal idle. We must not emit idle again here.
       return
     }
-    const pending = await drainOne(deps, tenant, sid)
-    if (pending === null) {
+    const pending = await drainAll(deps, tenant, sid)
+    if (pending.length === 0) {
       // Truly idle: release and finish.
       await releaseLease(deps.bus, tenant, sid)
       return
@@ -396,61 +389,38 @@ export async function runSessionTurn(
   }
 }
 
+/**
+ * Process a drained batch as ONE busy period: fold every item into the chain in
+ * arrival order (`processBatch`), then run a SINGLE turn if the batch carried
+ * at least one text trigger and was not interrupted.
+ *
+ * A batch with only events/compact runs no turn — the fold is durable and the
+ * model picks it up on the next turn. An `interrupt` in the batch aborts
+ * defensively and suppresses the turn (interrupts normally never persist, so
+ * this is a backstop).
+ */
+export async function handleBatch(
+  deps: AgentDeps,
+  tenant: string,
+  sid: string,
+  items: ReadonlyArray<{ msg_type: string; payload: string; source?: string }>,
+): Promise<void> {
+  const ctrl = getAbortController(tenant, sid)
+  const injected = await processBatch(deps, tenant, sid, items, ctrl)
+  if (ctrl.signal.aborted || injected.length === 0) return
+  const r = await runTurnOnce(deps, tenant, sid)
+  if (r !== null) {
+    pushEvent(deps.bus, tenant, sid, 'error', { message: r })
+  }
+}
+
 export async function handleItem(
   deps: AgentDeps,
   tenant: string,
   sid: string,
   item: { msg_type: string; payload: string; source?: string },
 ): Promise<void> {
-  if (item.msg_type === 'interrupt') {
-    // Interrupt is handled out-of-band by the wake watcher; ignore here.
-    interruptRun(tenant, sid)
-    return
-  }
-
-  if (item.msg_type === 'compact') {
-    // Manual compaction is queued through the mailbox so it runs UNDER THE RUN
-    // LEASE at a step boundary — exactly like a prompt — which serializes it
-    // against the turn's chain writes (a concurrent compact would fork the
-    // chain). `handleItem` is always called while this session's lease is held.
-    const r = await compactSession(deps, tenant, sid, 'manual')
-    if (r.isErr()) {
-      pushEvent(deps.bus, tenant, sid, 'error', { message: r.error })
-    }
-    return
-  }
-
-  if (item.msg_type === 'trigger') {
-    // Persist the prompt into the chain BEFORE running the turn. The mailbox
-    // is the single writer: the HTTP Prompt route publishes the envelope and
-    // never writes the chain, and a mailbox-delivered trigger
-    // (subsession-create's handoff, mail-send's result) arrives here too.
-    const payload = parse(ContentPayloadSchema, item.payload)
-    const text = payload.isOk()
-      ? (payload.value.text ?? payload.value.prompt ?? item.payload)
-      : item.payload
-    const messageId = payload.isOk() ? (payload.value.message_id ?? '') : ''
-    const attachments = payload.isOk() ? (payload.value.attachments ?? []) : []
-    if (text !== '' || attachments.length > 0) {
-      await persistUserPrompt(
-        deps,
-        tenant,
-        sid,
-        text,
-        messageId,
-        attachments,
-        item.source ?? '',
-      )
-    }
-    const r = await runTurnOnce(deps, tenant, sid)
-    if (r !== null) {
-      pushEvent(deps.bus, tenant, sid, 'error', { message: r })
-    }
-    return
-  }
-
-  // Everything else is an event: fold into the chain so it reaches the model.
-  await persistEvent(deps, tenant, sid, item.payload)
+  return handleBatch(deps, tenant, sid, [item])
 }
 
 /**
