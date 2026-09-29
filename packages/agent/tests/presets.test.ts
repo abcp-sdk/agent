@@ -63,6 +63,12 @@ describe('built-in system preset set', () => {
     expect(i18n.en).not.toContain('English')
     expect(def.systemPrompt).toBe(i18n.en)
   })
+
+  it('default preset is UNLIMITED (maxTurns 0)', () => {
+    // 0 = unlimited steps per turn (opencode parity); a hard cap silently
+    // truncated long legitimate tasks.
+    expect(SYSTEM_PRESETS[0].maxTurns).toBe(0)
+  })
 })
 
 describe('Presets.seedDefaults', () => {
