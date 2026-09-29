@@ -32,7 +32,7 @@ infra:
 agent:
   image:
     repository: git.agent.svc.cluster.local/abcp/agent
-    tag: "20260929070838"
+    tag: "20260929091948"
     pullPolicy: IfNotPresent
   port: 8080
   service:
