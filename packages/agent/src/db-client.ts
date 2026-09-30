@@ -357,6 +357,11 @@ const PG_MIGRATIONS = `
     UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = 'orchestrator';
     UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = 'executor';
     UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset = 'analyst';
+    -- The 'maintainer' preset was merged into 'developer' (every branch session
+    -- now shares one role). A session pointing at a preset that no longer
+    -- exists would resolve to an EMPTY whitelist = ALL tools with no system
+    -- prompt, so the stale id MUST be remapped.
+    UPDATE sessions SET preset = 'developer' WHERE preset = 'maintainer';
     ALTER TABLE sessions ALTER COLUMN preset SET DEFAULT '${DEFAULT_PRESET}';
     CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages (tenant, id);
     CREATE INDEX IF NOT EXISTS idx_parts_tenant ON parts (tenant, message_id);
@@ -420,6 +425,10 @@ const SQLITE_MIGRATIONS = [
   `ALTER TABLE messages DROP COLUMN tool_call_id`,
   `ALTER TABLE sessions DROP COLUMN last_read_at`,
   `UPDATE sessions SET preset = '${DEFAULT_PRESET}' WHERE preset IN ('', 'orchestrator', 'executor', 'analyst')`,
+  // The `maintainer` preset was merged into `developer`; remap stale ids so a
+  // session never points at a preset that no longer exists (which would resolve
+  // to an empty whitelist = ALL tools, no system prompt).
+  `UPDATE sessions SET preset = 'developer' WHERE preset = 'maintainer'`,
   `CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages (tenant, id)`,
   `CREATE INDEX IF NOT EXISTS idx_parts_tenant ON parts (tenant, message_id)`,
   `CREATE INDEX IF NOT EXISTS idx_mb_sess ON mailbox (tenant, session_name)`,
