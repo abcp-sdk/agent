@@ -3,8 +3,10 @@ import type { Bus } from '../src/bus.js'
 import { natsToken } from '../src/bus.js'
 import {
   claimLease,
+  claimLeaseOutcome,
   clearActiveRun,
   INSTANCE_ID,
+  isClaimError,
   readActiveRun,
   readLeaseOwner,
   readSessionStatus,
@@ -60,6 +62,53 @@ describe('session lock', () => {
     await releaseLease(bus, T, 's')
     expect(kv.has(`t.${T}.${natsToken('s')}`)).toBe(false)
     expect(await claimLease(bus, T, 's')).toBe(true)
+  })
+
+  it('claimLeaseOutcome: held when fresh, busy when any key is present', async () => {
+    const { bus } = fakeBus()
+    expect(await claimLeaseOutcome(bus, T, 's')).toBe('held')
+    // Key present (even owned by us) → busy, so a concurrent invocation on the
+    // same replica is never granted the session.
+    expect(await claimLeaseOutcome(bus, T, 's')).toBe('busy')
+    // Key present + owned by another instance → busy.
+    const other = fakeBus()
+    other.kv.set(
+      `t.${T}.${natsToken('o')}`,
+      JSON.stringify({ owner: 'other-instance' }),
+    )
+    expect(await claimLeaseOutcome(other.bus, T, 'o')).toBe('busy')
+    expect(isClaimError('busy')).toBe(false)
+    expect(isClaimError('error')).toBe(true)
+  })
+
+  it('claimLeaseOutcome: transient create failure with an ABSENT key → error', async () => {
+    const { bus, kv } = fakeBus()
+    // Simulate a transient kvCreate failure (returns null) with no key present.
+    ;(bus as unknown as { kvCreate: () => Promise<null> }).kvCreate = () =>
+      Promise.resolve(null)
+    const outcome = await claimLeaseOutcome(bus, T, 's')
+    expect(outcome).toBe('error')
+    expect(kv.has(`t.${T}.${natsToken('s')}`)).toBe(false)
+  })
+
+  it('claimLeaseOutcome: transient create failure with a PRESENT foreign key → busy', async () => {
+    const { bus, kv } = fakeBus()
+    kv.set(
+      `t.${T}.${natsToken('s')}`,
+      JSON.stringify({ owner: 'other-instance' }),
+    )
+    ;(bus as unknown as { kvCreate: () => Promise<null> }).kvCreate = () =>
+      Promise.resolve(null)
+    expect(await claimLeaseOutcome(bus, T, 's')).toBe('busy')
+  })
+
+  it('claimLeaseOutcome: unreadable key on probe → error (never false busy)', async () => {
+    const { bus } = fakeBus()
+    ;(bus as unknown as { kvCreate: () => Promise<null> }).kvCreate = () =>
+      Promise.resolve(null)
+    ;(bus as unknown as { kvGet: () => Promise<null> }).kvGet = () =>
+      Promise.reject(new Error('nats down'))
+    expect(await claimLeaseOutcome(bus, T, 's')).toBe('error')
   })
 
   it('updateLease is owner-guarded and refreshes the run anchor', async () => {

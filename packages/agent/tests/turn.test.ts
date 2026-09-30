@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { ok } from 'neverthrow'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Bus } from '../src/bus.js'
+import { natsToken } from '../src/bus.js'
 import { connectDb, type Db, rawAll, rawRun } from '../src/db-client.js'
 import { Mailbox } from '../src/db-mailbox.js'
 import { Messages } from '../src/db-messages.js'
@@ -41,13 +42,25 @@ async function db(): Promise<Db> {
 function fakeBus(overrides: {
   claim: (sid: string) => Promise<number | null>
   release?: (sid: string) => Promise<void>
+  seedKeys?: string[]
 }) {
+  const kv = new Map<string, string>()
+  for (const k of overrides.seedKeys ?? []) kv.set(k, '{"owner":"other"}')
   return {
-    kvCreate: (_b: string, _k: string, _v: string, _t: number) =>
-      Promise.resolve(overrides.claim('')),
+    kvCreate: (_b: string, k: string, _v: string, _t: number) =>
+      Promise.resolve(overrides.claim(k)).then(r => {
+        if (r !== null && r !== undefined) kv.set(k, '{"owner":"x"}')
+        return r
+      }),
     kvCas: () => Promise.resolve(1),
-    kvDelete: () => Promise.resolve(overrides.release?.('') ?? undefined),
-    kvGet: () => Promise.resolve(null),
+    kvDelete: (_b: string, k: string) => {
+      kv.delete(k)
+      return Promise.resolve(overrides.release?.('') ?? undefined)
+    },
+    // Mirror a real KV: a key created by a successful claim is readable, so the
+    // outcome probe sees it. A null create with no key = transient error.
+    kvGet: (_b: string, k: string) =>
+      Promise.resolve(kv.has(k) ? '{"owner":"x"}' : null),
     kvPut: () => Promise.resolve(),
     objectPut: () => Promise.resolve(),
     objectGet: () => Promise.resolve(new Uint8Array()),
@@ -68,6 +81,24 @@ describe('runSessionTurn', () => {
     const drain = vi
       .spyOn(Mailbox, 'drainAll')
       .mockResolvedValue(ok([]) as never)
+    // A pre-existing lock key → the claim reports `busy` (no transient retry).
+    const bus = fakeBus({
+      claim: () => Promise.resolve(null),
+      seedKeys: [`t.${T}.${natsToken('a:b:main')}`],
+    })
+    await runSessionTurn(
+      { db: {}, bus, config: {}, llm: {} } as AgentDeps,
+      T,
+      'a:b:main',
+    )
+    expect(drain).not.toHaveBeenCalled()
+  })
+
+  it('a transient claim error is retried and never drains (row stays pending)', async () => {
+    const drain = vi
+      .spyOn(Mailbox, 'drainAll')
+      .mockResolvedValue(ok([]) as never)
+    // kvCreate always fails AND no key is ever present → every attempt errors.
     const bus = fakeBus({ claim: () => Promise.resolve(null) })
     await runSessionTurn(
       { db: {}, bus, config: {}, llm: {} } as AgentDeps,
@@ -263,6 +294,30 @@ describe('Mailbox.drainAll', () => {
     ])
     expect(String(raw[0]!.status)).toBe('pending')
     expect((await Mailbox.hasPending(d, T, sid))._unsafeUnwrap()).toBe(false)
+  })
+})
+
+describe('Mailbox.pendingSessions', () => {
+  it('filters to WAKE types so a lone event is not recovered', async () => {
+    const d = await db()
+    await Sessions.create(d, T, 'a:b:main')
+    await Sessions.create(d, T, 'a:b:ctxonly')
+    // One session has a pending trigger, the other only a context event.
+    await Mailbox.enqueue(d, T, 'a:b:main', 'trigger', { text: 'go' })
+    await Mailbox.enqueue(d, T, 'a:b:ctxonly', 'event', { content: 'note' })
+
+    // Unfiltered: BOTH sessions are returned.
+    const all = (await Mailbox.pendingSessions(d))._unsafeUnwrap()
+    expect(all.map(r => r.session_name).sort()).toEqual([
+      'a:b:ctxonly',
+      'a:b:main',
+    ])
+
+    // Wake-type filtered: only the trigger session is recovered.
+    const wake = (
+      await Mailbox.pendingSessions(d, ['trigger', 'compact'])
+    )._unsafeUnwrap()
+    expect(wake.map(r => r.session_name)).toEqual(['a:b:main'])
   })
 })
 

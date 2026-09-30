@@ -32,7 +32,13 @@ import {
 } from './llm-retry.js'
 import { logger } from './logger.js'
 import { compactSession } from './session-compact.js'
-import { claimLease, releaseLease, updateLease } from './session-lock.js'
+import {
+  type ClaimOutcome,
+  claimLease,
+  claimLeaseOutcome,
+  releaseLease,
+  updateLease,
+} from './session-lock.js'
 import { setTurnEnd } from './session-state.js'
 import { type SanitizeDeps, sanitizeStreamPart } from './stream-parts.js'
 import {
@@ -67,6 +73,26 @@ export interface AgentDeps {
 const DRAIN_GRACE_MS = 200
 
 /**
+ * Mailbox message types that WAKE the session turn loop.
+ *
+ *   - `trigger` — a text prompt; drives a model turn.
+ *   - `compact` — a manual compaction; must run at a step boundary UNDER the
+ *     lease, so an idle session has to be woken or the request never executes.
+ *
+ * Every OTHER type (`event`, …) is CONTEXT-ONLY: it is persisted and folded
+ * lazily by the next trigger, or by a running turn's step boundary. Waking the
+ * turn loop for a context-only message would claim the lease, drain it, find no
+ * trigger, and emit a terminal `idle` with no preceding `busy` — pure status
+ * noise (and a needless lease flap across replicas).
+ */
+export const WAKE_MAILBOX_TYPES: readonly string[] = ['trigger', 'compact']
+
+/** True when a mailbox message type should wake the session's turn loop. */
+export function shouldWakeMailbox(type: string): boolean {
+  return WAKE_MAILBOX_TYPES.includes(type)
+}
+
+/**
  * Renew a held lock, falling back to a RE-CLAIM when the owner-guarded renew
  * fails.
  *
@@ -99,6 +125,39 @@ export async function renewOrReclaim(
   }
   if (reclaimed) return { held: true, lost: false, reclaimed: true }
   return { held: false, lost: true, reclaimed: false }
+}
+
+/** Attempts for the initial/re-claim before giving up on a transient error. */
+export const CLAIM_MAX_ATTEMPTS = 6
+/** First backoff delay for a transient claim error (exponential, capped 1s). */
+export const CLAIM_RETRY_BASE_MS = 50
+
+/**
+ * Claim with bounded exponential backoff on a TRANSIENT claim error. Unlike a
+ * bare `claimLease`, a transient KV/JetStream failure is retried rather than
+ * collapsed into "busy" — the latter silently dropped a wake whose message row
+ * stayed pending until an unrelated event happened to re-trigger the session.
+ * Never throws; returns the last outcome (`error` after exhausting attempts).
+ *
+ * Exported for unit testing (the defaults are overridable to keep tests fast).
+ */
+export async function claimWithRetry(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+  opts: { maxAttempts?: number; baseDelayMs?: number } = {},
+): Promise<ClaimOutcome> {
+  const maxAttempts = opts.maxAttempts ?? CLAIM_MAX_ATTEMPTS
+  const baseDelayMs = opts.baseDelayMs ?? CLAIM_RETRY_BASE_MS
+  let outcome: ClaimOutcome = 'error'
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    outcome = await claimLeaseOutcome(bus, tenant, sid)
+    if (outcome !== 'error') return outcome
+    if (attempt < maxAttempts - 1 && baseDelayMs > 0) {
+      await sleep(Math.min(1000, baseDelayMs * 2 ** attempt))
+    }
+  }
+  return outcome
 }
 
 /**
@@ -202,6 +261,11 @@ export async function handleMailboxMessage(
     return
   }
 
+  // Context-only messages (e.g. `event`) are persisted but do NOT wake the turn
+  // loop: they fold lazily on the next trigger or a running turn's step
+  // boundary. Waking here would claim the lease and emit a spurious idle.
+  if (!shouldWakeMailbox(env.type)) return
+
   void runSessionTurn(deps, tenant, env.session_name).then(
     () => {},
     e =>
@@ -231,14 +295,19 @@ export async function runSessionTurn(
   sid: string,
 ): Promise<void> {
   for (;;) {
-    let held: boolean
-    try {
-      held = await claimLease(deps.bus, tenant, sid)
-    } catch (e) {
-      logger.warn({ tenant, sid, err: String(e) }, 'claim error')
+    // Bounded-retry a TRANSIENT claim error; a definitive `busy` means another
+    // replica owns the session and will drain our message.
+    const claim = await claimWithRetry(deps.bus, tenant, sid)
+    if (claim === 'error') {
+      // Still failing after retries: leave the message PENDING (never consumed
+      // here) so boot recovery / the next wake retries it. Do not silently drop.
+      logger.error(
+        { tenant, sid },
+        'session claim failed after retries — leaving mailbox pending',
+      )
       return
     }
-    if (!held) {
+    if (claim === 'busy') {
       // Another replica is running this session; it will drain our message.
       return
     }
@@ -343,14 +412,15 @@ export async function runSessionTurn(
     // The idle was emitted and the lock released. RE-CLAIM once to close the
     // window where a mailbox wake arrived while we held the lock (its row is
     // still pending, but the waking invocation could not claim and returned).
-    let reHeld: boolean
-    try {
-      reHeld = await claimLease(deps.bus, tenant, sid)
-    } catch (e) {
-      logger.warn({ tenant, sid, err: String(e) }, 're-claim error')
+    const reClaim = await claimWithRetry(deps.bus, tenant, sid)
+    if (reClaim === 'error') {
+      logger.error(
+        { tenant, sid },
+        'session re-claim failed after retries — leaving mailbox pending',
+      )
       return
     }
-    if (!reHeld) {
+    if (reClaim === 'busy') {
       // Another invocation owns the session now; IT will process any prompt and
       // emit its own terminal idle. We must not emit idle again here.
       return

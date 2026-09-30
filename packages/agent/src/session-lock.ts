@@ -107,15 +107,34 @@ export async function ensureLockBuckets(bus: Bus): Promise<void> {
 }
 
 /**
- * Atomically claim a session's lock, stamped with this instance's id. Returns
- * true when we now hold it (a fresh key), false when another holder owns it
- * (or the key is a not-yet-expired crash remnant — cleared by TTL/reconcile).
+ * The outcome of a claim attempt:
+ *   - `held`  — we now own the lock.
+ *   - `busy`  — another holder owns the (not-yet-expired) key.
+ *   - `error` — the claim could not be evaluated (transient KV/JetStream
+ *     failure). NOT a definitive "occupied"; callers must retry rather than
+ *     silently drop the wake.
  */
-export async function claimLease(
+export type ClaimOutcome = 'held' | 'busy' | 'error'
+
+/**
+ * Atomically claim a session's lock, stamped with this instance's id.
+ *
+ * The SDK's `kvCreate` collapses EVERY failure (key-exists AND transient
+ * network/JetStream errors) to `null`, so a `null` result alone cannot tell
+ * "another holder owns it" from "the claim call failed". We disambiguate by
+ * probing the key:
+ *   - key present → `busy` (the create failed because the key exists — even
+ *     when stamped with our own id, a pre-existing hold must not be treated as
+ *     a fresh acquire, or two invocations on one replica would run together)
+ *   - key absent → the create failed for a transient reason → `error`
+ * A probe failure is also `error` (never a false `busy`, which would drop the
+ * wake permanently).
+ */
+export async function claimLeaseOutcome(
   bus: Bus,
   tenant: string,
   sid: string,
-): Promise<boolean> {
+): Promise<ClaimOutcome> {
   try {
     const rev = await bus.kvCreate(
       LEASE_BUCKET,
@@ -123,10 +142,38 @@ export async function claimLease(
       JSON.stringify({ owner: INSTANCE_ID } satisfies LeaseValue),
       SESSION_LEASE_MS,
     )
-    return rev !== null
+    if (rev !== null) return 'held'
   } catch {
-    return false
+    // Fall through to the probe below.
   }
+  // kvCreate returned null OR threw: distinguish occupied from transient.
+  let raw: string | null
+  try {
+    raw = await bus.kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
+  } catch {
+    return 'error'
+  }
+  // Any present key (ours or another's) means the create lost to an existing
+  // hold → busy. A concurrent invocation must NOT be granted the session.
+  return raw === null || raw === undefined ? 'error' : 'busy'
+}
+
+/**
+ * Boolean convenience wrapper around {@link claimLeaseOutcome}: true only when
+ * we definitively hold the lock. Transient failures collapse to `false` — use
+ * `claimLeaseOutcome` when the caller must retry on transient errors.
+ */
+export async function claimLease(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+): Promise<boolean> {
+  return (await claimLeaseOutcome(bus, tenant, sid)) === 'held'
+}
+
+/** True when a claim failed transiently (worth retrying), not merely busy. */
+export function isClaimError(outcome: ClaimOutcome): boolean {
+  return outcome === 'error'
 }
 
 /**

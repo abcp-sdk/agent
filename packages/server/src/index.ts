@@ -38,6 +38,7 @@ import {
   storeFile,
   Tenants,
   tenantKVKey,
+  WAKE_MAILBOX_TYPES,
   watchMailboxWake,
 } from '@abcp-agent/agent'
 import { createConnectRouter } from '@connectrpc/connect'
@@ -623,8 +624,23 @@ async function main(): Promise<void> {
   // but whose turn never ran (e.g. replica died after ack before
   // runSessionTurn). The claim mechanism keeps this safe across replicas
   // (exactly one wins the per-session lease).
-  const pending = await Mailbox.pendingSessions(db)
-  if (pending.isOk()) {
+  const recoverPending = async (reason: 'boot' | 'sweep'): Promise<void> => {
+    // Only sessions with a WAKE-type row (trigger/compact) are recovered; a
+    // session holding only context-only rows (e.g. a lone `event`) folds lazily
+    // and must not be re-woken (that would emit a spurious idle).
+    const pending = await Mailbox.pendingSessions(db, WAKE_MAILBOX_TYPES)
+    if (pending.isErr()) {
+      logger.warn({ reason, err: pending.error }, 'pending scan failed')
+      return
+    }
+    if (pending.value.length > 0) {
+      // A busy session legitimately has a pending row mid-turn, so the periodic
+      // sweep logs at debug to avoid noise; boot is one-shot and worth a warn.
+      const fields = { reason, sessions: pending.value.length }
+      const msg = 'recovering sessions with pending mailbox rows'
+      if (reason === 'boot') logger.warn(fields, msg)
+      else logger.debug(fields, msg)
+    }
     for (const item of pending.value) {
       void runSessionTurn(deps, item.tenant, item.session_name).then(
         () => {},
@@ -636,6 +652,20 @@ async function main(): Promise<void> {
       )
     }
   }
+  await recoverPending('boot')
+
+  // Periodic backstop: a wake that was lost (transient claim failure, replica
+  // restart mid-ack, …) leaves a row pending with no further trigger. Re-scan
+  // and re-run those sessions. The per-session lease arbitrates across
+  // replicas, so concurrent sweeps are safe and a genuinely-busy session is a
+  // no-op. This closes the "message enqueued but turn never ran" hole without
+  // relying solely on boot recovery.
+  const pendingSweepMs = 15_000
+  const sweepTimer = setInterval(
+    () => void recoverPending('sweep'),
+    pendingSweepMs,
+  )
+  sweepTimer.unref()
 }
 
 void main()

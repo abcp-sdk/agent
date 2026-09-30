@@ -155,17 +155,31 @@ export const Mailbox = {
     }, 'list mailbox page')
   },
 
-  /** Sessions (with their tenant) that still have pending mailbox items
-   *  (startup recovery). */
+  /**
+   * Sessions (with their tenant) that still have pending mailbox items worth
+   * RECOVERING (startup recovery + periodic backstop).
+   *
+   * `types` narrows the scan to the message types that actually WAKE a turn
+   * (trigger/compact). A session holding only context-only rows (e.g. a lone
+   * `event`) must NOT be recovered: re-running its turn would claim the lease,
+   * drain the event, find no trigger, and emit a spurious idle. When `types` is
+   * omitted, EVERY pending session is returned (all types).
+   */
   pendingSessions(
     db: Db,
+    types?: readonly string[],
   ): ResultAsync<{ tenant: string; session_name: string }[], string> {
+    const list = types ?? []
+    let sql = `SELECT DISTINCT tenant, session_name FROM mailbox WHERE status = 'pending'`
+    const params: unknown[] = []
+    if (list.length > 0) {
+      // `rawAll` converts `?` → `$n` for pg; keep the portable form here.
+      sql += ` AND msg_type IN (${list.map(() => '?').join(', ')})`
+      params.push(...list)
+    }
     return q(
       () =>
-        rawAll(
-          db,
-          `SELECT DISTINCT tenant, session_name FROM mailbox WHERE status = 'pending'`,
-        ).then(rows =>
+        rawAll(db, sql, params).then(rows =>
           rows.map(r => ({
             tenant: String(r.tenant ?? 'default'),
             session_name: String(r.session_name),
