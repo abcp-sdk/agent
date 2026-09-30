@@ -22,8 +22,8 @@ export const SYSTEM_PRESETS: readonly PresetRowInternal[] = [
     // Empty whitelist = no restriction: all discovered tools are allowed.
     tools: '[]',
     // 0 = UNLIMITED steps per turn (opencode parity): the loop runs until the
-    // model stops, the user interrupts, or the doom-loop guard fires. A hard
-    // step cap silently truncated long legitimate tasks.
+    // model stops or the user interrupts. A hard step cap silently truncated
+    // long legitimate tasks.
     maxTurns: 0,
     isSystem: true,
   },

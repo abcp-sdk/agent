@@ -311,65 +311,6 @@ describe('runTurnOnce provider retry', () => {
     ).toBe(true)
   })
 
-  it('ends the turn when the SAME tool call repeats (doom-loop guard)', async () => {
-    const { deps, sid } = await setup()
-    const { runTurnOnce } = await import('../src/session-agent.js')
-
-    // Every step emits the IDENTICAL tool call (same name + args): the model is
-    // stuck. The guard must end the turn after the threshold, not run forever.
-    streamFactory = () => ({
-      fullStream: fullStream([
-        {
-          type: 'tool-call',
-          toolCallId: 'tc-loop',
-          toolName: 'time-wait',
-          input: { seconds: 1 },
-        },
-        finishStep('tool-calls'),
-        finish(),
-      ]),
-    })
-
-    const err = await runTurnOnce(deps as never, 't', sid)
-    expect(typeof err).toBe('string')
-    expect(err).toContain('repeated the same tool call')
-    // Threshold is 3 → 3 identical steps, then stop (not the maxTurns cap).
-    expect(streamCalls.length).toBe(3)
-    const errors = published.filter(p => p.event === 'error')
-    expect(errors.length).toBe(1)
-    expect(String(errors[0]!.params['message'])).toContain('time-wait')
-  })
-
-  it('does NOT trip the doom-loop guard when tool args change', async () => {
-    const { deps, sid } = await setup()
-    const { runTurnOnce } = await import('../src/session-agent.js')
-
-    // Same tool, DIFFERENT args each step, then a text finish: no loop.
-    streamFactory = call => {
-      if (call >= 2) {
-        return {
-          fullStream: fullStream([textDelta('done'), finishStep(), finish()]),
-        }
-      }
-      return {
-        fullStream: fullStream([
-          {
-            type: 'tool-call',
-            toolCallId: `tc-${call}`,
-            toolName: 'time-wait',
-            input: { seconds: call + 1 },
-          },
-          finishStep('tool-calls'),
-          finish(),
-        ]),
-      }
-    }
-
-    const err = await runTurnOnce(deps as never, 't', sid)
-    expect(err).toBeNull()
-    expect(published.filter(p => p.event === 'error').length).toBe(0)
-  })
-
   it('ends the turn with a clear error on finish_reason:length (truncated output)', async () => {
     const { deps, db, sid } = await setup()
     const { runTurnOnce } = await import('../src/session-agent.js')

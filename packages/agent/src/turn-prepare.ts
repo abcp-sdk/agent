@@ -136,7 +136,7 @@ export async function prepare(
 
   // Max steps per turn: session override → preset → fixed default.
   // A resolved value of 0 means UNLIMITED (opencode parity): the loop runs
-  // until the model stops, the user interrupts, or the doom-loop guard fires.
+  // until the model stops or the user interrupts.
   const resolvedMaxTurns =
     session.max_turns > 0
       ? session.max_turns

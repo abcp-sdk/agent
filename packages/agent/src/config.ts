@@ -19,7 +19,7 @@ export interface ServerConfig {
    * CAPPED and each retry is announced to clients via a `retry` event — the AI
    * SDK's own retry loop uses an uncapped exponential backoff that can stall a
    * turn for ~an hour with no UI feedback. Honors `Retry-After`/`retry-after-ms`.
-   * Set via env `LLM_MAX_RETRIES` (default 5).
+   * Set via env `LLM_MAX_RETRIES` (default 20).
    */
   llmMaxRetries: number
   /**
@@ -145,10 +145,9 @@ export const CONFIG_DEFAULT_PRESET = 'default_preset'
 
 /**
  * Fallback max turns when neither the session nor its preset sets a value.
- * 0 = UNLIMITED: like opencode, the loop runs until the model stops, the user
- * interrupts, or the DOOM-LOOP guard fires (see session-agent). A hard step cap
- * silently truncated long legitimate tasks; the doom-loop guard is the real
- * runaway protection.
+ * 0 = UNLIMITED: like opencode, the loop runs until the model stops or the user
+ * interrupts (see session-agent). A hard step cap silently truncated long
+ * legitimate tasks.
  */
 const DEFAULT_MAX_TURNS = 0
 
@@ -160,9 +159,8 @@ const TOOL_TIMEOUT_MS = 600_000
  *
  * `LLM_MAX_RETRIES` covers request-start failures. The AGENT drives this loop
  * (the SDK's own loop is disabled by passing `maxRetries: 0`) so the backoff is
- * CAPPED at 30s per wait and every retry is surfaced to clients. 5 retries =
- * 6 total attempts; worst case ~2.5 min, versus the SDK's uncapped ~68 min of
- * silent waiting that made a turn look "stuck".
+ * CAPPED at 30s per wait and every retry is surfaced to clients. 20 retries =
+ * 21 total attempts; worst case ~10 min of capped backoff.
  *
  * `LLM_STREAM_RETRIES` covers mid-stream provider error events; those use OUR
  * backoff (capped at 30s) and stay at 3.
@@ -170,7 +168,7 @@ const TOOL_TIMEOUT_MS = 600_000
  * The chunk/step timeouts abort a half-open provider stream so a dead socket
  * cannot hang a turn forever.
  */
-const DEFAULT_LLM_MAX_RETRIES = 5
+const DEFAULT_LLM_MAX_RETRIES = 20
 const DEFAULT_LLM_STREAM_RETRIES = 3
 
 /** Resolve the storage backend from DATABASE_URL scheme + explicit override. */
