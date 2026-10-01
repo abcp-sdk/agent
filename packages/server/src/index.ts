@@ -706,6 +706,24 @@ async function main(): Promise<void> {
   }
   await recoverPending('boot')
 
+  // Boot recovery of turns KILLED MID-FLIGHT (the previous process was
+  // SIGTERM'd / OOM'd / restarted): recoverPending only re-runs sessions with
+  // a pending mailbox row, but a killed turn had already consumed its wake —
+  // the durable trace is the chain having advanced PAST the tip the last turn
+  // recorded as its end (`fact.last_turn_tip`), which the idlewatch sweep
+  // resumes. Delayed past the owner-heartbeat/lease TTL (30s) so a crashed
+  // replica's sessions read idle by then; the sweep is idempotent and the
+  // per-session lease arbitrates against any turn that already restarted.
+  if (config.resumeDanglingOnBoot) {
+    const bootResume = setTimeout(() => {
+      void idlewatch.sweepOnce().catch(err => {
+        logger.warn({ err: String(err) }, 'boot dangling-resume sweep failed')
+      })
+    }, 45_000)
+    bootResume.unref()
+    logger.info('resume-dangling-on-boot: sweep scheduled in 45s')
+  }
+
   // Periodic backstop: a wake that was lost (transient claim failure, replica
   // restart mid-ack, …) leaves a row pending with no further trigger. Re-scan
   // and re-run those sessions. The per-session lease arbitrates across

@@ -144,9 +144,51 @@ export class IdleWatchdog {
 
     const chainRes = await Messages.chain(this.deps.db, tenant, tip, 1, null)
     if (chainRes.isErr()) return
-    if (!endsOnToolResult(chainRes.value)) return
+    const chain = chainRes.value
+    const last = chain[chain.length - 1]
+    // The tip must be an assistant step that called at least one tool: that is
+    // the only shape worth resuming. A user message (a prompt awaiting a turn)
+    // or a compaction step is left alone.
+    if (last === undefined || last.role !== 'assistant') return
+    if (last.tool_parts.length === 0) return
 
-    if (await this.turnInterrupted(tenant, name)) return
+    // Two distinct reasons to resume:
+    //   (a) the model ended its own turn on a tool call with no wrap-up text
+    //       (`stop`), or
+    //   (b) the turn never recorded a clean end at THIS tip — the chain advanced
+    //       PAST the tip a prior turn recorded as its end (`fact.last_turn_tip`).
+    //       That means a turn was killed mid-flight (SIGTERM/OOM/restart/crash)
+    //       before it could write its own turn-end, regardless of whether the
+    //       dangling step happens to carry trailing text.
+    //
+    // The ancestry test is what keeps this safe: `isInChain(tip, factTip)` is
+    // true only when the recorded end is an ANCESTOR of the current tip (the
+    // chain moved forward). An UNDO moves the tip BACKWARDS — the old end is a
+    // DESCENDANT, not reachable by walking `prev_id` from the new tip — so a
+    // withdrawn message is never mistaken for an unfinished turn. A session
+    // with no recorded end yet (a fork, or a brand-new first turn) is likewise
+    // left to the narrower `endedOnToolNoText` check below.
+    const facts = await readMessageFacts(this.deps.bus, tenant, [name])
+    const fact = facts.get(name)
+    const factTip = fact?.last_turn_tip ?? ''
+    let dangling = false
+    if (factTip !== '' && factTip !== tip) {
+      const inChain = await Messages.isInChain(
+        this.deps.db,
+        tenant,
+        tip,
+        factTip,
+      )
+      dangling = inChain.isOk() && inChain.value
+    }
+    const endedOnToolNoText = last.content.trim() === ''
+    if (!dangling && !endedOnToolNoText) return
+
+    // A recorded USER interrupt blocks a resume ONLY when it describes THIS
+    // tip. A stale `interrupted` from an earlier turn must never mask a turn
+    // that was killed later (that was the bug: a killed turn left the previous
+    // turn's `interrupted` fact in place, so idlewatch refused to resume).
+    if (!dangling && fact?.last_turn_reason === 'interrupted') return
 
     // No-progress backoff: skip when the tip has not moved across the last
     // few nudges (the nudge is not helping — e.g. provider rate-limiting).
@@ -167,20 +209,9 @@ export class IdleWatchdog {
       prev !== undefined && prev.tip === tip ? prev.noProgress + 1 : 0
     this.nudges.set(name, { tip, noProgress })
     logger.info(
-      { tenant, sid: name, noProgress },
+      { tenant, sid: name, noProgress, dangling },
       'idlewatch: re-triggered (stopped after a tool call)',
     )
-  }
-
-  /** True when the session's LAST turn was ended by a user interrupt, read
-   *  from the durable message fact (`last_turn_reason`). A missing/unreadable
-   *  value is treated as "not interrupted". */
-  private async turnInterrupted(
-    tenant: string,
-    session: string,
-  ): Promise<boolean> {
-    const facts = await readMessageFacts(this.deps.bus, tenant, [session])
-    return facts.get(session)?.last_turn_reason === 'interrupted'
   }
 
   /** Prefer the session's projected `vars.agent.locale`, then the row, then

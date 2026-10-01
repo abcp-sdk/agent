@@ -110,6 +110,15 @@ export interface ServerConfig {
   idlewatchEnabled: boolean
   /** Sweep period for the idle-turn watchdog, ms (`IDLEWATCH_INTERVAL`, default 120000). */
   idlewatchIntervalMs: number
+  /**
+   * On boot, proactively re-trigger sessions whose turn was killed mid-flight
+   * (the chain advanced past the tip the last turn recorded as its end), instead
+   * of waiting for the first idlewatch sweep. This is what recovers sessions
+   * stranded by a SIGTERM/OOM/restart — the case that motivated the feature.
+   * Set via `RESUME_DANGLING_ON_BOOT` (default false — the idlewatch interval
+   * already covers it within one sweep; enable to resume immediately at boot).
+   */
+  resumeDanglingOnBoot: boolean
 }
 
 /** One provider to seed into a tenant (see {@link ServerConfig.providerSeed}). */
@@ -282,6 +291,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       or('IDLEWATCH_INTERVAL', '120s'),
       120_000,
     ),
+    resumeDanglingOnBoot:
+      or('RESUME_DANGLING_ON_BOOT', 'false').toLowerCase() === 'true',
   }
 }
 
