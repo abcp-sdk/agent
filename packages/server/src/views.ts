@@ -57,6 +57,8 @@ export function sessionToMsg(
   fact?: {
     last_message_at: string
     last_message_preview: string
+    last_turn_reason?: string
+    last_turn_at?: string
   },
   /** Runtime status from the run lock; omitted means "idle" (a single-session
    *  reply, e.g. rename, where the caller did not read the lock). `unknown`
@@ -95,6 +97,8 @@ export function sessionToMsg(
     unreadCount: unread,
     lastMessageAt: fact?.last_message_at ?? '',
     lastMessagePreview: fact?.last_message_preview ?? '',
+    lastTurnReason: fact?.last_turn_reason ?? '',
+    lastTurnAt: fact?.last_turn_at ?? '',
     messageSeq: seq,
     status,
   }

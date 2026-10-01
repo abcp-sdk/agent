@@ -12,6 +12,7 @@ import {
   readSessionStatus,
   reconcileOwnLeases,
   releaseLease,
+  renewLease,
   startHeartbeat,
   updateLease,
 } from '../src/session-lock.js'
@@ -111,10 +112,31 @@ describe('session lock', () => {
     expect(await claimLeaseOutcome(bus, T, 's')).toBe('error')
   })
 
+  it('renewLease: held on own key, lost on a foreign key, recreates an absent key', async () => {
+    const { bus, kv } = fakeBus()
+    // Absent key = the lease merely expired (no foreign owner) → recreate, held.
+    expect(await renewLease(bus, T, 's', { runId: 'r1' })).toBe('held')
+    expect(kv.get(`t.${T}.${natsToken('s')}`)).toContain('"runId":"r1"')
+    // Own key → still held.
+    expect(await renewLease(bus, T, 's')).toBe('held')
+    // A key owned by ANOTHER instance is the ONLY definitive loss.
+    kv.set(
+      `t.${T}.${natsToken('other')}`,
+      JSON.stringify({ owner: 'other-instance' }),
+    )
+    expect(await renewLease(bus, T, 'other', { runId: 'r2' })).toBe('lost')
+    expect(kv.get(`t.${T}.${natsToken('other')}`)).not.toContain('r2')
+  })
+
+  it('renewLease: a read failure is transient error, never lost', async () => {
+    const { bus } = fakeBus()
+    ;(bus as unknown as { kvGet: () => Promise<null> }).kvGet = () =>
+      Promise.reject(new Error('nats down'))
+    expect(await renewLease(bus, T, 's')).toBe('error')
+  })
+
   it('updateLease is owner-guarded and refreshes the run anchor', async () => {
     const { bus, kv } = fakeBus()
-    // No lock yet → update fails (cannot clobber).
-    expect(await updateLease(bus, T, 's', { runId: 'r1' })).toBe(false)
     await claimLease(bus, T, 's')
     expect(
       await updateLease(bus, T, 's', { runId: 'r1', startedAtMs: 123 }),

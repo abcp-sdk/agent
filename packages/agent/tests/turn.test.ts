@@ -14,6 +14,7 @@ import {
   handleBatch,
   handleItem,
   renewOrReclaim,
+  resolveTurnReason,
   runSessionTurn,
 } from '../src/session-agent.js'
 import * as sessionCompact from '../src/session-compact.js'
@@ -322,35 +323,38 @@ describe('Mailbox.pendingSessions', () => {
 })
 
 describe('renewOrReclaim', () => {
-  it('stays held when renew succeeds', async () => {
-    const r = await renewOrReclaim(
-      () => Promise.resolve(true),
-      () => Promise.resolve(false),
-    )
-    expect(r).toEqual({ held: true, lost: false, reclaimed: false })
+  it('stays held when the renew is held', async () => {
+    const r = await renewOrReclaim(() => Promise.resolve('held'))
+    expect(r).toEqual({ held: true, lost: false })
   })
 
-  it('re-claims when renew fails and the key had merely expired', async () => {
-    const r = await renewOrReclaim(
-      () => Promise.resolve(false),
-      () => Promise.resolve(true),
-    )
-    expect(r).toEqual({ held: true, lost: false, reclaimed: true })
+  it('reports lost only on a definitive foreign-owner loss', async () => {
+    const r = await renewOrReclaim(() => Promise.resolve('lost'))
+    expect(r).toEqual({ held: false, lost: true })
   })
 
-  it('reports lost when renew AND re-claim both fail', async () => {
-    const r = await renewOrReclaim(
-      () => Promise.resolve(false),
-      () => Promise.resolve(false),
-    )
-    expect(r).toEqual({ held: false, lost: true, reclaimed: false })
+  it('treats a transient error as HELD (never aborts a live turn)', async () => {
+    const r = await renewOrReclaim(() => Promise.resolve('error'))
+    expect(r).toEqual({ held: true, lost: false })
   })
 
-  it('treats a thrown renew/re-claim as a failure, never throws', async () => {
-    const r = await renewOrReclaim(
-      () => Promise.reject(new Error('nats down')),
-      () => Promise.reject(new Error('nats down')),
-    )
-    expect(r.lost).toBe(true)
+  it('treats a thrown renew as transient, never lost, never throws', async () => {
+    const r = await renewOrReclaim(() => Promise.reject(new Error('nats down')))
+    expect(r).toEqual({ held: true, lost: false })
+  })
+})
+
+describe('resolveTurnReason', () => {
+  it('a user abort (flag or reason) is interrupted', () => {
+    expect(resolveTurnReason(true, null)).toBe('interrupted')
+    expect(resolveTurnReason(false, 'user')).toBe('interrupted')
+  })
+
+  it('a lock-loss abort is locklost (resumable), not interrupted', () => {
+    expect(resolveTurnReason(false, 'locklost')).toBe('locklost')
+  })
+
+  it('a clean finish with no abort is stop', () => {
+    expect(resolveTurnReason(false, null)).toBe('stop')
   })
 })

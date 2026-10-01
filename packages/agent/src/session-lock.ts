@@ -177,29 +177,50 @@ export function isClaimError(outcome: ClaimOutcome): boolean {
 }
 
 /**
- * Owner-guarded read-modify-write: refresh the lock's TTL and merge `fields`
- * (e.g. the current run id/start). Returns true on success, false when the
- * lock is gone or owned by ANOTHER instance (a stalled former holder cannot
- * clobber the new owner). Serialized per session so a renew and a run-start
- * update never interleave.
+ * The outcome of a lease RENEW:
+ *   - `held`  — we (still) own the lock; its TTL was refreshed.
+ *   - `lost`  — a DEFINITIVE loss: the key is owned by ANOTHER instance. This
+ *     is the ONLY outcome that justifies aborting an in-flight turn.
+ *   - `error` — the renew could not be evaluated (transient KV/network
+ *     failure). NOT a loss; the caller must keep the turn running and retry.
+ *
+ * Distinguishing `lost` from `error` closes the failure that killed live turns:
+ * a transient NATS/JetStream timeout during renew was collapsed into "another
+ * replica owns it" and aborted a running turn on a SINGLE-replica deployment.
  */
-const updateLocks = new Map<string, Promise<boolean>>()
-export function updateLease(
+export type LeaseRenewOutcome = 'held' | 'lost' | 'error'
+
+/**
+ * Owner-guarded read-modify-write that refreshes the lock's TTL and merges
+ * `fields` (e.g. the current run id/start). Serialized per session so a renew
+ * and a run-start update never interleave.
+ *
+ * Only a key owned by a DIFFERENT instance yields `lost`; an absent key is
+ * re-created (the lease merely expired, no other holder), and any read/write
+ * failure yields `error` (transient). A stalled former holder therefore cannot
+ * clobber the new owner, and a transient fault never masquerades as a loss.
+ */
+const updateLocks = new Map<string, Promise<LeaseRenewOutcome>>()
+export function renewLease(
   bus: Bus,
   tenant: string,
   sid: string,
   fields: { runId?: string; startedAtMs?: number; clearRun?: boolean } = {},
-): Promise<boolean> {
+): Promise<LeaseRenewOutcome> {
   const key = `${tenant}\n${sid}`
-  const prev = updateLocks.get(key) ?? Promise.resolve(true)
+  const prev = updateLocks.get(key) ?? Promise.resolve('held')
   const next = prev
-    .catch(() => true)
-    .then(async () => {
-      const raw = await bus
-        .kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
-        .catch(() => null)
+    .catch((): LeaseRenewOutcome => 'error')
+    .then(async (): Promise<LeaseRenewOutcome> => {
+      let raw: string | null
+      try {
+        raw = await bus.kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
+      } catch {
+        return 'error'
+      }
       const cur = raw === null || raw === undefined ? null : parseLease(raw)
-      if (cur === null || cur.owner !== INSTANCE_ID) return false
+      // A key owned by ANOTHER instance is the only definitive loss.
+      if (cur !== null && cur.owner !== INSTANCE_ID) return 'lost'
       // `clearRun` drops the run anchor but keeps the lock (owner + TTL).
       const value: LeaseValue = { owner: INSTANCE_ID }
       if (fields.clearRun !== true) {
@@ -208,16 +229,54 @@ export function updateLease(
           value.startedAtMs = fields.startedAtMs
         }
       }
-      await bus.kvPut(
-        LEASE_BUCKET,
-        leaseKey(tenant, sid),
-        JSON.stringify(value),
-        SESSION_LEASE_MS,
-      )
-      return true
+      try {
+        if (cur === null) {
+          // The lease merely expired with no other holder (or we raced a
+          // concurrent create): recreate it WITHOUT clobbering a fresh foreign
+          // lock, then re-probe to classify the result.
+          const rev = await bus.kvCreate(
+            LEASE_BUCKET,
+            leaseKey(tenant, sid),
+            JSON.stringify(value),
+            SESSION_LEASE_MS,
+          )
+          if (rev !== null) return 'held'
+          const after = await bus
+            .kvGet(LEASE_BUCKET, leaseKey(tenant, sid))
+            .catch(() => null)
+          const reCur = after == null ? null : parseLease(after)
+          if (reCur !== null && reCur.owner !== INSTANCE_ID) return 'lost'
+          return 'error'
+        }
+        await bus.kvPut(
+          LEASE_BUCKET,
+          leaseKey(tenant, sid),
+          JSON.stringify(value),
+          SESSION_LEASE_MS,
+        )
+        return 'held'
+      } catch {
+        return 'error'
+      }
     })
   updateLocks.set(key, next)
   return next
+}
+
+/**
+ * Boolean convenience wrapper over {@link renewLease}: true only when the lock
+ * is still OURS (`held`). Both `lost` and transient `error` collapse to false,
+ * so callers that only need "did the write land" (e.g. a fire-and-forget run
+ * stamp) keep working. The renew timer MUST use `renewLease` directly — a
+ * transient `error` must never be treated as a loss.
+ */
+export function updateLease(
+  bus: Bus,
+  tenant: string,
+  sid: string,
+  fields: { runId?: string; startedAtMs?: number; clearRun?: boolean } = {},
+): Promise<boolean> {
+  return renewLease(bus, tenant, sid, fields).then(o => o === 'held')
 }
 
 /** Release a session's lock (back to idle). Only call while still holding it. */

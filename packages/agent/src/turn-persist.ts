@@ -7,6 +7,7 @@ import { Messages } from './db-messages.js'
 import { Parts } from './db-parts.js'
 import { Sessions } from './db-sessions.js'
 import { pushMessageAdded } from './events.js'
+import { abortRun } from './interrupt.js'
 import { ContentPayloadSchema, parse, type ToolResult } from './json.js'
 import { logger } from './logger.js'
 import type { AgentDeps } from './session-agent.js'
@@ -213,7 +214,9 @@ export async function processBatch(
   let compacted = false
   for (const item of items) {
     if (item.msg_type === 'interrupt') {
-      ctrl.abort()
+      // A queued interrupt is a USER stop (record the reason for turn-end).
+      abortRun(tenant, sid, 'user')
+      if (!ctrl.signal.aborted) ctrl.abort()
       continue
     }
     if (item.msg_type === 'compact') {

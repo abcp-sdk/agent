@@ -22,7 +22,12 @@ import {
   pushRetryNow,
 } from './events.js'
 import type { BlobStore } from './files.js'
-import { clearRun, getAbortController } from './interrupt.js'
+import {
+  abortReason,
+  abortRun,
+  clearRun,
+  getAbortController,
+} from './interrupt.js'
 import { parse, type ToolResult, WakePayloadSchema } from './json.js'
 import type { LlmRegistry } from './llm.js'
 import {
@@ -34,9 +39,9 @@ import { logger } from './logger.js'
 import { compactSession } from './session-compact.js'
 import {
   type ClaimOutcome,
-  claimLease,
   claimLeaseOutcome,
   releaseLease,
+  renewLease,
   updateLease,
 } from './session-lock.js'
 import { setTurnEnd } from './session-state.js'
@@ -93,38 +98,31 @@ export function shouldWakeMailbox(type: string): boolean {
 }
 
 /**
- * Renew a held lock, falling back to a RE-CLAIM when the owner-guarded renew
- * fails.
+ * Renew a held lock, classifying the outcome so the turn loop aborts ONLY on a
+ * definitive loss.
  *
- * The lock key carries a TTL fixed at bucket creation; a long turn that stalls
- * the event loop past that TTL loses the key, so the next renew fails. Instead
- * of giving up (which reported `idle` while a turn was still running):
- *   - renew succeeds              → still held (not lost)
- *   - renew fails, re-claim succeeds → the key had merely expired with no other
- *     holder; keep running (not lost)
- *   - renew fails, re-claim fails → another replica owns the session (lost)
+ * The lock key carries a TTL fixed at bucket creation; a long turn can outlive
+ * it. The renew is `renewLease`, which is tri-state:
+ *   - `held`  → still ours (TTL refreshed, or re-created after a bare expiry)
+ *   - `lost`  → the key is owned by ANOTHER instance → abort the turn
+ *   - `error` → transient KV/network failure → NOT a loss; retry next tick
  *
+ * A thrown renew is itself treated as `error` (transient), never a loss.
  * Exported for unit testing (the timer wiring itself is hard to exercise).
  */
 export async function renewOrReclaim(
-  renew: () => Promise<boolean>,
-  reclaim: () => Promise<boolean>,
-): Promise<{ held: boolean; lost: boolean; reclaimed: boolean }> {
-  let next: boolean
+  renew: () => Promise<'held' | 'lost' | 'error'>,
+): Promise<{ held: boolean; lost: boolean }> {
+  let outcome: 'held' | 'lost' | 'error'
   try {
-    next = await renew()
+    outcome = await renew()
   } catch {
-    next = false
+    outcome = 'error'
   }
-  if (next) return { held: true, lost: false, reclaimed: false }
-  let reclaimed: boolean
-  try {
-    reclaimed = await reclaim()
-  } catch {
-    reclaimed = false
-  }
-  if (reclaimed) return { held: true, lost: false, reclaimed: true }
-  return { held: false, lost: true, reclaimed: false }
+  if (outcome === 'held') return { held: true, lost: false }
+  if (outcome === 'lost') return { held: false, lost: true }
+  // Transient: keep the turn running; the next tick retries.
+  return { held: true, lost: false }
 }
 
 /** Attempts for the initial/re-claim before giving up on a transient error. */
@@ -329,28 +327,21 @@ export async function runSessionTurn(
     // expired. TTL/4 gives two renew attempts before expiry.
     let leaseLost = false
     const renewTimer = setInterval(() => {
-      void renewOrReclaim(
-        () => updateLease(deps.bus, tenant, sid),
-        () => claimLease(deps.bus, tenant, sid),
-      ).then(
-        ({ held: next, lost, reclaimed }) => {
-          if (!lost && next) {
-            if (reclaimed) {
-              logger.warn(
-                { tenant, sid },
-                'lock renewed via re-claim (expired, no other holder)',
-              )
-            }
-            return
-          }
+      void renewOrReclaim(() => renewLease(deps.bus, tenant, sid)).then(
+        ({ lost }) => {
+          if (!lost) return
+          // A DEFINITIVE loss only: the lock is owned by another instance.
+          // Transient renew failures are folded to `held` (above) and retried
+          // on the next tick, so a NATS blip can never abort a live turn.
           logger.warn(
             { tenant, sid },
             'lock lost: another replica owns it — aborting turn',
           )
           leaseLost = true
           // Abort the in-flight turn so it stops emitting/writing without a
-          // lock. The loop observes the abort signal at the next boundary.
-          getAbortController(tenant, sid).abort()
+          // lock. Tag the abort `locklost` so the turn-end outcome is NOT
+          // recorded as a user interrupt (idlewatch resumes those).
+          abortRun(tenant, sid, 'locklost')
         },
         err => {
           logger.warn({ tenant, sid, err: String(err) }, 'renew session failed')
@@ -571,7 +562,9 @@ export async function runTurnOnce(
       try {
         for await (const m of sub) {
           const parsed = parse(WakePayloadSchema, JSON.stringify(m.payload))
-          if (parsed.isOk() && parsed.value.type === 'interrupt') ctrl.abort()
+          if (parsed.isOk() && parsed.value.type === 'interrupt') {
+            abortRun(tenant, sid, 'user')
+          }
         }
       } catch (err) {
         logger.warn({ sid, err: String(err) }, 'wake watcher stopped')
@@ -1056,20 +1049,26 @@ export async function runTurnOnce(
     // the "stale status busy" hole that previously let replay anchor on a
     // long-finished turn.
     if (unsub !== null) unsub()
+    // Read the abort reason BEFORE `clearRun` drops it: a lock-loss abort sets
+    // `locklost`, which is an ENVIRONMENTAL stop — NOT a user interrupt. Only a
+    // `user` abort (or an explicit interrupt flag) records `interrupted`, so
+    // idlewatch resumes a turn killed by a transient fault but never one the
+    // user stopped.
+    const reason = resolveTurnReason(interrupted, abortReason(tenant, sid))
     clearRun(tenant, sid)
     // The active run lives on the session LOCK record now; the lock is released
     // by `runSessionTurn` after this returns (it holds the whole busy period).
     // Record the turn-END outcome (reason/finish/tip) on the message FACT so
     // idlewatch can tell a user-stopped session from one the model left hanging
     // after a tool call. AWAITED so it is durable before the terminal idle.
-    await markTurnEnd(deps, tenant, sid, interrupted, lastFinishReason)
+    await markTurnEnd(deps, tenant, sid, reason, lastFinishReason)
     // AWAIT this terminal: the client uses `turn-complete` to close the run,
     // and a following mailbox turn publishes its `status:busy` + deltas on the
     // same subject. A fire-and-forget publish could be reordered after that
     // new busy, so the client would tear down the live continuation. Durable
     // (awaited) ordering keeps "old run ends" strictly before "new run starts".
     await pushEventNow(deps.bus, tenant, sid, 'turn-complete', {
-      reason: interrupted ? 'interrupted' : 'stop',
+      reason,
       run_id: runId,
     })
   }
@@ -1077,23 +1076,42 @@ export async function runTurnOnce(
 }
 
 /**
+ * The turn-END `reason` string recorded on the message fact (and emitted on the
+ * terminal `turn-complete` event). Idlewatch keys off `interrupted` to decide
+ * whether a turn that stopped after a tool call should be auto-resumed, so the
+ * classification is deliberate:
+ *   - `interrupted` — the USER stopped it (explicit abort or an interrupt flag).
+ *   - `locklost`    — an ENVIRONMENTAL stop (the run lost its lease). Resumable.
+ *   - `stop`        — the model finished on its own.
+ */
+export function resolveTurnReason(
+  interrupted: boolean,
+  aborted: 'user' | 'locklost' | null,
+): 'interrupted' | 'locklost' | 'stop' {
+  if (interrupted || aborted === 'user') return 'interrupted'
+  if (aborted === 'locklost') return 'locklost'
+  return 'stop'
+}
+
+/**
  * Persist the turn-END outcome (`{ reason, finish, tip }`) onto the session's
  * message FACT in `abc-session-meta` (replacing the former `abc-session-turn`
- * bucket). `reason` is `interrupted` when the user aborted the turn (or a
- * delete did), else `stop`. Best-effort: a KV failure is logged, not fatal —
- * idlewatch treats a MISSING outcome as "not interrupted".
+ * bucket). `reason` is `interrupted` only when the USER stopped the turn;
+ * `locklost` marks an environmental stop (idlewatch may resume it); else
+ * `stop`. Best-effort: a KV failure is logged, not fatal — idlewatch treats a
+ * MISSING outcome as "not interrupted".
  */
 async function markTurnEnd(
   deps: AgentDeps,
   tenant: string,
   sid: string,
-  interrupted: boolean,
+  reason: string,
   finishReason: string,
 ): Promise<void> {
   const tipRes = await Sessions.tip(deps.db, tenant, sid)
   const tip = tipRes.isErr() ? '' : (tipRes.value ?? '')
   await setTurnEnd(deps.bus, tenant, sid, {
-    reason: interrupted ? 'interrupted' : 'stop',
+    reason,
     finish: finishReason,
     tip,
   }).catch(err => {

@@ -179,6 +179,9 @@ export type SessionRow = RowOf<
   | 'last_message_preview'
   // Runtime status is derived from the run LEASE, not a persisted column.
   | 'status'
+  // Turn-end outcome is derived from the durable message FACT, not a column.
+  | 'last_turn_reason'
+  | 'last_turn_at'
 >
 export type MessageRow = RowOf<
   typeof MessageDesc,
