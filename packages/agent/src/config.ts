@@ -101,6 +101,17 @@ export interface ServerConfig {
    */
   providerSeed: Array<ProviderSeedEntry>
   /**
+   * One-time, idempotent seed of TENANT config values (the `abcp-agent-config`
+   * KV bucket, key `t.<tenant>.<key>`), applied at boot ONLY when the key is
+   * absent. This is how a deployment pins a tenant-level default that is NOT an
+   * extension knob — notably `default_model` (the `provider_id/model_id` a new
+   * session starts with; without it a session errors on its first turn until a
+   * model is chosen). Set via env `AGENT_CONFIG_SEED` as a JSON array of
+   * `{ "tenant": "...", "key": "...", "value": "..." }`. A value a user later
+   * sets via the UI always wins — seeding never overwrites.
+   */
+  configSeed: Array<{ tenant: string; key: string; value: string }>
+  /**
    * Idle-turn watchdog: re-trigger a session whose tip is an assistant step
    * ending on a `tool_result` (the model ran a tool then stopped) by publishing
    * a `system:idlewatch` mailbox trigger. Set via env `IDLEWATCH_ENABLED`
@@ -277,6 +288,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     },
     extConfigSeed: parseExtConfigSeed(or('AGENT_EXT_CONFIG_SEED', '')),
     providerSeed: parseProviderSeed(or('AGENT_PROVIDER_SEED', '')),
+    configSeed: parseConfigSeed(or('AGENT_CONFIG_SEED', '')),
     idlewatchEnabled: or('IDLEWATCH_ENABLED', 'false').toLowerCase() === 'true',
     idlewatchIntervalMs: parseDurationMs(
       or('IDLEWATCH_INTERVAL', '120s'),
@@ -415,6 +427,40 @@ export function parseExtConfigSeed(raw: string): ServerConfig['extConfigSeed'] {
       continue
     }
     out.push({ tenant, extId, name, value: String(value) })
+  }
+  return out
+}
+
+/**
+ * Parse `AGENT_CONFIG_SEED` (a JSON array of `{tenant,key,value}`) into
+ * validated entries. A malformed value is DROPPED with a warning rather than
+ * crashing boot. `tenant: "*"` fans out to every known tenant at seed time.
+ */
+export function parseConfigSeed(raw: string): ServerConfig['configSeed'] {
+  if (raw.trim() === '') return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    logger.warn({ err: String(e) }, 'AGENT_CONFIG_SEED: invalid JSON; ignored')
+    return []
+  }
+  if (!Array.isArray(parsed)) {
+    logger.warn('AGENT_CONFIG_SEED: expected a JSON array; ignored')
+    return []
+  }
+  const out: ServerConfig['configSeed'] = []
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const e = entry as Record<string, unknown>
+    const tenant = String(e['tenant'] ?? '').trim()
+    const key = String(e['key'] ?? '').trim()
+    const value = e['value']
+    if (tenant === '' || key === '' || value === undefined) {
+      logger.warn({ entry }, 'AGENT_CONFIG_SEED: entry missing fields; dropped')
+      continue
+    }
+    out.push({ tenant, key, value: String(value) })
   }
   return out
 }

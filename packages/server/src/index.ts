@@ -4,6 +4,7 @@ import { serveBundled } from '@abc-protocol/bundled-extension'
 import { Agent as AbcAgent } from '@abc-protocol/sdk'
 import {
   type AgentDeps,
+  BUCKET_CONFIG,
   type Bus,
   backfillKvFromPg,
   backfillMessageSeqFromKv,
@@ -203,6 +204,11 @@ async function main(): Promise<void> {
   // how a fresh standalone deployment gets a working model registry without a
   // UI round-trip. Never overwrites a tenant that already has providers.
   void seedProviders(db, config, tenants)
+
+  // Seed deployment-pinned TENANT config (e.g. `default_model`, so a fresh
+  // session has a working model on its first turn without a UI round-trip).
+  // Create-if-absent: a value a user later set always wins.
+  seedTenantConfig(bus, config, tenants)
 
   // Mailbox retention: consumed rows are audit-only, prune past a fixed window.
   const retentionDays = 7
@@ -760,6 +766,41 @@ function seedExtConfig(
           logger.warn(
             { tenant, extId: s.extId, name: s.name, err: String(e) },
             'extension config seed failed',
+          )
+        }
+      })()
+    }
+  }
+}
+
+/**
+ * Seed deployment-pinned TENANT config into the `abcp-agent-config` KV bucket
+ * (the same bucket/key `Config.set` uses — a RAW string value, unlike the
+ * extension `cfg` bucket which stores a `{r,v}` envelope). Applied ONLY when the
+ * key is absent (kvCreate fails on an existing key), so a value a user later set
+ * via the UI is never clobbered. This is how a fresh deployment gets a working
+ * `default_model` (the first turn otherwise errors with "no model selected").
+ */
+function seedTenantConfig(
+  bus: Bus,
+  config: ServerConfig,
+  tenants: readonly string[],
+): void {
+  for (const s of config.configSeed) {
+    // `tenant: "*"` fans the entry out to every known tenant.
+    const targets = s.tenant === '*' ? tenants : [s.tenant]
+    for (const tenant of targets) {
+      void (async () => {
+        try {
+          const key = tenantKVKey(tenant, s.key)
+          const created = await bus.kvCreate(BUCKET_CONFIG, key, s.value, 0)
+          if (created !== null) {
+            logger.info({ tenant, key: s.key }, 'seeded tenant config default')
+          }
+        } catch (e) {
+          logger.warn(
+            { tenant, key: s.key, err: String(e) },
+            'tenant config seed failed',
           )
         }
       })()
