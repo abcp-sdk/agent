@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config.js'
 
+describe('loadConfig healthPort', () => {
+  it('defaults to 8081 when AGENT_HEALTH_PORT is unset', () => {
+    expect(loadConfig({} as NodeJS.ProcessEnv).healthPort).toBe(8081)
+  })
+
+  it('parses an explicit port, including 0 to disable', () => {
+    expect(
+      loadConfig({ AGENT_HEALTH_PORT: '9090' } as NodeJS.ProcessEnv).healthPort,
+    ).toBe(9090)
+    expect(
+      loadConfig({ AGENT_HEALTH_PORT: '0' } as NodeJS.ProcessEnv).healthPort,
+    ).toBe(0)
+  })
+
+  it('falls back to the default on a bad value', () => {
+    expect(
+      loadConfig({
+        AGENT_HEALTH_PORT: 'not-a-port',
+      } as NodeJS.ProcessEnv).healthPort,
+    ).toBe(8081)
+    expect(
+      loadConfig({ AGENT_HEALTH_PORT: '99999' } as NodeJS.ProcessEnv)
+        .healthPort,
+    ).toBe(8081)
+  })
+})
+
 describe('loadConfig disabledTools', () => {
   it('parses comma-separated <extId>.<name> entries into a trimmed list', () => {
     const cfg = loadConfig({

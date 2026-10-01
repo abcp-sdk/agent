@@ -29,7 +29,15 @@ export type InboxMsg = AbcInboxMsg
 
 export async function connectBus(
   natsUrl: string,
-  opts: { durableObjects?: AbcObjectStore } = {},
+  opts: {
+    durableObjects?: AbcObjectStore
+    /** nats.js `maxReconnectAttempts` (-1 = unlimited). */
+    maxReconnectAttempts?: number
+    /** Wait for the broker on first connect instead of failing fast. */
+    waitOnFirstConnect?: boolean
+    /** `reconnectTimeWait` in ms. */
+    reconnectTimeWaitMs?: number
+  } = {},
 ): Promise<ResultAsync<Bus, string>> {
   return ResultAsync.fromPromise(
     connectNatsBus(natsUrl, opts),

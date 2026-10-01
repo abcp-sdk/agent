@@ -4,6 +4,14 @@ export interface ServerConfig {
   port: number
   /** HTTP server transport: "auto" (h1 + h2c) | "h1" | "h2c". */
   httpProtocol: 'auto' | 'h1' | 'h2c'
+  /**
+   * Port for the plain HTTP/1.1 liveness/readiness endpoint. Kept SEPARATE
+   * from {@link port} because the RPC surface may be h2c-only (a kubelet
+   * `httpGet` probe speaks HTTP/1.1 and cannot handshake cleartext HTTP/2), and
+   * a probe must be able to tell a healthy agent from a zombie whose NATS
+   * connection is permanently dead. Set via `AGENT_HEALTH_PORT` (0 = disabled).
+   */
+  healthPort: number
   /** Storage backend: "pg" or "sqlite". */
   backend: DbBackend
   /** The resolved connection string for the selected backend. */
@@ -192,6 +200,16 @@ function normalizeHttpProtocol(v: string): ServerConfig['httpProtocol'] {
   return 'auto'
 }
 
+/** Parse AGENT_HEALTH_PORT; a bad value falls back to the default. 0 disables. */
+function parseHealthPort(raw: string): number {
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isInteger(n) || n < 0 || n > 65535) {
+    logger.warn({ raw }, 'invalid health port; using default')
+    return 8081
+  }
+  return n
+}
+
 /** Parse a non-negative integer retry count; a bad value falls back to [def]. */
 function parseCount(raw: string, def: number): number {
   const n = Number.parseInt(raw, 10)
@@ -221,6 +239,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return {
     port: Number.parseInt(or('PORT', '8080'), 10),
     httpProtocol: normalizeHttpProtocol(or('HTTP_PROTOCOL', 'auto')),
+    healthPort: parseHealthPort(or('AGENT_HEALTH_PORT', '8081')),
     backend,
     dbUrl:
       backend === 'sqlite'

@@ -118,12 +118,30 @@ async function main(): Promise<void> {
       : undefined
   const busRes = await connectBus(config.natsUrl, {
     ...(s3Store !== undefined ? { durableObjects: s3Store } : {}),
+    // Ride out a broker restart / slow-consumer disconnect forever, and wait
+    // for the broker on first boot. Without this nats.js gives up after 10
+    // attempts and the process lives on as a zombie that answers HTTP but can
+    // never publish again.
+    maxReconnectAttempts: -1,
+    waitOnFirstConnect: true,
   })
   if (busRes.isErr()) {
     logger.error({ err: busRes.error }, 'event bus connect failed (required)')
     process.exit(1)
   }
   const bus: Bus = busRes.value
+
+  // Supervise the bus: if NATS closes PERMANENTLY (reconnect budget exhausted,
+  // auth violation, or an explicit close) the process is unusable — a zombie
+  // that still serves HTTP while every publish/subscribe fails. Exit non-zero
+  // so Kubernetes restarts the pod and rebuilds a fresh connection. `closing`
+  // guards the graceful-shutdown path (where bus.close() is intentional).
+  let shuttingDown = false
+  void bus.closed().then(() => {
+    if (shuttingDown) return
+    logger.error('event bus closed permanently — exiting for restart')
+    process.exit(1)
+  })
 
   // Pin the run-lease + owner-heartbeat buckets' TTLs BEFORE anything can
   // create them with the wrong one. `WatchSessions` (and any `bus.kvWatch`)
@@ -586,9 +604,40 @@ async function main(): Promise<void> {
   const closeServer = (): Promise<unknown> =>
     new Promise(resolve => server?.close?.(() => resolve(undefined)))
 
+  // ---- liveness / readiness endpoint (plain HTTP/1.1, separate port) ----
+  // The RPC surface may be h2c-only, which a kubelet `httpGet` probe (HTTP/1.1)
+  // cannot speak; and readiness must reflect the BUS, not just "the port
+  // accepts connections" — a zombie whose NATS connection died would otherwise
+  // stay Ready and black-hole every session. Healthy ⇒ 200; not Ready (bus
+  // permanently closed, or still starting) ⇒ 503. Shutdown ⇒ 503 so the pod is
+  // pulled from the Service before it drains.
+  let ready = false
+  let healthServer: ReturnType<typeof createHttpServer> | null = null
+  if (config.healthPort > 0) {
+    healthServer = createHttpServer((req, res) => {
+      const path = (req.url ?? '/').split('?')[0]
+      if (path !== '/health' && path !== '/healthz' && path !== '/ready') {
+        res.writeHead(404).end()
+        return
+      }
+      if (path === '/ready' && !ready) {
+        res.writeHead(503, { 'content-type': 'text/plain' }).end('not ready')
+        return
+      }
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok')
+    })
+    healthServer.listen(config.healthPort, () =>
+      logger.info({ port: config.healthPort }, 'health listening (http1)'),
+    )
+  }
+  const closeHealth = (): Promise<unknown> =>
+    new Promise(resolve => healthServer?.close?.(() => resolve(undefined)))
+
   // Watch every session's mailbox wake wildcard so this replica can claim and
   // run work for any session — the horizontal scale-out trigger.
   const stopWake = watchMailboxWake(deps)
+  // Everything the server needs is now wired; mark Ready.
+  ready = true
 
   /** Structural access to the sqlite/pg client's close hook (no casts). */
   const closeDb = (): Promise<unknown> => {
@@ -604,10 +653,13 @@ async function main(): Promise<void> {
 
   const shutdown = () => {
     logger.info('shutting down')
+    shuttingDown = true
+    ready = false
     stopWake()
     idlewatch.stop()
     stopHeartbeat()
     void stopBundled()
+    void closeHealth()
     void closeServer().then(() => {
       bus.close()
       void closeDb().then(
