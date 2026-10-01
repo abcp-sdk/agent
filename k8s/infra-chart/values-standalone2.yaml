@@ -53,6 +53,13 @@ nats:
   ports:
     client: 4222
     monitor: 8222
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
   agent:
     user: agent
     password: devpassword

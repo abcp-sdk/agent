@@ -72,6 +72,10 @@ spec:
         image: {{ $svc.image }}
         imagePullPolicy: {{ $g.imagePullPolicy }}
         args: ["-c", "/etc/nats/nats.conf"]
+        {{- with $svc.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         env:
         {{- include "agent.proxyEnv" . | nindent 8 }}
         ports:

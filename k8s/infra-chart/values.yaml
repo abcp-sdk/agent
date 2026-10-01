@@ -64,6 +64,16 @@ nats:
     client: 4222
     monitor: 8222
   dataPath: /home/develop/Agent/Volumes/NATS
+  # Guarantee the broker real CPU/memory so a JetStream spike (large replay,
+  # many streams) cannot starve it on a busy node. Without requests it became
+  # BestEffort and was CPU-throttled under load.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
   # Per-application JetStream account the standalone agent connects as.
   agent:
     user: agent

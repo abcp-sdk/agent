@@ -91,12 +91,10 @@ export function watchHandlers(
         }),
         eid: '',
       })
-
-      for await (const raw of agent.streamEvents(
-        tenant,
-        id,
-        startTimeMs !== undefined ? { startTimeMs } : undefined,
-      )) {
+      for await (const raw of agent.streamEvents(tenant, id, {
+        ...(startTimeMs !== undefined ? { startTimeMs } : {}),
+        signal: ctx.signal,
+      })) {
         // Adopt a newly-started turn. `status:busy` is emitted at the top of
         // every run with its run_id, so this catches run B without polling.
         const rawRunId = fieldString(raw?.params, 'run_id') ?? ''
@@ -109,10 +107,10 @@ export function watchHandlers(
         }
         // Only the live runs' events (a prior turn's terminal marker may fall
         // inside the same time window); never resurface finished/revoked runs.
-        // EXEMPT out-of-band chain notifications (chain-changed, message-added,
-        // compacted): they carry no run_id and MUST reach viewers even while a
-        // turn is running, so a revert / a freshly-appended user message /
-        // an overflow compaction converges.
+        // EXEMPT out-of-band chain notifications (chain-changed,
+        // message-added, compacted): they carry no run_id and MUST reach
+        // viewers even while a turn is running, so a revert / a
+        // freshly-appended user message / an overflow compaction converges.
         const isOutOfBand =
           raw?.event === 'chain-changed' ||
           raw?.event === 'message-added' ||
@@ -220,6 +218,7 @@ export function watchHandlers(
       const lcSub = await deps.bus
         .subscribeStream(`abc.${tenant}.session.lifecycle.>`, {
           startTimeMs: anchorMs,
+          signal: ctx.signal,
         })
         .catch(() => null)
       const lcTask = (async () => {
@@ -251,6 +250,7 @@ export function watchHandlers(
       const chSub = await deps.bus
         .subscribeStream(`abc.${tenant}.session.changed`, {
           startTimeMs: anchorMs,
+          signal: ctx.signal,
         })
         .catch(() => null)
       const chTask = (async () => {
