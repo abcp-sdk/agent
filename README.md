@@ -103,7 +103,19 @@ provider API keys are stored server-side and returned **masked**.
 
 ## Deploy
 
-`build-image.sh` builds the SEA binary in buildkit and pushes to the internal
-registry; the standalone deployment manifest lives at
-`abcp/k8s/standalone-agent.yaml` (agent + embedded NATS sidecar, hostPath
-sqlite).
+`build-image.sh` builds the SEA binary in buildkit and pushes it to the internal
+registry (`git.agent.svc.cluster.local/abcp/agent:<tag>`).
+
+**Deployment lives in the separate `abc-protocol/deploy` repository** — this
+repo is code-only. That repo holds the Helm charts that wire the agent and its
+extensions together (`charts/infra`, `charts/platform`) and the standalone
+worker manifests (`worker-k8s/`).
+
+```sh
+# 1) build + push the image (tag defaults to a timestamp)
+TAG=20261001120000 ./build-image.sh
+# 2) in abc-protocol/deploy: set charts/platform/values.yaml -> agent.image.tag
+#    to that tag, then install the stack
+helm install infra    ./charts/infra    -n agent --create-namespace
+helm install platform ./charts/platform -n agent
+```
