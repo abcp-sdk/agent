@@ -3,6 +3,7 @@ import {
   type AgentDeps,
   BUCKET_SESSION_STATE,
   LEASE_BUCKET,
+  Messages,
   natsToken,
   OWNER_BUCKET,
   readActiveRun,
@@ -36,7 +37,7 @@ export function watchHandlers(
   return {
     async *watchSession(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
-      const { id, sinceSeq } = req
+      const { id, sinceSeq, sinceMsg } = req
       const agent = new AbcAgent(deps.bus)
       // Resume is by STREAM SEQUENCE (no message-id / wall-clock anchor, no
       // O(n) time scan, no re-replay):
@@ -46,9 +47,10 @@ export function watchHandlers(
       //   - sinceSeq == 0 -> live-from-now, EXCEPT while a run is active, where
       //     we surface that run's events from its start (an in-progress turn is
       //     not otherwise replayable).
-      // No DB anchor is needed: a turn that COMPLETED while the client was
-      // offline is reconciled by ListMessages (the client re-pulls the message
-      // chain), so the event stream only has to carry live/in-progress deltas.
+      // No DB anchor is needed for the SEQ path: a turn that COMPLETED while
+      // the client was offline is reconciled by ListMessages (the client
+      // re-pulls the message chain), so the event stream only has to carry
+      // live/in-progress deltas.
       const activeRun = await readActiveRun(deps.bus, tenant, id)
       // `sinceSeq` arrives as an int64 -> bigint; the SDK's `startSeq` is a
       // number. `by_start_sequence` is INCLUSIVE, so resume AFTER the last seen
@@ -61,9 +63,26 @@ export function watchHandlers(
         sinceSeqNum > 0 && Number.isSafeInteger(sinceSeqNum + 1)
           ? sinceSeqNum + 1
           : undefined
+      // FALLBACK (page refresh): a client that lost its in-memory `seq` passes
+      // a persistent message-id anchor instead. Replay from that message's
+      // timestamp — the pre-`since_seq` behaviour — so an in-progress turn is
+      // not dropped when `readActiveRun` is momentarily empty (lease/heartbeat
+      // race). `since_seq` wins when both are set (O(1) hot path unchanged).
+      let fallbackTimeMs: number | undefined
+      if (startSeq === undefined && sinceMsg !== undefined && sinceMsg !== '') {
+        const anchor = await Messages.get(deps.db, tenant, sinceMsg)
+        if (anchor.isOk() && anchor.value !== null) {
+          const t = Date.parse(anchor.value.created_at ?? '')
+          if (!Number.isNaN(t)) fallbackTimeMs = t
+        }
+      }
       const startTimeMs: number | undefined =
-        startSeq === undefined && activeRun !== null
-          ? activeRun.startedAtMs
+        startSeq === undefined
+          ? fallbackTimeMs !== undefined
+            ? fallbackTimeMs
+            : activeRun !== null
+              ? activeRun.startedAtMs
+              : undefined
           : undefined
       // Live runs we are allowed to surface. Seeded with the turn active at
       // subscription time; a NEW run is adopted the moment its `status:busy`
