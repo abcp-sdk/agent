@@ -16,7 +16,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@abc-protocol/sdk": "github:abcp-sdk/abc-protocol-typescript#v3.9.0",
+    "@abc-protocol/sdk": "git+http://git.agent.svc.cluster.local/abc-protocol/abc-protocol-typescript.git#v3.10.0",
     "@abcp/agent-sdk": "github:abcp-sdk/agent-sdk-typescript#v0.27.0",
     "@bufbuild/protobuf": "^2.14.1",
     "@connectrpc/connect": "^2.2.0",
