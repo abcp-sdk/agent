@@ -636,10 +636,20 @@ async function migrateSchema(
     // backfilled with tenant='default'.
     rebuildAgentFilesIfLegacy(driver)
   } else {
-    await (driver as Sql).unsafe(ddl)
-    await (driver as Sql).unsafe(PG_MIGRATIONS)
-    await (driver as Sql).unsafe(PG_TENANT_PK_MIGRATIONS)
-    await (driver as Sql).unsafe(PG_AGENT_FILES_TENANT_MIGRATION)
+    // MULTI-REPLICA safety: N replicas may cold-boot at once and race the DDL
+    // (e.g. two `ALTER TABLE ... ADD PRIMARY KEY` on the same table). Take a
+    // transaction-scoped advisory lock so exactly one runs the migration block;
+    // the others block until it commits, then their idempotent DDL is a no-op.
+    // The lock auto-releases at COMMIT (or connection loss), so a crashed
+    // migrator can never wedge future boots.
+    const sql = driver as Sql
+    await sql.begin(async tx => {
+      await tx`SELECT pg_advisory_xact_lock(7662381234567890)`
+      await tx.unsafe(ddl)
+      await tx.unsafe(PG_MIGRATIONS)
+      await tx.unsafe(PG_TENANT_PK_MIGRATIONS)
+      await tx.unsafe(PG_AGENT_FILES_TENANT_MIGRATION)
+    })
   }
 }
 
