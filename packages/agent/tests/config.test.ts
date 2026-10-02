@@ -95,6 +95,39 @@ describe('loadConfig extConfigSeed', () => {
   })
 })
 
+describe('loadConfig configSeed', () => {
+  it('parses a JSON array of {tenant,key,value} entries', () => {
+    const cfg = loadConfig({
+      AGENT_CONFIG_SEED: JSON.stringify([
+        { tenant: '*', key: 'default_model', value: 'gateway-text/glm-5.3' },
+      ]),
+    } as NodeJS.ProcessEnv)
+    expect(cfg.configSeed).toEqual([
+      { tenant: '*', key: 'default_model', value: 'gateway-text/glm-5.3' },
+    ])
+  })
+
+  it('defaults to empty and drops malformed entries', () => {
+    expect(loadConfig({} as NodeJS.ProcessEnv).configSeed).toEqual([])
+    const cfg = loadConfig({
+      AGENT_CONFIG_SEED: JSON.stringify([
+        { tenant: 'default' }, // missing key/value
+        { tenant: 'default', key: 'k', value: 3 },
+      ]),
+    } as NodeJS.ProcessEnv)
+    expect(cfg.configSeed).toEqual([
+      { tenant: 'default', key: 'k', value: '3' },
+    ])
+  })
+
+  it('ignores invalid JSON without throwing', () => {
+    expect(
+      loadConfig({ AGENT_CONFIG_SEED: '{not json' } as NodeJS.ProcessEnv)
+        .configSeed,
+    ).toEqual([])
+  })
+})
+
 describe('loadConfig retry budgets', () => {
   it('defaults maxRetries to 20 (request-start) and streamRetries to 3', () => {
     const cfg = loadConfig({} as NodeJS.ProcessEnv)

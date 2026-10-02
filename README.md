@@ -68,6 +68,9 @@ Environment: `E2E_AGENT_BIN` (default `.sea/abcp-agent`),
 | `AGENT_DEFAULT_TENANT` | tenant when auth=none / v2 migration target |
 | `DISABLED_TOOLS` | host hard-denylist, `<extId>.<name>` comma-separated |
 | `AGENT_CORS_ORIGIN` | browser CORS origin |
+| `AGENT_PROVIDER_SEED` | JSON array of providers, seeded into tenants that have none |
+| `AGENT_EXT_CONFIG_SEED` | JSON array of `{tenant,extId,name,value}`, seeded into the `cfg` KV (create-if-absent) |
+| `AGENT_CONFIG_SEED` | JSON array of `{tenant,key,value}`, seeded into the tenant config KV (create-if-absent) — e.g. `default_model` so a new session has a model on its first turn |
 | `LOG_LEVEL` | pino level |
 
 Tenants are managed via `agent.v1.AdminService` (tokens stored as sha256 only);
