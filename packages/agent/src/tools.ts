@@ -191,10 +191,17 @@ export async function discoverTools(
     )
     .catch(() => [])
   const out: DiscoveredTool[] = []
+  // Dedup by extension id: with multi-replica extensions each replica answers
+  // the discovery broadcast, and their identical manifests would otherwise be
+  // merged into duplicate tools. Keep the first manifest per id (matches
+  // `discoverExtensions`).
+  const seen = new Set<string>()
   for (const env of replies) {
     const parsed = parse(ExtensionManifestSchema, JSON.stringify(env.payload))
     if (parsed.isErr()) continue
     const m = parsed.value
+    if (seen.has(m.id)) continue
+    seen.add(m.id)
     if (!m.capabilities.includes('tools')) continue
     const config = m.config as unknown as ExtensionConfigItem[]
     for (const t of m.tools ?? []) {
