@@ -3,7 +3,6 @@ import {
   type AgentDeps,
   BUCKET_SESSION_STATE,
   LEASE_BUCKET,
-  Messages,
   natsToken,
   OWNER_BUCKET,
   readActiveRun,
@@ -37,40 +36,46 @@ export function watchHandlers(
   return {
     async *watchSession(req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
-      const { id, since } = req
+      const { id, sinceSeq } = req
       const agent = new AbcAgent(deps.bus)
-      // Single ordered subscription: retained history from the live turn's
-      // start (or live-from-now when idle), then live events — no separate
-      // replay + subscribe handover, no polling.
+      // Resume is by STREAM SEQUENCE (no message-id / wall-clock anchor, no
+      // O(n) time scan, no re-replay):
+      //   - sinceSeq > 0 -> resume the ordered consumer AFTER that sequence
+      //     (O(1) by_start_sequence) so a reconnecting client gets exactly the
+      //     events it missed while offline;
+      //   - sinceSeq == 0 -> live-from-now, EXCEPT while a run is active, where
+      //     we surface that run's events from its start (an in-progress turn is
+      //     not otherwise replayable).
+      // No DB anchor is needed: a turn that COMPLETED while the client was
+      // offline is reconciled by ListMessages (the client re-pulls the message
+      // chain), so the event stream only has to carry live/in-progress deltas.
       const activeRun = await readActiveRun(deps.bus, tenant, id)
-      // Incremental replay anchor: `since` is a message id the client already
-      // has. Replay from that message's timestamp so turns that completed
-      // while the client was offline are delivered. If the anchor is missing
-      // (withdrawn) fall back to live-from-now — the client's ListMessages
-      // resync handles the chain.
-      let startTimeMs: number | undefined =
-        activeRun !== null ? activeRun.startedAtMs : undefined
-      if (since !== undefined && since !== '') {
-        const anchor = await Messages.get(deps.db, tenant, since)
-        if (anchor.isOk() && anchor.value !== null) {
-          const t = Date.parse(anchor.value.created_at ?? '')
-          if (!Number.isNaN(t)) {
-            startTimeMs =
-              startTimeMs === undefined ? t : Math.min(startTimeMs, t)
-          }
-        }
-      }
+      // `sinceSeq` arrives as an int64 -> bigint; the SDK's `startSeq` is a
+      // number. `by_start_sequence` is INCLUSIVE, so resume AFTER the last seen
+      // event (sinceSeq + 1) for an exact continuation with no duplicate
+      // delivery. A sequence beyond Number.MAX_SAFE_INTEGER is unrepresentable
+      // here; it is astronomically far off, so fall back to live-from-now.
+      const sinceSeqNum =
+        sinceSeq !== undefined && sinceSeq > 0n ? Number(sinceSeq) : 0
+      const startSeq =
+        sinceSeqNum > 0 && Number.isSafeInteger(sinceSeqNum + 1)
+          ? sinceSeqNum + 1
+          : undefined
+      const startTimeMs: number | undefined =
+        startSeq === undefined && activeRun !== null
+          ? activeRun.startedAtMs
+          : undefined
       // Live runs we are allowed to surface. Seeded with the turn active at
       // subscription time; a NEW run is adopted the moment its `status:busy`
       // arrives. This matters because a mailbox-drained prompt CONTINUES the
-      // session as a fresh run after the anchored turn ends — with a static
+      // session as a fresh run after the previous turn ends — with a static
       // snapshot those run-B events were filtered out and the client hung until
-      // a manual refresh re-subscribed with a new anchor.
+      // a manual refresh re-subscribed.
       const liveRuns = new Set<string>()
       if (activeRun !== null) liveRuns.add(activeRun.runId)
       const dedup = new EidDedup()
 
-      // Seed the client with the AUTHORITATIVE current status before replay.
+      // Seed the client with the AUTHORITATIVE current status before the stream.
       // The per-session stream otherwise carries only TRANSIENT `status`
       // events, so a client that subscribes while a turn is already running
       // (or that locally reset its busy flag during a retry/revert) could stay
@@ -92,6 +97,7 @@ export function watchHandlers(
         eid: '',
       })
       for await (const raw of agent.streamEvents(tenant, id, {
+        ...(startSeq !== undefined ? { startSeq } : {}),
         ...(startTimeMs !== undefined ? { startTimeMs } : {}),
         signal: ctx.signal,
       })) {
@@ -135,12 +141,13 @@ export function watchHandlers(
      */
     async *watchSessions(_req, ctx: HandlerContext) {
       const tenant = tenantOf(ctx)
-      // Snapshot anchor: the DB snapshot below reflects all state committed by
-      // this instant, and the two ordered-stream watchers below replay from it.
-      // Any lifecycle / settings event published while the snapshot queries run
-      // is therefore delivered exactly once (bounded replay), closing the
-      // core-subscribe gap that used to drop nudges on a transient hiccup.
-      const anchorMs = Date.now()
+      // NOTE: the lifecycle/settings watchers below subscribe with
+      // `deliver_policy: new` (no time anchor) and the full DB snapshot is taken
+      // AFTER they are live. A change published before a watcher subscribed is
+      // already reflected in the snapshot; a change after it is delivered by
+      // the watcher; the (idempotent) overlap is harmless. This avoids the
+      // former `by_start_time` anchor, which made every (re)subscribe scan the
+      // stream from the start.
       // Runtime status per session (busy/idle), from the run lease. Seeded from
       // the initial snapshot and updated by the lease watcher; only a CHANGE is
       // re-emitted (the lease is renewed every ~10s, so emitting on every KV
@@ -213,11 +220,10 @@ export function watchHandlers(
         }
       })()
 
-      // 2) structural lifecycle changes. Ordered-stream consumer replayed from
-      //    the snapshot anchor: no nudge is lost between the snapshot and live.
+      // 2) structural lifecycle changes. Subscribed live (deliver_policy: new)
+      //    BEFORE the snapshot: no nudge is lost between the snapshot and live.
       const lcSub = await deps.bus
         .subscribeStream(`abc.${tenant}.session.lifecycle.>`, {
-          startTimeMs: anchorMs,
           signal: ctx.signal,
         })
         .catch(() => null)
@@ -245,11 +251,10 @@ export function watchHandlers(
         }
       })()
 
-      // 3) settings-change nudges (setModel / updateSettings). Also replayed
-      //    from the anchor (durable `inboxPublish` on the same ABC_EVENTS stream).
+      // 3) settings-change nudges (setModel / updateSettings). Also live from
+      //    now (durable `inboxPublish` on the same ABC_EVENTS stream).
       const chSub = await deps.bus
         .subscribeStream(`abc.${tenant}.session.changed`, {
-          startTimeMs: anchorMs,
           signal: ctx.signal,
         })
         .catch(() => null)
@@ -376,11 +381,16 @@ function toWatchEvent(raw: unknown): WatchSessionResponse {
     event?: string
     params?: Record<string, unknown>
     eid?: string
+    seq?: number
   }
   return create(WatchSessionResponseSchema, {
     event: env.event ?? 'message',
     params: toJsonObject(isRecord(env.params) ? env.params : {}),
     eid: env.eid ?? '',
+    // The JetStream stream sequence: the client echoes the newest one back as
+    // WatchSessionRequest.since_seq so a reconnect resumes with an O(1)
+    // by_start_sequence seek (see watchSession).
+    ...(typeof env.seq === 'number' ? { seq: BigInt(env.seq) } : {}),
   })
 }
 
