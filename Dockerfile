@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker.m.daocloud.io/docker/dockerfile:1
 # Base images default to the in-cluster artifact registry (buildkitd trusts it
 # as an insecure registry); override with --build-arg when building elsewhere.
 # Note: forgejo mirrors the official library/* images under root/ (jrlab
