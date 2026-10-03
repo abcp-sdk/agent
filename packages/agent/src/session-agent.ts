@@ -78,6 +78,42 @@ export interface AgentDeps {
 const DRAIN_GRACE_MS = 200
 
 /**
+ * Process-local run anchor per (tenant, sid): the CURRENT turn's run id + start
+ * time. The session LOCK record is the durable anchor (surfaced by
+ * `readActiveRun` so a reconnecting client can replay the in-progress turn), but
+ * if the lock key EXPIRES mid-turn (an event-loop stall longer than the lease
+ * TTL) the renew timer re-creates it — and without this map the re-created
+ * record would lose the anchor. Keeping the anchor here lets the renew timer
+ * re-stamp the SAME run on the recreate path. Set when a run starts, cleared
+ * when it ends.
+ */
+const activeRuns = new Map<string, { runId: string; startedAtMs: number }>()
+
+function runKey(tenant: string, sid: string): string {
+  return `${tenant}\n${sid}`
+}
+
+function setLocalActiveRun(
+  tenant: string,
+  sid: string,
+  runId: string,
+  startedAtMs: number,
+): void {
+  activeRuns.set(runKey(tenant, sid), { runId, startedAtMs })
+}
+
+function getLocalActiveRun(
+  tenant: string,
+  sid: string,
+): { runId: string; startedAtMs: number } | undefined {
+  return activeRuns.get(runKey(tenant, sid))
+}
+
+function clearLocalActiveRun(tenant: string, sid: string): void {
+  activeRuns.delete(runKey(tenant, sid))
+}
+
+/**
  * Mailbox message types that WAKE the session turn loop.
  *
  *   - `trigger` — a text prompt; drives a model turn.
@@ -327,7 +363,14 @@ export async function runSessionTurn(
     // expired. TTL/4 gives two renew attempts before expiry.
     let leaseLost = false
     const renewTimer = setInterval(() => {
-      void renewOrReclaim(() => renewLease(deps.bus, tenant, sid)).then(
+      // Re-stamp the CURRENT run anchor on every renew. `renewLease` also
+      // preserves it from the existing record, but passing it explicitly makes
+      // the recreate-after-expiry path (lock key lapsed mid-turn) restore the
+      // SAME run, so a reconnecting client still replays the in-progress turn.
+      const anchor = getLocalActiveRun(tenant, sid)
+      void renewOrReclaim(() =>
+        renewLease(deps.bus, tenant, sid, anchor !== undefined ? anchor : {}),
+      ).then(
         ({ lost }) => {
           if (!lost) return
           // A DEFINITIVE loss only: the lock is owned by another instance.
@@ -529,6 +572,9 @@ export async function runTurnOnce(
   // live (and is cleared the moment the turn ends, incl. on error/abort).
   const runId = randomUUID()
   const runStartedAtMs = Date.now()
+  // Record the anchor locally too, so the renew timer can restore it if the
+  // lock key expires mid-turn (see `activeRuns`).
+  setLocalActiveRun(tenant, sid, runId, runStartedAtMs)
   // Stamp this run onto the session's LOCK record (owner-guarded): the run id
   // and start time are the replay anchor for a reconnecting client. Fire-and-
   // forget: the lock TTL/owner heartbeat bounds a missed update.
@@ -1056,6 +1102,9 @@ export async function runTurnOnce(
     // user stopped.
     const reason = resolveTurnReason(interrupted, abortReason(tenant, sid))
     clearRun(tenant, sid)
+    // This run is over: drop the local anchor so a later renew (between chained
+    // runs, or after the busy period) does not resurrect a finished run.
+    clearLocalActiveRun(tenant, sid)
     // The active run lives on the session LOCK record now; the lock is released
     // by `runSessionTurn` after this returns (it holds the whole busy period).
     // Record the turn-END outcome (reason/finish/tip) on the message FACT so

@@ -128,6 +128,27 @@ describe('session lock', () => {
     expect(kv.get(`t.${T}.${natsToken('other')}`)).not.toContain('r2')
   })
 
+  it('renewLease: a bare renew PRESERVES the run anchor (replay survives renew ticks)', async () => {
+    const { bus, kv } = fakeBus()
+    await claimLease(bus, T, 's')
+    // Run start stamps the anchor.
+    await updateLease(bus, T, 's', { runId: 'run-1', startedAtMs: 555 })
+    // The TTL renew timer passes NO fields: it must not wipe the anchor, or a
+    // reconnecting client loses the replay anchor after the first tick.
+    expect(await renewLease(bus, T, 's')).toBe('held')
+    const raw = kv.get(`t.${T}.${natsToken('s')}`) ?? ''
+    expect(raw).toContain('"runId":"run-1"')
+    expect(raw).toContain('"startedAtMs":555')
+    // An explicit override still wins.
+    expect(await renewLease(bus, T, 's', { runId: 'run-2' })).toBe('held')
+    expect(kv.get(`t.${T}.${natsToken('s')}`)).toContain('"runId":"run-2"')
+    // `clearRun` still drops the anchor while keeping the lock.
+    expect(await renewLease(bus, T, 's', { clearRun: true })).toBe('held')
+    const cleared = kv.get(`t.${T}.${natsToken('s')}`) ?? ''
+    expect(cleared).not.toContain('run-2')
+    expect(cleared).toContain(INSTANCE_ID)
+  })
+
   it('renewLease: a read failure is transient error, never lost', async () => {
     const { bus } = fakeBus()
     ;(bus as unknown as { kvGet: () => Promise<null> }).kvGet = () =>

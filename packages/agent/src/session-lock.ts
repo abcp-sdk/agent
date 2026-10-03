@@ -221,13 +221,18 @@ export function renewLease(
       const cur = raw === null || raw === undefined ? null : parseLease(raw)
       // A key owned by ANOTHER instance is the only definitive loss.
       if (cur !== null && cur.owner !== INSTANCE_ID) return 'lost'
-      // `clearRun` drops the run anchor but keeps the lock (owner + TTL).
+      // Build the new value. `clearRun` drops the run anchor but keeps the lock
+      // (owner + TTL). Otherwise the run anchor is PRESERVED from the current
+      // record unless the caller overrides it — a bare renew (the TTL timer
+      // passes no fields) must NOT wipe `runId`/`startedAtMs`, or a reconnecting
+      // client loses the replay anchor and an in-progress turn stops replaying
+      // after the first renew tick.
       const value: LeaseValue = { owner: INSTANCE_ID }
       if (fields.clearRun !== true) {
-        if (fields.runId !== undefined) value.runId = fields.runId
-        if (fields.startedAtMs !== undefined) {
-          value.startedAtMs = fields.startedAtMs
-        }
+        const runId = fields.runId ?? cur?.runId
+        const startedAtMs = fields.startedAtMs ?? cur?.startedAtMs
+        if (runId !== undefined) value.runId = runId
+        if (startedAtMs !== undefined) value.startedAtMs = startedAtMs
       }
       try {
         if (cur === null) {
