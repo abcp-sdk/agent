@@ -359,18 +359,34 @@ async function main(): Promise<void> {
         sid,
       ]),
     messageChain: async (tenant, tip, limit) => {
+      // `limit` is a DEPTH cap on the walk from the tip (0 = the tip itself).
+      // `limit <= 0` means "no depth cap": return the FULL chain. Callers that
+      // may face very large chains must page/limit themselves (this is the
+      // documented escape hatch for history-range / history-search, which need
+      // to see the whole chain, not just the newest `limit` messages).
+      const capped = Number.isFinite(limit) && limit > 0
       const rows = await rawAll(
         db,
-        `WITH RECURSIVE chain AS (
-           SELECT m.id, m.role, m.prev_id, m.created_at, 0 AS depth
-           FROM messages m WHERE m.id = ? AND m.tenant = ?
-           UNION ALL
-           SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
-           FROM messages m JOIN chain c ON m.id = c.prev_id
-           WHERE m.tenant = ?
-         )
-         SELECT id, role, created_at, depth FROM chain WHERE depth < ? ORDER BY depth ASC`,
-        [tip, tenant, tenant, limit],
+        capped
+          ? `WITH RECURSIVE chain AS (
+               SELECT m.id, m.role, m.prev_id, m.created_at, 0 AS depth
+               FROM messages m WHERE m.id = ? AND m.tenant = ?
+               UNION ALL
+               SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
+               FROM messages m JOIN chain c ON m.id = c.prev_id
+               WHERE m.tenant = ?
+             )
+             SELECT id, role, created_at, depth FROM chain WHERE depth < ? ORDER BY depth ASC`
+          : `WITH RECURSIVE chain AS (
+               SELECT m.id, m.role, m.prev_id, m.created_at, 0 AS depth
+               FROM messages m WHERE m.id = ? AND m.tenant = ?
+               UNION ALL
+               SELECT m.id, m.role, m.prev_id, m.created_at, c.depth + 1
+               FROM messages m JOIN chain c ON m.id = c.prev_id
+               WHERE m.tenant = ?
+             )
+             SELECT id, role, created_at, depth FROM chain ORDER BY depth ASC`,
+        capped ? [tip, tenant, tenant, limit] : [tip, tenant, tenant],
       )
       return rows.map(r => ({
         id: String(r['id'] ?? ''),
