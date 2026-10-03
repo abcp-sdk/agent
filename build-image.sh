@@ -5,14 +5,23 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Base-image registry (the Dockerfile's `${REGISTRY}/root/<img>` bases). Kept on
+# the in-cluster registry that buildkitd trusts as INSECURE; override if your
+# buildkitd also trusts the artifact registry.
 REGISTRY="${REGISTRY:-git.agent.svc.cluster.local}"
-NAMESPACE="${NAMESPACE:-abcp}"
+# Push destination. The platform pulls `abc-protocol/agent` from the artifact
+# registry, so images are published there (plain HTTP in-cluster ->
+# --dest-tls-verify=false).
+DEST_REGISTRY="${DEST_REGISTRY:-artifact.worker.svc.cluster.local}"
+NAMESPACE="${NAMESPACE:-abc-protocol}"
 NAME="${NAME:-agent}"
 TAG="${TAG:-$(date +%Y%m%d%H%M%S)}"
-DEST="${REGISTRY}/${NAMESPACE}/${NAME}:${TAG}"
+DEST="${DEST_REGISTRY}/${NAMESPACE}/${NAME}:${TAG}"
 BUILDKIT="${BUILDKIT_ADDR:-tcp://buildkitd.temp.svc.cluster.local:1234}"
-FORGEJO_USER="${FORGEJO_USER:-root}"
-FORGEJO_PASS="${FORGEJO_PASS:-devpassword}"
+# Write credential for the artifact registry (anonymous PULL; publish needs a
+# write token). `root:$ARTIFACT_TOKEN`.
+ARTIFACT_USER="${ARTIFACT_USER:-root}"
+ARTIFACT_TOKEN="${ARTIFACT_TOKEN:-dev-artifact-token}"
 PROXY="${PROXY:-http://mihomo.develop.svc.cluster.local:7890}"
 # Containerfile lives in ./; the context is the repo root so COPY path match.
 DOCKERFILE="Dockerfile"
@@ -33,14 +42,14 @@ buildctl --addr "${BUILDKIT}" build \
   --output "type=docker,name=${NAMESPACE}/${NAME}:${TAG},dest=${WORK}/image.tar" \
   --progress plain
 
-echo "Pushing to forgejo ${DEST}"
+echo "Pushing to artifact ${DEST}"
 skopeo copy \
-  --dest-creds "${FORGEJO_USER}:${FORGEJO_PASS}" \
+  --dest-creds "${ARTIFACT_USER}:${ARTIFACT_TOKEN}" \
   --dest-tls-verify=false \
   "docker-archive:${WORK}/image.tar:${NAMESPACE}/${NAME}:${TAG}" \
   "docker://${DEST}"
 
 echo "Verifying push:"
-skopeo inspect --creds "${FORGEJO_USER}:${FORGEJO_PASS}" --tls-verify=false "docker://${DEST}" >/dev/null 2>&1 \
+skopeo inspect --creds "${ARTIFACT_USER}:${ARTIFACT_TOKEN}" --tls-verify=false "docker://${DEST}" >/dev/null 2>&1 \
   && echo "OK ${DEST}" \
   || echo "inspect failed for ${DEST} (image may still be present)"

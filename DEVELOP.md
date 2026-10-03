@@ -79,7 +79,15 @@ npm test
 ## Building the image
 
 `build-image.sh` builds the SEA binary in the cluster buildkitd and pushes to
-the in-cluster registry (`git.agent.svc.cluster.local/abcp/agent:<tag>`). The
-Dockerfile's `REGISTRY` build-arg defaults to `docker.io`; the library base
-images live under `root/` on the **in-cluster** registry, so a cluster build
-must pass `REGISTRY=git.agent.svc.cluster.local` (the script already does).
+the **artifact** registry (`artifact.worker.svc.cluster.local/abc-protocol/agent:<tag>`),
+which is what the platform pulls from.
+
+- **Base images** come from `${REGISTRY}/root/<img>` (buildkitd trusts
+  `git.agent.svc.cluster.local` as an insecure registry; artifact also serves
+  `root/node:26-alpine` / `root/alpine:3.24` if your buildkitd trusts it).
+- **Push destination** is `DEST_REGISTRY` (default
+  `artifact.worker.svc.cluster.local`), pushed with
+  `skopeo copy --dest-creds root:$ARTIFACT_TOKEN --dest-tls-verify=false`.
+- The **Dockerfile frontend** is pulled from a China mirror
+  (`# syntax=docker.m.daocloud.io/docker/dockerfile:1`) because docker.io egress
+  is flaky in-cluster.
